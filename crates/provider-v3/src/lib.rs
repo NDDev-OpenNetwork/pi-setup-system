@@ -35,6 +35,7 @@
 //! detail text. A failure in this build's own declaration is a different thing
 //! entirely and never becomes a wire reason; see [`error::Error`].
 
+pub mod argv;
 pub mod error;
 pub mod info;
 pub mod plan;
@@ -42,6 +43,7 @@ pub mod platform;
 pub mod reason;
 pub mod vocabulary;
 
+pub use argv::{Bundle, Invocation, PlanRequest};
 pub use error::{Error, Result};
 pub use info::{Declaration, ProjectionProfile, ProviderInfo};
 pub use plan::{BundleBinding, PlanArtifact, PlanInputs};
