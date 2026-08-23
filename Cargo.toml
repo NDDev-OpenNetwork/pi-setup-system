@@ -18,7 +18,7 @@ authors = ["Danil Silantyev / NDDev"]
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 fs4 = { version = "0.13", features = ["sync"] }
 setup-core = { path = "crates/setup-core", version = "0.1.0" }
 provider-v3 = { path = "crates/provider-v3", version = "0.1.0" }
