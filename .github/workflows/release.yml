@@ -1,0 +1,129 @@
+name: release
+
+# Publishing is not a gate. The licence permits anyone to build and
+# redistribute this program, and the binaries here are a convenience for people
+# who would rather not. Nothing signs on anyone's behalf and nothing here is
+# required in order to run it.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          toolchain: '1.97.1'
+
+      # A release whose tag disagrees with the version it builds is a trap that
+      # only shows up months later, in a bug report about the wrong binary.
+      - name: Refuse a tag that does not match the crate version
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "pi-setup-system"))')
+          if [ "$version" != "$TAG" ]; then
+            echo "tag $TAG does not match crate version $version" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked --bin pi-setup-system
+
+      - name: Name the artifact after what it runs on
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          mkdir -p dist
+          cp "target/release/pi-setup-system${SUFFIX}" "dist/pi-setup-system-${TARGET}${SUFFIX}"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pi-setup-system-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # Provenance is what replaces a trusted publisher here: it is minted by
+      # GitHub for this run, and anyone can check it without knowing us.
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Collect the built binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5.0.0
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: Checksum every asset
+        working-directory: staging
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest the binaries to this commit and this run
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: 'staging/pi-setup-system-*'
+
+      - name: Publish one immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" staging/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes "Binaries for Linux, macOS and Windows, with \`SHA256SUMS\` and build provenance.
+
+This program is AGPL-3.0-or-later and its source is public: \`cargo build --release --locked\` at this tag produces these binaries, and building it yourself is fully supported. The attestation lets you verify a download came from this commit through this run without having to trust anyone."
