@@ -90,7 +90,7 @@ impl Catalog {
     /// in the working directory. Each candidate is tried twice: once as the
     /// catalog itself, and once with the harness id beneath it. A published tree
     /// ships one harness and uses the first shape; the workspace that authors
-    /// all five uses the second, and a developer should not have to know which
+    /// them all uses the second, and a developer should not have to know which
     /// one they are standing in.
     #[must_use]
     pub fn discover(harness: &Harness) -> Option<Self> {
@@ -151,7 +151,7 @@ impl Catalog {
     /// Every readable setup, by identity.
     ///
     /// A directory that does not parse is skipped rather than fatal: one broken
-    /// setup should not make the other four unlistable.
+    /// setup should not make its neighbours unlistable.
     ///
     /// # Errors
     ///
@@ -273,25 +273,50 @@ fn read_setup(directory: &Path) -> Result<Setup> {
 }
 
 impl Setup {
-    /// The top-level entries this setup would write into a target.
+    /// Every file this setup would write, as a path relative to the target.
+    ///
+    /// Files rather than top-level entries, because a harness may own a nested
+    /// namespace and nothing else beside it: listing only the first component
+    /// cannot tell `antigravity-cli/settings.json`, which is owned, from
+    /// `antigravity-cli` as a whole, which is not.
     ///
     /// # Errors
     ///
     /// Returns [`WireReason::ProviderUnavailable`] if the payload cannot be
-    /// listed.
-    pub fn top_level(&self) -> Result<Vec<String>> {
-        let read = fs::read_dir(&self.payload).map_err(|source| {
-            Error::refuse(
-                WireReason::ProviderUnavailable,
-                format!("cannot list {}: {source}", self.payload.display()),
-            )
-        })?;
-        let mut names: Vec<String> = read
-            .flatten()
-            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-            .collect();
-        names.sort();
-        Ok(names)
+    /// listed, or holds a name this provider cannot represent as a path.
+    pub fn relative_paths(&self) -> Result<Vec<String>> {
+        let mut found = Vec::new();
+        let mut stack = vec![self.payload.clone()];
+        while let Some(current) = stack.pop() {
+            let read = fs::read_dir(&current).map_err(|source| {
+                Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    format!("cannot list {}: {source}", current.display()),
+                )
+            })?;
+            for entry in read.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let relative = path.strip_prefix(&self.payload).map_err(|_| {
+                    Error::refuse(
+                        WireReason::ProviderUnavailable,
+                        format!("{} escaped the setup payload", path.display()),
+                    )
+                })?;
+                let Some(text) = relative.to_str() else {
+                    return Err(Error::refuse(
+                        WireReason::ProviderUnavailable,
+                        format!("{} is not representable as a path", relative.display()),
+                    ));
+                };
+                found.push(text.replace('\\', "/"));
+            }
+        }
+        found.sort();
+        Ok(found)
     }
 
     /// Check that every entry this setup writes is one the harness owns.
@@ -305,12 +330,12 @@ impl Setup {
     /// Returns [`WireReason::UnsupportedNativeSurface`] naming the first entry
     /// outside the harness's declared surface.
     pub fn check_within(&self, harness: &Harness) -> Result<()> {
-        for name in self.top_level()? {
-            if !harness.native_namespaces.contains(&name.as_str()) {
+        for path in self.relative_paths()? {
+            if !harness.owns(&path) {
                 return Err(Error::refuse(
                     WireReason::UnsupportedNativeSurface,
                     format!(
-                        "setup {:?} writes {name:?}, which {} does not own",
+                        "setup {:?} writes {path:?}, which is outside the surface {} owns",
                         self.manifest.id, harness.provider_id
                     ),
                 ));

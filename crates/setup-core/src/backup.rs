@@ -214,10 +214,30 @@ impl Pool {
         Ok(BackupRef::from_sequence(highest.saturating_add(1)))
     }
 
-    /// Capture `source` into a new slot and complete it.
+    /// Capture the named paths of `source` into a new slot and complete it.
     ///
     /// The payload is copied first and the marker written last, so an
     /// interruption leaves a slot [`Pool::partial_slots`] can name.
+    ///
+    /// # Only what the caller can undo
+    ///
+    /// `included` names the paths a restore can put back, and nothing else is
+    /// copied. That is not an optimisation bolted on afterwards -- it is the
+    /// only honest scope, because a restore reads exactly these paths out of
+    /// the payload again. Anything else in the slot could never be restored by
+    /// the code that wrote it.
+    ///
+    /// Capturing the whole directory instead was measured against a real Grok
+    /// home: 517 MB copied -- the product's downloads, marketplace cache,
+    /// vendored runtime and logs -- to protect four kilobytes of configuration,
+    /// doubling the directory on the first operation and multiplying it by the
+    /// slot count thereafter. It also failed outright, because a live install
+    /// keeps a symlink at `bin/grok` and this copy refuses symlinks; the
+    /// provider could not touch a real installation at all. Both problems were
+    /// the same mistake, and both end here.
+    ///
+    /// A path that does not exist is skipped: a target legitimately holds only
+    /// some of what a harness may own.
     ///
     /// # Errors
     ///
@@ -226,7 +246,7 @@ impl Pool {
     pub fn capture(
         &self,
         source: &Path,
-        excluded_top_level: &[&str],
+        included: &[&str],
         record: impl FnOnce(BackupRef) -> SlotRecord,
     ) -> Result<SlotRecord> {
         let backup_ref = self.next_ref()?;
@@ -240,7 +260,27 @@ impl Pool {
             .with_source(source_error)
         })?;
 
-        copy_tree(source, &payload, excluded_top_level)?;
+        for relative in included {
+            let from = source.join(relative);
+            if !from.exists() {
+                continue;
+            }
+            let to = payload.join(relative);
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).map_err(|source_error| {
+                    Error::new(
+                        ReasonCode::StateUnavailable,
+                        format!("cannot create {}", parent.display()),
+                    )
+                    .with_source(source_error)
+                })?;
+            }
+            if from.is_dir() {
+                copy_tree(&from, &to, &[])?;
+            } else {
+                copy_file(&from, &to)?;
+            }
+        }
 
         let record = record(backup_ref);
         let value = serde_json::to_value(&record).map_err(|source_error| {
@@ -364,6 +404,36 @@ pub fn copy_tree(source: &Path, destination: &Path, excluded_top_level: &[&str])
     copy_inner(source, destination, excluded_top_level, true)
 }
 
+/// Copy one regular file, refusing a symlink for the same reason a tree does.
+///
+/// A symlink captured into a backup slot is a pointer, not the bytes it points
+/// at: restoring it would recreate a link whose target may have moved, been
+/// deleted, or been replaced by something else entirely. Refusing keeps a slot
+/// a statement about content.
+fn copy_file(from: &Path, to: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(from).map_err(|error| {
+        Error::new(
+            ReasonCode::StateUnavailable,
+            format!("cannot stat {}", from.display()),
+        )
+        .with_source(error)
+    })?;
+    if metadata.is_symlink() {
+        return Err(Error::new(
+            ReasonCode::IntegrityMismatch,
+            format!("{} is a symbolic link and is not captured", from.display()),
+        ));
+    }
+    fs::copy(from, to).map_err(|error| {
+        Error::new(
+            ReasonCode::StateUnavailable,
+            format!("cannot copy {} to {}", from.display(), to.display()),
+        )
+        .with_source(error)
+    })?;
+    Ok(())
+}
+
 fn copy_inner(
     source: &Path,
     destination: &Path,
@@ -483,7 +553,7 @@ mod tests {
         fs::write(target.join("a.txt"), "one").unwrap();
 
         let pool = Pool::open(&base.join("control"), 3).unwrap();
-        let record = pool.capture(&target, &[], record_for).unwrap();
+        let record = pool.capture(&target, &["a.txt"], record_for).unwrap();
 
         assert_eq!(pool.latest().unwrap().unwrap(), record);
         let payload = pool.payload_of(&record.backup_ref).unwrap();
@@ -498,9 +568,9 @@ mod tests {
         let pool = Pool::open(&base.join("control"), 5).unwrap();
 
         fs::write(target.join("a.txt"), "one").unwrap();
-        let first = pool.capture(&target, &[], record_for).unwrap();
+        let first = pool.capture(&target, &["a.txt"], record_for).unwrap();
         fs::write(target.join("a.txt"), "two").unwrap();
-        let second = pool.capture(&target, &[], record_for).unwrap();
+        let second = pool.capture(&target, &["a.txt"], record_for).unwrap();
 
         assert_eq!(
             pool.latest().unwrap().unwrap().backup_ref,
@@ -524,7 +594,7 @@ mod tests {
 
         let control = base.join("control");
         let pool = Pool::open(&control, 3).unwrap();
-        let record = pool.capture(&target, &[], record_for).unwrap();
+        let record = pool.capture(&target, &["a.txt"], record_for).unwrap();
 
         // Simulate an interruption between payload copy and marker write.
         let slot = control
@@ -550,7 +620,7 @@ mod tests {
 
         for index in 0..4 {
             fs::write(target.join("a.txt"), format!("{index}")).unwrap();
-            pool.capture(&target, &[], record_for).unwrap();
+            pool.capture(&target, &["a.txt"], record_for).unwrap();
         }
         let listed = pool.list().unwrap();
         assert_eq!(listed.len(), 2);
@@ -565,32 +635,111 @@ mod tests {
     }
 
     #[test]
-    fn excluded_top_level_entries_are_not_captured() {
-        let base = scratch("exclude");
+    fn only_the_named_paths_are_captured() {
+        // The scope is what a restore can put back, and nothing else. Capturing
+        // the whole directory once copied 517 MB of a Grok home's downloads and
+        // caches to protect four kilobytes of configuration -- bytes no restore
+        // in this kernel would ever read again.
+        let base = scratch("included");
         let target = base.join("target");
-        fs::create_dir_all(target.join(".ctl")).unwrap();
-        fs::write(target.join(".ctl").join("journal.json"), "{}").unwrap();
-        fs::write(target.join("a.txt"), "one").unwrap();
+        fs::create_dir_all(target.join("skills")).unwrap();
+        fs::create_dir_all(target.join("downloads")).unwrap();
+        fs::write(target.join("config.toml"), "kept").unwrap();
+        fs::write(target.join("skills/a.md"), "kept too").unwrap();
+        fs::write(target.join("downloads/huge.bin"), "not ours").unwrap();
+        fs::write(target.join("auth.json"), "secret").unwrap();
 
-        let pool = Pool::open(&base.join("control"), 2).unwrap();
-        let record = pool.capture(&target, &[".ctl"], record_for).unwrap();
+        let pool = Pool::open(&base.join("ctl"), 3).unwrap();
+        let record = pool
+            .capture(&target, &["config.toml", "skills"], record_for)
+            .unwrap();
         let payload = pool.payload_of(&record.backup_ref).unwrap();
 
-        assert!(payload.join("a.txt").exists());
-        assert!(!payload.join(".ctl").exists());
+        assert_eq!(
+            fs::read_to_string(payload.join("config.toml")).unwrap(),
+            "kept"
+        );
+        assert_eq!(
+            fs::read_to_string(payload.join("skills/a.md")).unwrap(),
+            "kept too"
+        );
+        assert!(!payload.join("downloads").exists());
+        assert!(!payload.join("auth.json").exists());
     }
 
+    #[test]
+    fn a_path_the_target_does_not_hold_is_skipped_not_fatal() {
+        // A harness may own more than any one target happens to contain.
+        let base = scratch("included-absent");
+        let target = base.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("config.toml"), "here").unwrap();
+
+        let pool = Pool::open(&base.join("ctl"), 3).unwrap();
+        let record = pool
+            .capture(
+                &target,
+                &["config.toml", "never-created", "skills"],
+                record_for,
+            )
+            .unwrap();
+        let payload = pool.payload_of(&record.backup_ref).unwrap();
+        assert_eq!(
+            fs::read_to_string(payload.join("config.toml")).unwrap(),
+            "here"
+        );
+        assert!(!payload.join("skills").exists());
+    }
+
+    // Creating a symlink on Windows needs a privilege a runner does not have,
+    // so this is asserted where it can be.
     #[cfg(unix)]
     #[test]
     fn a_symbolic_link_is_refused_rather_than_inlined() {
+        // Both shapes: named directly, and found while walking a named
+        // directory. A slot has to be a statement about content, and a link is
+        // a pointer whose target may since have moved or been replaced.
         let base = scratch("symlink");
         let target = base.join("target");
-        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(target.join("skills")).unwrap();
         fs::write(base.join("outside.txt"), "secret").unwrap();
         std::os::unix::fs::symlink(base.join("outside.txt"), target.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), target.join("skills/deep.md"))
+            .unwrap();
 
         let pool = Pool::open(&base.join("control"), 2).unwrap();
-        let error = pool.capture(&target, &[], record_for).unwrap_err();
-        assert_eq!(error.reason(), ReasonCode::IntegrityMismatch);
+        let named = pool
+            .capture(&target, &["link.txt"], record_for)
+            .unwrap_err();
+        assert_eq!(named.reason(), ReasonCode::IntegrityMismatch);
+
+        let walked = pool.capture(&target, &["skills"], record_for).unwrap_err();
+        assert_eq!(walked.reason(), ReasonCode::IntegrityMismatch);
+    }
+
+    // Creating a symlink on Windows needs a privilege a runner does not have,
+    // so this is asserted where it can be.
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_outside_the_captured_paths_is_simply_not_seen() {
+        // A live Grok install keeps a symlink at `bin/grok`, which no harness
+        // here owns. Capturing the whole directory met it and refused, so the
+        // provider could not touch a real installation at all. Scoped to what a
+        // restore can use, the link is never reached.
+        let base = scratch("symlink-outside");
+        let target = base.join("target");
+        fs::create_dir_all(target.join("bin")).unwrap();
+        fs::write(base.join("outside.txt"), "runtime").unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), target.join("bin/grok")).unwrap();
+        fs::write(target.join("config.toml"), "ours").unwrap();
+
+        let pool = Pool::open(&base.join("control"), 2).unwrap();
+        let record = pool.capture(&target, &["config.toml"], record_for).unwrap();
+        let payload = pool.payload_of(&record.backup_ref).unwrap();
+        assert_eq!(
+            fs::read_to_string(payload.join("config.toml")).unwrap(),
+            "ours"
+        );
+        assert!(!payload.join("bin").exists());
     }
 }

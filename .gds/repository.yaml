@@ -34,7 +34,7 @@ product:
       path: "crates/setup-core"
     - change: "the ai-stp provider protocol v3 wire boundary"
       path: "crates/provider-v3"
-    - change: "the provider command runtime shared by all five systems"
+    - change: "the provider command runtime every setup system shares"
       path: "crates/harness-runtime"
     - change: "this harness's verified facts"
       path: "crates/pi-setup-system"

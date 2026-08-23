@@ -111,7 +111,7 @@ jobs:
         shell: bash
     steps:
       - name: Collect the built binaries
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: staging
           merge-multiple: true
@@ -123,7 +123,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Attest the binaries to this commit and this run
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: 'staging/pi-setup-system-*'
 
