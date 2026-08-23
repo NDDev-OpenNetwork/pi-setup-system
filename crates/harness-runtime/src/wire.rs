@@ -235,6 +235,20 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         &pool.partial_slots()?,
     )?;
 
+    // Read the deadline before promising anything. A plan carrying an expiry
+    // this build cannot parse is a plan that can never authorize an apply, and
+    // handing one back is a refusal deferred to the moment it costs most.
+    if expiry::parse_utc_seconds(&request.expires_at).is_none() {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            format!(
+                "the expiry {:?} is not the exact shape YYYY-MM-DDTHH:MM:SS.mmmZ, \
+                 so no plan made from it could ever be applied",
+                request.expires_at
+            ),
+        ));
+    }
+
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
     let profile = harness.projection_profile()?;
     let build_digest = harness.build_digest()?;
@@ -404,11 +418,26 @@ fn apply(
     let artifact = load_plan(plan_path, plan_digest)?;
     let operation = operation_of(&artifact)?;
     let expires_at = string_field(&artifact, "expires_at")?;
-    if expiry::has_expired(&expires_at, SystemTime::now()) {
-        return Err(Error::refuse(
-            WireReason::Stale,
-            "this plan expired before it was applied; no effect was made",
-        ));
+    // Both refusals are `stale` and both are fail-closed, but they are not the
+    // same problem, and saying "expired" to someone whose timestamp simply did
+    // not parse sends them to look at a clock instead of at a format. Costing
+    // an hour of that is how the distinction earned its two lines.
+    match expiry::parse_utc_seconds(&expires_at) {
+        None => {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                format!(
+                    "the plan's expiry {expires_at:?} is not the exact shape YYYY-MM-DDTHH:MM:SS.mmmZ, so no authorization could be read from it; no effect was made"
+                ),
+            ));
+        }
+        Some(_) if expiry::has_expired(&expires_at, SystemTime::now()) => {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                "this plan expired before it was applied; no effect was made",
+            ));
+        }
+        Some(_) => {}
     }
 
     let effect = match operation {
@@ -1017,6 +1046,35 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             before
+        );
+    }
+
+    #[test]
+    fn an_unreadable_expiry_says_so_instead_of_claiming_the_plan_expired() {
+        // Both refusals are `stale` and both are right to refuse. What differs
+        // is where the reader is sent to look: a clock, or a format. Being told
+        // "expired" about a deadline half an hour in the future costs an hour.
+        let target = seeded("expiry-shape");
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                // Valid RFC 3339, and still not the shape the consumer emits.
+                "--expires-at",
+                "2026-08-23T22:21:39Z",
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::Stale));
+        assert!(
+            error.detail().contains("not the exact shape"),
+            "{}",
+            error.detail()
         );
     }
 
