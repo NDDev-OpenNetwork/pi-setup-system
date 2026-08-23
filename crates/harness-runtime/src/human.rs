@@ -883,6 +883,39 @@ mod tests {
     }
 
     #[test]
+    fn a_setup_installed_into_an_otherwise_empty_target_becomes_its_identity() {
+        // The strongest statement this design can make: a target holding nothing
+        // but one setup *is* that setup, byte for byte. If these ever diverge,
+        // either the materializer changed something on the way in or the digest
+        // is measuring something other than what was written.
+        let base = scratch("identity-equals-definition");
+        let catalog = base.join("setups");
+        fs::create_dir_all(&catalog).unwrap();
+        write_setup(
+            &catalog,
+            "exact",
+            &[("AGENTS.md", "# exact\n"), ("skills/a.md", "one")],
+        );
+        let target = base.join("target");
+
+        let setup = setup_at(&catalog, "exact");
+        mutate(
+            &harness(),
+            &target,
+            Operation::Install,
+            Effect::Materialize { setup: &setup },
+            Some("exact"),
+        )
+        .unwrap();
+
+        let resolved = Target::resolve(&target, harness().control_directory).unwrap();
+        let identity = resolved
+            .identity_digest_excluding(&harness().not_our_identity())
+            .unwrap();
+        assert_eq!(identity, setup.definition_digest);
+    }
+
+    #[test]
     fn selecting_another_setup_reaches_its_complete_state_not_a_merge() {
         // baseline ships settings.json and minimal does not, so after selecting
         // minimal that file must be gone. A merge would leave it behind, and the
