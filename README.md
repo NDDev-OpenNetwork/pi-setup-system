@@ -138,6 +138,19 @@ ai-stp provider conformance --harness pi \
 Building it yourself is equally supported and produces the same binary; a
 release is a convenience, not the authorised copy.
 
+### As a container
+
+```bash
+docker run --rm -v "$HOME/.config:/config" \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.1 \
+  status --target /config/<dir> --json
+```
+
+Distroless and non-root, holding this binary and nothing else — no shell, no
+package manager. `linux/amd64` and `linux/arm64`, built from the same artifacts
+the release carries rather than compiled again, so the attestation on the image
+and the attestation on the binary are true of the same bytes.
+
 ## Building
 
 ```bash

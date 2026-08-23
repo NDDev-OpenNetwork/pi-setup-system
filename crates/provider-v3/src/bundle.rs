@@ -114,6 +114,31 @@ pub enum FileKind {
     Unknown,
 }
 
+/// What a compiler says it turned each component into.
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
+pub struct ConversionReport {
+    /// Whether every component was converted.
+    #[serde(default)]
+    pub complete: bool,
+    /// One entry per component.
+    #[serde(default)]
+    pub entries: Vec<ConversionEntry>,
+}
+
+/// One component, and the kind the compiler assigned it.
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
+pub struct ConversionEntry {
+    /// The component's stable identity.
+    #[serde(default)]
+    pub stable_id: String,
+    /// The component kind. Checked against what a provider declares.
+    #[serde(default)]
+    pub component_type: String,
+    /// Where it was written, relative to the target.
+    #[serde(default)]
+    pub native_surface: String,
+}
+
 /// One record in the bundle's file manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BundleFile {
@@ -173,6 +198,15 @@ pub struct Manifest {
     /// The digest of the compiler's input.
     #[serde(default)]
     pub input_digest: String,
+    /// What the compiler turned each component into.
+    ///
+    /// This is the only place a component's *kind* is stated: the manifest does
+    /// not carry kinds and the setup passport carries references without them.
+    /// A provider that never reads this cannot tell that it has been handed a
+    /// kind it does not implement -- and a hostile bundle declaring one is
+    /// exactly the case the consumer's corpus drives.
+    #[serde(default)]
+    pub conversion_report: ConversionReport,
     /// Every path this bundle is allowed to write.
     #[serde(default)]
     pub managed_paths: Vec<String>,
