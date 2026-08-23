@@ -119,7 +119,30 @@ impl Target {
     ///
     /// Propagates the refusal from the tree walk.
     pub fn identity_digest(&self) -> Result<String> {
-        digest::of_tree_excluding(&self.root, &[self.control_directory_name.as_str()])
+        self.identity_digest_excluding(&[])
+    }
+
+    /// The identity digest, also skipping the named top-level entries.
+    ///
+    /// Two kinds of entry belong here beyond the control directory.
+    ///
+    /// The provider's own **state file** sits in the target root, so counting it
+    /// would make every applied operation leave the target different from the
+    /// identity that operation just recorded — the target would read as drifted
+    /// the instant it became clean.
+    ///
+    /// Paths the provider **never touches** belong here too. A product rewrites
+    /// its own credentials and session history constantly; letting that traffic
+    /// move the identity would make a plan go stale between planning and
+    /// applying for a change no effect of ours would have overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the refusal from the tree walk.
+    pub fn identity_digest_excluding(&self, also_excluded: &[&str]) -> Result<String> {
+        let mut excluded = vec![self.control_directory_name.as_str()];
+        excluded.extend_from_slice(also_excluded);
+        digest::of_tree_excluding(&self.root, &excluded)
     }
 }
 
@@ -203,6 +226,23 @@ mod tests {
         let control = target.ensure_control_directory().unwrap();
         assert_eq!(control, base.join(".ctl"));
         assert!(control.is_dir());
+    }
+
+    #[test]
+    fn identity_can_also_ignore_the_state_file_it_describes() {
+        // Counting it would make an applied operation leave the target different
+        // from the identity it just recorded.
+        let base = scratch("identity-state");
+        fs::write(base.join("kept.txt"), "value").unwrap();
+        let target = Target::resolve(&base, ".ctl").unwrap();
+        let before = target.identity_digest_excluding(&["STATE.json"]).unwrap();
+
+        fs::write(base.join("STATE.json"), "{\"state_schema\":3}").unwrap();
+        assert_eq!(
+            target.identity_digest_excluding(&["STATE.json"]).unwrap(),
+            before
+        );
+        assert_ne!(target.identity_digest().unwrap(), before);
     }
 
     #[test]
