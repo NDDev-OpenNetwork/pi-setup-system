@@ -44,8 +44,6 @@ Point `PI_SETUP_SYSTEM_SETUP_CATALOG` at a directory to use setups of your own.
 
 ## What it manages
 
-## What it manages
-
 | | |
 | --- | --- |
 | Product | Pi Coding Agent (Earendil Works) |
