@@ -176,3 +176,75 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --notes-file notes.md
+
+  package:
+    name: package
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # The only job here that may write a package, and it may not write the
+      # release; `publish` may write the release and not a package.
+      packages: write
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect the built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: incoming
+          merge-multiple: true
+
+      # Docker names architectures `amd64` and `arm64`; Rust names the same
+      # machines `x86_64` and `aarch64`. Staging under Docker's names lets the
+      # Dockerfile copy by `$TARGETARCH` without a mapping table that would then
+      # have to be kept right in two places.
+      - name: Stage the Linux binaries under the names Docker uses
+        run: |
+          mkdir -p staging/amd64 staging/arm64
+          cp "incoming/pi-setup-system-x86_64-unknown-linux-gnu"  "staging/amd64/pi-setup-system"
+          cp "incoming/pi-setup-system-aarch64-unknown-linux-gnu" "staging/arm64/pi-setup-system"
+          chmod +x staging/amd64/pi-setup-system staging/arm64/pi-setup-system
+
+      - name: Sign in to the registry
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Build and push both architectures
+        id: push
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          docker buildx create --use --name release >/dev/null 2>&1 || docker buildx use release
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag "$image:$TAG" \
+            --tag "$image:latest" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.version="$TAG" \
+            --label org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --provenance=true --sbom=true \
+            --push .
+          digest=$(docker buildx imagetools inspect "$image:$TAG" --raw | sha256sum | cut -d' ' -f1)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the image to this commit and this run
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

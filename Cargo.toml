@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -19,9 +19,9 @@ authors = ["Danil Silantyev / NDDev"]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
-setup-core = { path = "crates/setup-core", version = "0.1.0" }
-provider-v3 = { path = "crates/provider-v3", version = "0.1.0" }
-harness-runtime = { path = "crates/harness-runtime", version = "0.1.0" }
+setup-core = { path = "crates/setup-core", version = "0.0.1" }
+provider-v3 = { path = "crates/provider-v3", version = "0.0.1" }
+harness-runtime = { path = "crates/harness-runtime", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

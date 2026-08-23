@@ -91,7 +91,37 @@ fn verified_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<Bundle> {
         },
     )?;
     check_within_surface(harness, verified.files.keys())?;
+    check_declared_kinds(harness, &verified)?;
     Ok(verified)
+}
+
+/// Every component kind a bundle names must be one this harness implements.
+///
+/// The kind is not in the manifest and not in the setup passport -- the passport
+/// carries component references without kinds. It is stated once, in the
+/// conversion report, which is why a provider that never reads that report
+/// cannot tell it has been handed a kind it does not implement. It would simply
+/// write the files and report success for a component it does not understand.
+fn check_declared_kinds(harness: &Harness, bundle: &Bundle) -> Result<()> {
+    for entry in &bundle.manifest.conversion_report.entries {
+        if entry.component_type.is_empty() {
+            continue;
+        }
+        let known = harness
+            .component_kinds
+            .iter()
+            .any(|kind| kind.as_str() == entry.component_type);
+        if !known {
+            return Err(Error::refuse(
+                WireReason::UnsupportedComponentKind,
+                format!(
+                    "the bundle declares component {:?} as kind {:?}, which {} does not implement",
+                    entry.stable_id, entry.component_type, harness.provider_id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Every path a bundle writes must be one this harness owns.
@@ -1044,6 +1074,39 @@ mod tests {
     }
 
     #[test]
+    fn a_component_kind_this_build_does_not_implement_is_refused() {
+        // The kind lives only in the conversion report: the manifest carries
+        // none and the passport carries references without them. A provider
+        // that does not read that report writes the files and reports success
+        // for a component it does not understand.
+        let target = seeded("kind");
+        let (bytes, digest, artifact) =
+            bundle_bytes_declaring(&[("AGENTS.md", "x", 0o644)], Some("quantum-manifest"));
+        let path = target.join("..").join("kind.zip");
+        fs::write(&path, &bytes).unwrap();
+        let flags = bundle_flags(&path, &digest, &artifact, bytes.len());
+        let answer = run(args(
+            "validate-bundle",
+            &target,
+            &flags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        assert_eq!(answer["rejected"], true, "{answer}");
+        assert_eq!(answer["reason"], "unsupported_component_kind");
+
+        // A kind this harness does implement still passes.
+        let (bytes, digest, artifact) =
+            bundle_bytes_declaring(&[("AGENTS.md", "x", 0o644)], Some("instruction"));
+        fs::write(&path, &bytes).unwrap();
+        let flags = bundle_flags(&path, &digest, &artifact, bytes.len());
+        let ok = run(args(
+            "validate-bundle",
+            &target,
+            &flags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        assert_eq!(ok["valid"], true, "{ok}");
+    }
+
+    #[test]
     fn a_nested_namespace_is_owned_all_the_way_down() {
         // Codex declares `.agents/skills` and nothing else under `.agents`.
         // Matching on the first path component alone read that as `.agents`,
@@ -1549,6 +1612,14 @@ mod tests {
 
     /// Build a canonical bundle whose three identities are internally consistent.
     fn bundle_bytes(files: &[(&str, &str, u32)]) -> (Vec<u8>, String, String) {
+        bundle_bytes_declaring(files, None)
+    }
+
+    /// The same, with a component kind stated in the conversion report.
+    fn bundle_bytes_declaring(
+        files: &[(&str, &str, u32)],
+        kind: Option<&str>,
+    ) -> (Vec<u8>, String, String) {
         use provider_v3::bundle::{BUNDLE_DOMAIN, FILES_PREFIX, MANIFEST_MEMBER, REQUIRED_MEMBERS};
         use provider_v3::zip::build::{Entry, write};
 
@@ -1580,6 +1651,18 @@ mod tests {
                 "max_bundle_bytes": 64 * 1024 * 1024,
             },
         });
+        if let Some(kind) = kind {
+            manifest["conversion_report"] = serde_json::json!({
+                "complete": true,
+                "entries": [{
+                    "stable_id": "component_00000000000000000000000000",
+                    "component_type": kind,
+                    "native_surface": files.first().map_or("", |(path, _, _)| path),
+                    "state": "complete",
+                    "losses": [],
+                }],
+            });
+        }
         let bundle_digest =
             setup_core::digest::of_domain_canonical_json(BUNDLE_DOMAIN, &manifest).unwrap();
         manifest["bundle_digest"] = serde_json::json!(bundle_digest);
