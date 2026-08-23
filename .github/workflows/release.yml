@@ -125,6 +125,8 @@ jobs:
       # workflow that parses as YAML while meaning something else is worse than
       # one that fails outright.
       - name: Compose the release notes
+        env:
+          REPOSITORY: ${{ github.repository }}
         run: |
           cat > notes.md <<'NOTES'
           Binaries for Linux, macOS and Windows, with `SHA256SUMS` and build provenance.
@@ -136,8 +138,15 @@ jobs:
           To check a download came from this commit through this run, without trusting whoever
           published it:
 
-              gh attestation verify <file> --repo NDDev-OpenNetwork/pi-setup-system
+              gh attestation verify <file> --repo REPOSITORY_SLUG
           NOTES
+          # The delimiter is quoted so nothing in the prose expands or runs, and
+          # the repository is filled in afterwards. It is read from the run
+          # rather than written in: a fork publishing its own release must tell
+          # its readers to verify against the fork, not against us. `|` is a
+          # safe delimiter because a repository slug cannot contain one.
+          sed -i "s|REPOSITORY_SLUG|${REPOSITORY}|" notes.md
+          cat notes.md
 
       - name: Publish one immutable release
         env:
