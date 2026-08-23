@@ -10,25 +10,24 @@
 //!
 //! # Why the operating-system lock is not enough on its own
 //!
-//! The advisory lock underneath is POSIX record-lock shaped, and POSIX record
-//! locks are owned by the *process*, not by the open file description. A second
-//! acquisition from inside the same process therefore succeeds and silently
-//! merges with the first — no contention is reported, and two code paths both
-//! believe they hold the target exclusively.
+//! Advisory file locks differ in what they are owned by. A POSIX record lock is
+//! owned by the *process*, so a second acquisition from inside one process
+//! succeeds and silently merges with the first: no contention is reported, and
+//! two code paths both believe they hold the target exclusively. Other flavours
+//! bind to the open file description and do report it.
 //!
-//! That is not a theoretical case here. Each setup system ships one binary with
-//! two surfaces, so a wire command and a human command can reach this lock in
-//! one process. [`HELD_TARGETS`] closes the gap: a path is claimed in-process
-//! first, and only then is the operating-system lock taken for the
-//! cross-process case. Both are released on drop.
+//! This kernel does not depend on which flavour a platform provides. Each setup
+//! system ships one binary with two surfaces, so a wire command and a human
+//! command can reach this lock in one process; [`HELD_TARGETS`] claims the path
+//! in-process first, and only then is the operating-system lock taken for the
+//! cross-process case. Both are released on drop, and the in-process refusal is
+//! the same on every platform.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-
-use fs4::fs_std::FileExt;
 
 use crate::error::{Error, ReasonCode, Result};
 
@@ -99,7 +98,7 @@ impl TargetLock {
                     )
                     .with_source(source)
                 })?;
-            file.try_lock_exclusive().map_err(|source| {
+            file.try_lock().map_err(|source| {
                 Error::new(
                     ReasonCode::LockUnavailable,
                     format!("another process holds {}", path.display()),
@@ -153,7 +152,7 @@ impl Drop for TargetLock {
     fn drop(&mut self) {
         // A failed unlock is not actionable here: the value is going away and
         // the operating system releases the lock when the descriptor closes.
-        let _ = FileExt::unlock(&self.file);
+        let _ = self.file.unlock();
         release_in_process(&self.path);
     }
 }

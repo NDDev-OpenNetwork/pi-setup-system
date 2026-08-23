@@ -28,7 +28,7 @@ jobs:
       test_command: 'cargo test --locked --all-targets'
       fmt_command: 'cargo fmt --all --check'
       clippy_command: 'cargo clippy --locked --all-targets -- -D warnings'
-      msrv_toolchain: '1.85'
+      msrv_toolchain: '1.89'
 
   supply-chain:
     name: supply-chain
