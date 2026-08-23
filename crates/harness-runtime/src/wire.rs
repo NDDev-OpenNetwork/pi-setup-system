@@ -499,7 +499,7 @@ pub(crate) fn perform(
         StateReading::Current(current) => current.setup_stable_id,
         _ => None,
     };
-    let captured = pool.capture(resolved.root(), &harness.never_captured(), |backup_ref| {
+    let captured = pool.capture(resolved.root(), harness.native_namespaces, |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
             backup_ref,
