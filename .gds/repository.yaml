@@ -10,6 +10,7 @@ repository:
 provider:
   type: "github"
   installation: "installation:github-opennetwork"
+  repository_id: 1343827884
   owner: "NDDev-OpenNetwork"
   name: "pi-setup-system"
 
@@ -18,6 +19,23 @@ classification:
     - "portfolio:opennetwork-projects"
   visibility_contract: "public"
   data_classification: "public"
+
+product:
+  purpose: >-
+    An ai-stp provider-protocol v3 setup system for Pi Coding Agent: it
+    installs, reselects, restores and removes a complete harness configuration
+    in a caller-named target directory, and owns the program lifecycle as well as the configuration.
+  capabilities:
+    - "install, reinstall and reselect a complete harness setup"
+    - "restore the last backup or a chosen one by reference"
+    - "recover an interrupted mutation from its durable journal"
+  entrypoints:
+    - change: "the shared lock, journal, backup and atomic-apply kernel"
+      path: "crates/setup-core"
+    - change: "the harness adapter and both command surfaces"
+      path: "crates/pi-setup-system"
+    - change: "the setup catalog"
+      path: "setups"
 
 policy:
   profiles:
@@ -34,6 +52,8 @@ git:
 
 verification:
   commands:
+    build:
+      - "cargo build --locked --all-targets"
     test:
       - "cargo test --locked --all-targets"
     lint:
@@ -53,9 +73,3 @@ agent:
 release:
   mode: "github-release"
   tag_style: "semver"
-
-harness:
-  harness_id: "pi"
-  product: "Pi Coding Agent"
-  protocol: "ai-stp-provider-protocol/3"
-  owns_software_lifecycle: true
