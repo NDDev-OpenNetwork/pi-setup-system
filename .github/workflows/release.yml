@@ -1,0 +1,166 @@
+name: release
+
+# Publishing is not a gate. The licence permits anyone to build and
+# redistribute this program, and the binaries here are a convenience for people
+# who would rather not. Nothing signs on anyone's behalf and nothing here is
+# required in order to run it.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          toolchain: '1.97.1'
+          # This action caches by default, and a release must not build on top
+          # of a cache. A run with weaker trust than this one can write the
+          # cache a release would restore, so a poisoned entry would be baked
+          # into a published binary and then attested as having come from this
+          # commit -- which it would not have, entirely. Releases are rare; a
+          # cold build is the cheap half of that trade.
+          cache: false
+
+      # A release whose tag disagrees with the version it builds is a trap that
+      # surfaces months later, in a report about the wrong binary. Checked on
+      # Linux only, and once is enough: the tag and the crate version are the
+      # same on every runner, and `python3` is not on PATH on the Windows image
+      # -- only `python` is -- so running it on all three would fail there for a
+      # reason that has nothing to do with the release.
+      - name: Refuse a tag that does not match the crate version
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "pi-setup-system"))')
+          if [ "$version" != "$TAG" ]; then
+            echo "tag $TAG does not match crate version $version" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked --bin pi-setup-system
+
+      - name: Name the artifact after what it runs on
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          mkdir -p dist
+          cp "target/release/pi-setup-system${SUFFIX}" "dist/pi-setup-system-${TARGET}${SUFFIX}"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pi-setup-system-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # Provenance is what replaces a trusted publisher here: it is minted by
+      # GitHub for this run, and anyone can check it without knowing us.
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Collect the built binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5.0.0
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: Checksum every asset
+        working-directory: staging
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest the binaries to this commit and this run
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: 'staging/pi-setup-system-*'
+
+      # Written to a file rather than passed inline: a multi-line `--notes`
+      # argument has to escape the YAML block scalar to stay readable, and a
+      # workflow that parses as YAML while meaning something else is worse than
+      # one that fails outright.
+      - name: Compose the release notes
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Binaries for Linux, macOS and Windows, with `SHA256SUMS` and build provenance.
+
+          This program is AGPL-3.0-or-later and its source is public. `cargo build --release --locked`
+          at this tag produces these binaries, and building it yourself is fully supported --
+          these are a convenience, not the authorised copy.
+
+          To check a download came from this commit through this run, without trusting whoever
+          published it:
+
+              gh attestation verify <file> --repo REPOSITORY_SLUG
+          NOTES
+          # The delimiter is quoted so nothing in the prose expands or runs, and
+          # the repository is filled in afterwards. It is read from the run
+          # rather than written in: a fork publishing its own release must tell
+          # its readers to verify against the fork, not against us. `|` is a
+          # safe delimiter because a repository slug cannot contain one.
+          sed -i "s|REPOSITORY_SLUG|${REPOSITORY}|" notes.md
+          cat notes.md
+
+      - name: Publish one immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" staging/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file notes.md

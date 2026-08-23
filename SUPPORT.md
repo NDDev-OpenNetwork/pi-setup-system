@@ -20,10 +20,15 @@ slot holds whatever the target held when it was captured.
 
 ## What is not supported
 
-This build applies `backup`, `restore` and `remove`. `install` and `replace` are
-planned and then refuse, because no reader for `ai-stp-bundle/1` ships yet — that
-is a known limitation, not a defect. The software lifecycle and `launch` are not
-declared at all.
+The software lifecycle — installing, updating or removing the product itself —
+and `launch` are optional in the provider contract and are not declared here,
+because this build does not perform them. A provider that advertised them would
+let a caller ask for something that cannot be honoured, which is worse than not
+offering them.
+
+All five core operations do work: `backup`, `restore`, `remove`, `install` and
+`replace`, both from the local setup catalog and from an `ai-stp-bundle/1`
+arriving over the wire.
 
 ## Response
 
