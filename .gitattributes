@@ -1,0 +1,8 @@
+# Ordinary text is normalized to LF in the repository.
+* text=auto eol=lf
+
+# These bytes are content-addressed. A checkout that rewrote them would make
+# the file fail verification against the digest that names it, on Windows only,
+# where the rewrite happens.
+provider-kit/** -text
+references/** -text
