@@ -29,6 +29,7 @@ use setup_core::stamp::{DriftState, ProviderState, STATE_SCHEMA, StateReading};
 use setup_core::target::Target;
 use setup_core::{digest, lock};
 
+use crate::catalog::Setup;
 use crate::expiry;
 use crate::facts::{self, Harness};
 
@@ -253,7 +254,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
 }
 
 /// The backup a restore names, or the newest when it names none.
-fn chosen_backup(pool: &Pool, requested: Option<&str>) -> Result<SlotRecord> {
+pub(crate) fn chosen_backup(pool: &Pool, requested: Option<&str>) -> Result<SlotRecord> {
     match requested {
         Some(text) => {
             let reference = BackupRef::parse(text)?;
@@ -277,6 +278,43 @@ fn chosen_backup(pool: &Pool, requested: Option<&str>) -> Result<SlotRecord> {
 }
 
 /// Apply one exact plan under the target lock.
+/// What a mutation actually does to the target once the lock is held.
+///
+/// Every variant runs through the same sequence in [`perform`]. Adding one here
+/// is the only way to add an effect, which is what keeps the human surface and
+/// the wire surface from growing separate write paths that could disagree.
+pub(crate) enum Effect<'a> {
+    /// The capture is the whole effect; nothing else is written.
+    Backup,
+    /// Put a captured tree back over the namespaces this provider owns.
+    Restore {
+        /// The slot to read, or the newest when absent.
+        backup_ref: Option<String>,
+    },
+    /// Withdraw everything this provider owns.
+    Remove,
+    /// Write a complete setup from the local catalog over those namespaces.
+    Materialize {
+        /// The setup to write.
+        setup: &'a Setup,
+    },
+}
+
+/// One authorized mutation, whatever surface asked for it.
+pub(crate) struct Mutation<'a> {
+    pub operation: Operation,
+    pub operation_id: String,
+    pub plan_digest: String,
+    /// The identity the plan was made against. Re-checked once the lock is held.
+    pub expected_target_digest: String,
+    pub effect: Effect<'a>,
+    /// The plan artifact, recorded into provider state as provenance.
+    pub provenance: serde_json::Value,
+    /// The setup identity this mutation leaves applied, when there is one.
+    pub setup_id: Option<String>,
+}
+
+/// Apply one exact plan under the target lock.
 fn apply(
     harness: &Harness,
     target: &Path,
@@ -293,17 +331,62 @@ fn apply(
         ));
     }
 
+    let effect = match operation {
+        Operation::Backup => Effect::Backup,
+        Operation::Restore => Effect::Restore {
+            backup_ref: artifact
+                .get("backup_ref")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        },
+        Operation::Remove => Effect::Remove,
+        other => {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "{other} arrives over the wire as a bundle, and this build carries no \
+                     reader for {}; the same operation from the local catalog is available \
+                     through the human surface",
+                    facts::BUNDLE_FORMAT
+                ),
+            ));
+        }
+    };
+
+    perform(
+        harness,
+        target,
+        &Mutation {
+            operation,
+            operation_id: string_field(&artifact, "operation_id")?,
+            plan_digest: plan_digest.to_owned(),
+            expected_target_digest: string_field(&artifact, "expected_target_digest")?,
+            effect,
+            setup_id: None,
+            provenance: artifact,
+        },
+    )
+}
+
+/// The one write path. Lock, re-check, capture, journal, act, verify, commit.
+///
+/// Both surfaces come through here. A second sequence would be a second set of
+/// guarantees, and the two would drift.
+pub(crate) fn perform(
+    harness: &Harness,
+    target: &Path,
+    mutation: &Mutation<'_>,
+) -> Result<serde_json::Value> {
     let (resolved, control, pool) = open(harness, target)?;
     let mut guard = setup_core::lock::TargetLock::acquire(&control)?;
     guard.annotate(&format!(
         "{} {}",
-        harness.provider_id,
-        string_field(&artifact, "operation_id")?
+        harness.provider_id, mutation.operation_id
     ))?;
 
     // Re-check after the lock: everything observed before it could have moved.
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
-    if identity != string_field(&artifact, "expected_target_digest")? {
+    if identity != mutation.expected_target_digest {
         return Err(Error::refuse(
             WireReason::Stale,
             "the target changed after the lock was taken; no effect was made",
@@ -315,55 +398,74 @@ fn apply(
         &pool.partial_slots()?,
     )?;
 
-    let operation_id = string_field(&artifact, "operation_id")?;
+    let operation_id = mutation.operation_id.clone();
+    let operation_name = mutation.operation.as_str().to_owned();
+    let previous_setup = match ProviderState::read(resolved.root(), harness.state_file)? {
+        StateReading::Current(current) => current.setup_stable_id,
+        _ => None,
+    };
     let captured = pool.capture(resolved.root(), &harness.never_captured(), |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
             backup_ref,
-            operation: operation.as_str().to_owned(),
+            operation: operation_name.clone(),
             operation_id: operation_id.clone(),
             target_identity_digest: identity.clone(),
-            setup_id: None,
+            setup_id: previous_setup.clone(),
         }
     })?;
 
     let journal = Journal {
         schema_version: JOURNAL_SCHEMA,
         phase: Phase::Prepared,
-        operation_id: operation_id.clone(),
-        operation: operation.as_str().to_owned(),
-        plan_digest: plan_digest.to_owned(),
+        operation_id: mutation.operation_id.clone(),
+        operation: mutation.operation.as_str().to_owned(),
+        plan_digest: mutation.plan_digest.clone(),
         target_precondition_digest: identity.clone(),
         backup_ref: Some(captured.backup_ref.as_str().to_owned()),
     }
     .publish_prepared(&control)?;
 
-    let effect = match operation {
+    let outcome = match &mutation.effect {
         // The capture above *is* the effect. Nothing else is written.
-        Operation::Backup => Ok(()),
-        Operation::Restore => restore_from(harness, &resolved, &pool, &artifact),
-        Operation::Remove => remove_managed(harness, &resolved),
-        other => Err(Error::refuse(
-            WireReason::ProviderUnavailable,
-            format!("{other} is planned but not applied by this build"),
-        )),
+        Effect::Backup => Ok(()),
+        Effect::Restore { backup_ref } => {
+            let record = chosen_backup(&pool, backup_ref.as_deref())?;
+            let payload = pool.payload_of(&record.backup_ref)?;
+            replace_managed_from(harness, &resolved, &payload)
+        }
+        Effect::Remove => remove_managed(harness, &resolved),
+        Effect::Materialize { setup } => {
+            setup.check_within(harness)?;
+            replace_managed_from(harness, &resolved, &setup.payload)
+        }
     };
 
     // On failure the journal stays in `prepared`, which is what makes the
     // interruption legible: recovery restores the captured pre-operation target.
-    effect?;
+    outcome?;
 
     let after = resolved.identity_digest_excluding(&harness.not_our_identity())?;
-    write_state(harness, &resolved, &artifact, &identity, &after, &captured)?;
+    write_state(
+        harness,
+        &resolved,
+        &mutation.provenance,
+        &identity,
+        &after,
+        &captured,
+        mutation.setup_id.as_deref(),
+    )?;
     journal.promote_to_committed(&control)?;
     Journal::clear(&control)?;
 
     Ok(serde_json::json!({
         "state": "verified",
-        "plan_digest": plan_digest,
+        "operation": mutation.operation.as_str(),
+        "plan_digest": mutation.plan_digest,
         "expected_target_digest": identity,
         "target_identity_digest": after,
         "backup_ref": captured.backup_ref.as_str(),
+        "setup_id": mutation.setup_id,
     }))
 }
 
@@ -412,22 +514,6 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             }))
         }
     }
-}
-
-fn restore_from(
-    harness: &Harness,
-    target: &Target,
-    pool: &Pool,
-    artifact: &serde_json::Value,
-) -> Result<()> {
-    let reference = artifact
-        .get("backup_ref")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            Error::refuse(WireReason::ProviderUnavailable, "the plan names no backup")
-        })?;
-    let payload = pool.payload_of(&BackupRef::parse(reference)?)?;
-    replace_managed_from(harness, target, &payload)
 }
 
 /// Replace this provider's namespaces from a captured tree.
@@ -494,6 +580,7 @@ fn write_state(
     before: &str,
     after: &str,
     captured: &SlotRecord,
+    setup_id: Option<&str>,
 ) -> Result<()> {
     let previous = match ProviderState::read(target.root(), harness.state_file)? {
         StateReading::Current(current) => Some(current.target_identity_digest),
@@ -512,7 +599,7 @@ fn write_state(
         harness_id: harness.harness_id.to_owned(),
         canonical_target: target.root().to_string_lossy().into_owned(),
         target_identity_digest: after.to_owned(),
-        setup_stable_id: None,
+        setup_stable_id: setup_id.map(str::to_owned),
         setup_version: None,
         setup_version_passport_digest: None,
         setup_definition_digest: None,
@@ -590,20 +677,18 @@ fn string_field(artifact: &serde_json::Value, name: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+pub(crate) mod tests_support {
+    //! A harness shaped like a real one, shared by the tests in this crate.
+    //!
+    //! Exercising the runtime through a fabricated harness rather than a real
+    //! product's facts keeps these tests about the runtime. A change to what
+    //! Claude Code or Codex owns should not move them.
 
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    use provider_v3::argv;
     use provider_v3::{ComponentKind, ProjectionKind};
 
-    use super::*;
+    use crate::facts::Harness;
 
-    /// A harness shaped like a real one, so these tests exercise the runtime
-    /// every setup system shares rather than any single product's facts.
-    const TEST: Harness = Harness {
+    pub(crate) const TEST: Harness = Harness {
         harness_id: "test",
         provider_id: "test-setup-system",
         version: "0.1.0",
@@ -627,6 +712,20 @@ mod tests {
         max_bytes: 64 * 1024 * 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use provider_v3::argv;
+
+    use super::*;
+
+    use crate::wire::tests_support::TEST;
 
     const RELEASE: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 

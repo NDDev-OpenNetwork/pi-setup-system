@@ -20,4 +20,16 @@ Component kinds and projection kinds are owned by
 written in prose in a second place diverges from the executable source, and the
 divergence is found only after someone has implemented the prose.
 
-No setups are published in this tree yet.
+## What ships here
+
+```text
+setups/
+  <setup-id>/
+    setup.json    identity and description
+    home/         copied verbatim into the target
+```
+
+A setup's identity is its content: two setups with the same bytes have the same
+definition digest whatever they are called. A setup that would write outside the
+entries this provider owns is refused before anything is written — otherwise it
+would leave files `remove` does not withdraw and `status` does not account for.

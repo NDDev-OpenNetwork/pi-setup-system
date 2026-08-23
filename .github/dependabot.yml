@@ -7,6 +7,13 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    # A version published minutes ago has been reviewed by nobody. The cooldown
+    # is the cheapest defence against a compromised release being pulled in
+    # before anyone has looked at it, and costs only a few days of latency on
+    # updates that were never urgent.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
 
   # The reusable workflows are pinned to a commit, never a tag, so a moved tag
   # cannot change what runs. Refreshing that pin is a reviewed change.
@@ -17,3 +24,8 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(ci)"
+    # Only `default-days` here: Dependabot rejects `semver-major-days` for the
+    # github-actions ecosystem, which has no semver-major notion in its cooldown
+    # model. Its own validator says so, and it is right to.
+    cooldown:
+      default-days: 7

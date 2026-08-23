@@ -84,6 +84,57 @@ pub fn has_expired(expires_at: &str, now: SystemTime) -> bool {
     seconds > deadline
 }
 
+/// Render an instant as the exact shape the consumer emits.
+///
+/// The inverse of [`parse_utc_seconds`], and tested against it: a value this
+/// writes must be a value that parses, or a plan this build makes could not be
+/// applied by this build.
+#[must_use]
+pub fn format_utc(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute, second) = (rest / 3_600, (rest % 3_600) / 60, rest % 60);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.000Z")
+}
+
+/// Seconds from now, as a deadline in the consumer's shape.
+///
+/// A clock before 1970 yields the epoch rather than a negative instant: a
+/// deadline that cannot be represented is treated as already past, which makes
+/// the plan refuse rather than apply on a machine whose clock is wrong.
+#[must_use]
+pub fn deadline_in(seconds: u64, now: SystemTime) -> String {
+    let Ok(elapsed) = now.duration_since(UNIX_EPOCH) else {
+        return format_utc(0);
+    };
+    let base = i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX);
+    format_utc(base.saturating_add(i64::try_from(seconds).unwrap_or(0)))
+}
+
+/// The civil date for a day count since 1970-01-01, by Hinnant's algorithm.
+const fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
 fn number(text: &str) -> Option<i64> {
     if !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -176,6 +227,27 @@ mod tests {
         assert!(!has_expired("2026-08-23T15:04:05.123Z", now));
         assert!(!has_expired("2026-08-23T15:04:06.000Z", now));
         assert!(has_expired("2026-08-23T15:04:04.999Z", now));
+    }
+
+    #[test]
+    fn what_this_writes_is_what_it_parses() {
+        // A plan this build makes must be one this build can apply.
+        for seconds in [0_i64, 1_787_497_445, 4_102_444_800, 1_709_164_800] {
+            let text = format_utc(seconds);
+            assert_eq!(
+                parse_utc_seconds(&text),
+                Some(seconds),
+                "round trip failed for {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deadline_lands_the_requested_distance_ahead() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_787_497_445);
+        let text = deadline_in(600, now);
+        assert_eq!(parse_utc_seconds(&text), Some(1_787_498_045));
+        assert!(!has_expired(&text, now));
     }
 
     #[test]

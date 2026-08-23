@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "id": "minimal",
+  "description": "Instructions only; the product keeps its own defaults."
+}
