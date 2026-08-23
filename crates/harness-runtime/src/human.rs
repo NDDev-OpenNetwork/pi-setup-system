@@ -590,6 +590,12 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
                 None => "restore the target from the most recent backup".to_owned(),
             },
         ],
+        // The human surface never builds one of these: a bundle arrives over the
+        // wire, and the plan for it is made there.
+        Effect::MaterializeBundle { files } => vec![
+            capture,
+            format!("write the {} files the bundle declares", files.len()),
+        ],
         Effect::Materialize { setup } => vec![
             capture,
             format!(

@@ -7,11 +7,10 @@ the whole configuration — not a pointer to somewhere the content really lives.
 That is what makes restore mean something: it returns the instructions, skills,
 agents, commands, hooks, MCP entries and settings together, in one step.
 
-> **Status: usable.** The commands below work end to end. What is not here yet
-> is reading a `HarnessBundle` over the wire, so `install` and `replace` arrive
-> from the local catalog rather than from ai-stp; the wire forms of those two
-> refuse and say so. The software lifecycle and `launch` are not declared,
-> because this build does not perform them.
+> **Status: complete for the five core operations.** `install`, `replace`,
+> `backup`, `restore` and `remove` all work, over the wire and from the local
+> catalog. The software lifecycle and `launch` are optional in the contract and
+> are not declared, because this build does not perform them.
 
 ## Using it
 
@@ -38,7 +37,8 @@ existed when you asked — not the one the restore itself just took.
 
 **Selecting a setup reaches its complete state, not a merge.** If the setup you
 leave owned a file the one you choose does not, that file goes. A target is
-always exactly one setup plus whatever this provider never claimed.
+always exactly one setup plus whatever this provider never claimed. A bundle
+arriving over the wire is materialized the same way, for the same reason.
 
 Point `PI_SETUP_SYSTEM_SETUP_CATALOG` at a directory to use setups of your own.
 

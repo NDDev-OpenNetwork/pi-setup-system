@@ -5,22 +5,24 @@
 //! belong to [`setup_core`], and repeating any of them here would create a
 //! second answer that could disagree with the first.
 //!
-//! # What this build applies, and what it refuses
+//! # What each operation does
 //!
 //! `backup`, `restore` and `remove` need no bundle: they read the target, a
-//! backup slot, or the provider's own state. They are implemented.
+//! backup slot, or the provider's own state.
 //!
-//! `install` and `replace` materialize bundle contents, which needs a reader for
-//! the bundle format. Until that exists they refuse with a detail saying so.
-//! They stay *declared* because the contract requires all five core operations
-//! in `provider-info`, and a refusal that names the real limitation is honest in
-//! a way that a narrowed declaration could not be.
+//! `install` and `replace` materialize an `ai-stp-bundle/1`. It is read and
+//! checked in full — raw digest, canonical archive shape, manifest identity,
+//! every file's digest and mode, every path — *before* the lock is taken, and
+//! again before the effect runs: the plan authorized an identity, not a file
+//! that might have changed on disk since.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
-use provider_v3::argv::{Bundle, Invocation, PlanRequest};
+use provider_v3::argv::{Bundle as ArgvBundle, Invocation, PlanRequest};
+use provider_v3::bundle::{Bundle, Claim};
 use provider_v3::plan::{PlanArtifact, PlanInputs};
 use provider_v3::{Error, Operation, Result, WireReason};
 use setup_core::backup::{BackupRef, Pool, SLOT_SCHEMA, SlotRecord};
@@ -53,14 +55,67 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             target,
             plan_path,
             plan_digest,
+            bundle,
             ..
-        } => apply(harness, &target, &plan_path, &plan_digest),
+        } => apply(harness, &target, &plan_path, &plan_digest, bundle.as_ref()),
         Invocation::RecoverOperation { target } => recover(harness, &target),
         Invocation::Launch { .. } => Err(Error::refuse(
             WireReason::UnsupportedOperation,
             "this provider owns the configuration only and does not start the product",
         )),
     }
+}
+
+/// Read the bytes a caller pointed at and check them against its exact claim.
+///
+/// Every refusal here happens before the lock is taken, let alone before
+/// anything is written: a bundle is either wholly acceptable or not applied.
+fn verified_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<Bundle> {
+    let bytes = fs::read(&bundle.path).map_err(|source| {
+        Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "cannot read the bundle at {}: {source}",
+                bundle.path.display()
+            ),
+        )
+    })?;
+    let verified = Bundle::read(
+        &bytes,
+        Claim {
+            bundle_format: &bundle.binding.bundle_format,
+            bundle_digest: &bundle.binding.bundle_digest,
+            artifact_digest: &bundle.binding.artifact_digest,
+            bundle_size: bundle.binding.bundle_size,
+            harness_id: harness.harness_id,
+        },
+    )?;
+    check_within_surface(harness, verified.files.keys())?;
+    Ok(verified)
+}
+
+/// Every path a bundle writes must be one this harness owns.
+///
+/// A file outside the declared surface would be installed here and then left
+/// behind by `remove`, and unaccounted for by `status`. Ownership and effect are
+/// the same set or they are nothing.
+fn check_within_surface<'a>(
+    harness: &Harness,
+    paths: impl Iterator<Item = &'a String>,
+) -> Result<()> {
+    for path in paths {
+        let top = path.split('/').next().unwrap_or(path);
+        if !harness.native_namespaces.contains(&top) {
+            return Err(Error::refuse(
+                WireReason::UnsupportedNativeSurface,
+                format!(
+                    "the bundle writes {path:?}, and {} does not own {top:?}",
+                    harness.provider_id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn open(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathBuf, Pool)> {
@@ -125,7 +180,7 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
 }
 
 /// Check a bundle's identity against the bytes the caller pointed at.
-fn validate_bundle(harness: &Harness, bundle: &Bundle) -> Result<serde_json::Value> {
+fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<serde_json::Value> {
     let binding = &bundle.binding;
     if binding.bundle_format != facts::BUNDLE_FORMAT {
         return Ok(provider_v3::plan::bundle_rejected(
@@ -216,14 +271,31 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             None,
         ),
         Operation::Install | Operation::Replace => {
-            return Err(Error::refuse(
-                WireReason::ProviderUnavailable,
+            let Some(named) = request.bundle.as_ref() else {
+                return Err(Error::refuse(
+                    WireReason::UnsupportedBundleFormat,
+                    format!(
+                        "{} arrives as a bundle, and none was named",
+                        request.operation
+                    ),
+                ));
+            };
+            let verified = verified_bundle(harness, named)?;
+            let mut effects = vec![
+                "capture the current target into a new backup slot".to_owned(),
                 format!(
-                    "{} needs a reader for {}, which this build does not carry yet",
-                    request.operation,
-                    facts::BUNDLE_FORMAT
+                    "write the {} declared files over the entries this provider owns",
+                    verified.files.len()
                 ),
-            ));
+            ];
+            effects.extend(
+                verified
+                    .files
+                    .keys()
+                    .take(16)
+                    .map(|path| format!("write {path}")),
+            );
+            (effects, None, None)
         }
         other => {
             return Err(Error::refuse(
@@ -298,6 +370,14 @@ pub(crate) enum Effect<'a> {
         /// The setup to write.
         setup: &'a Setup,
     },
+    /// Write a verified `HarnessBundle` over those namespaces.
+    ///
+    /// The bundle is read and checked *before* this effect exists, so reaching
+    /// it means every digest, path and limit already held.
+    MaterializeBundle {
+        /// Each declared file's bytes and mode, by target-relative path.
+        files: &'a BTreeMap<String, (Vec<u8>, u32)>,
+    },
 }
 
 /// One authorized mutation, whatever surface asked for it.
@@ -320,7 +400,9 @@ fn apply(
     target: &Path,
     plan_path: &Path,
     plan_digest: &str,
+    bundle: Option<&ArgvBundle>,
 ) -> Result<serde_json::Value> {
+    let verified: Option<Bundle>;
     let artifact = load_plan(plan_path, plan_digest)?;
     let operation = operation_of(&artifact)?;
     let expires_at = string_field(&artifact, "expires_at")?;
@@ -340,15 +422,30 @@ fn apply(
                 .map(str::to_owned),
         },
         Operation::Remove => Effect::Remove,
+        Operation::Install | Operation::Replace => {
+            let Some(named) = bundle.as_ref() else {
+                return Err(Error::refuse(
+                    WireReason::UnsupportedBundleFormat,
+                    format!("{operation} arrives as a bundle, and none was named"),
+                ));
+            };
+            // Re-read and re-verify: the plan authorized an identity, not a file
+            // that might have changed on disk since.
+            verified = Some(verified_bundle(harness, named)?);
+            let Some(ready) = verified.as_ref() else {
+                return Err(Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    "bundle vanished",
+                ));
+            };
+            Effect::MaterializeBundle {
+                files: &ready.files,
+            }
+        }
         other => {
             return Err(Error::refuse(
-                WireReason::ProviderUnavailable,
-                format!(
-                    "{other} arrives over the wire as a bundle, and this build carries no \
-                     reader for {}; the same operation from the local catalog is available \
-                     through the human surface",
-                    facts::BUNDLE_FORMAT
-                ),
+                WireReason::UnsupportedOperation,
+                format!("{other} is not declared by this provider"),
             ));
         }
     };
@@ -439,6 +536,7 @@ pub(crate) fn perform(
             setup.check_within(harness)?;
             replace_managed_from(harness, &resolved, &setup.payload)
         }
+        Effect::MaterializeBundle { files } => write_bundle_files(harness, &resolved, files),
     };
 
     // On failure the journal stays in `prepared`, which is what makes the
@@ -543,6 +641,57 @@ fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> R
             lock::atomic_write(&destination, &bytes)?;
         }
     }
+    Ok(())
+}
+
+/// Write a verified bundle over the namespaces this provider owns.
+///
+/// The owned entries are cleared first, for the same reason selecting a setup
+/// clears them: the result is the bundle's complete state, not the bundle merged
+/// into whatever happened to be there.
+fn write_bundle_files(
+    harness: &Harness,
+    target: &Target,
+    files: &BTreeMap<String, (Vec<u8>, u32)>,
+) -> Result<()> {
+    remove_managed(harness, target)?;
+    for (relative, (bytes, mode)) in files {
+        let destination = target.root().join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                Error::from(
+                    setup_core::Error::new(
+                        setup_core::ReasonCode::StateUnavailable,
+                        format!("cannot create {}", parent.display()),
+                    )
+                    .with_source(error),
+                )
+            })?;
+        }
+        lock::atomic_write(&destination, bytes)?;
+        set_mode(&destination, *mode)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| {
+        Error::from(
+            setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!("cannot set the mode of {}", path.display()),
+            )
+            .with_source(error),
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
+    // Windows has no Unix mode to set. Claiming one was applied would be a
+    // claim about permissions this platform does not express that way.
     Ok(())
 }
 
@@ -1150,9 +1299,182 @@ mod tests {
         assert!(planned["plan"]["backup_ref"].is_string());
     }
 
+    /// Build a canonical bundle whose three identities are internally consistent.
+    fn bundle_bytes(files: &[(&str, &str, u32)]) -> (Vec<u8>, String, String) {
+        use provider_v3::bundle::{BUNDLE_DOMAIN, FILES_PREFIX, MANIFEST_MEMBER, REQUIRED_MEMBERS};
+        use provider_v3::zip::build::{Entry, write};
+
+        let records: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(path, body, mode)| {
+                serde_json::json!({
+                    "schema_version": 1,
+                    "path": path,
+                    "digest": setup_core::digest::of_bytes(body.as_bytes()),
+                    "byte_length": body.len(),
+                    "mode": mode,
+                    "owner": "",
+                })
+            })
+            .collect();
+        let mut manifest = serde_json::json!({
+            "schema_version": 1,
+            "bundle_format": "ai-stp-bundle/1",
+            "protocol_version": provider_v3::PROTOCOL_VERSION,
+            "harness_id": TEST.harness_id,
+            "builder_version": "0.1.0",
+            "compiled": true,
+            "files": records,
+            "refusals": [],
+            "max_files": 2000,
+            "max_file_bytes": 4 * 1024 * 1024,
+            "max_bundle_bytes": 64 * 1024 * 1024,
+            "byte_length": 0,
+            "artifact_digest": "",
+        });
+        let bundle_digest =
+            setup_core::digest::of_domain_canonical_json(BUNDLE_DOMAIN, &manifest).unwrap();
+        manifest["digest"] = serde_json::json!(bundle_digest);
+
+        let mut entries = vec![Entry {
+            name: MANIFEST_MEMBER.to_owned(),
+            data: setup_core::canonical::to_canonical_bytes(&manifest).unwrap(),
+            mode: 0o644,
+        }];
+        for name in REQUIRED_MEMBERS.iter().skip(1) {
+            entries.push(Entry {
+                name: (*name).to_owned(),
+                data: b"{}".to_vec(),
+                mode: 0o644,
+            });
+        }
+        for (path, body, mode) in files {
+            entries.push(Entry {
+                name: format!("{FILES_PREFIX}{path}"),
+                data: body.as_bytes().to_vec(),
+                mode: *mode,
+            });
+        }
+        let bytes = write(&entries);
+        let artifact = setup_core::digest::of_bytes(&bytes);
+        (bytes, bundle_digest, artifact)
+    }
+
+    fn bundle_flags(path: &Path, bundle_digest: &str, artifact: &str, size: usize) -> Vec<String> {
+        vec![
+            "--bundle".to_owned(),
+            path.to_string_lossy().into_owned(),
+            "--bundle-format".to_owned(),
+            "ai-stp-bundle/1".to_owned(),
+            "--bundle-digest".to_owned(),
+            bundle_digest.to_owned(),
+            "--artifact-digest".to_owned(),
+            artifact.to_owned(),
+            "--bundle-size".to_owned(),
+            size.to_string(),
+        ]
+    }
+
     #[test]
-    fn install_and_replace_are_declared_but_refuse_with_the_real_limitation() {
-        let target = seeded("not-yet");
+    fn a_bundle_installs_over_the_wire_and_leaves_unowned_files_alone() {
+        let target = seeded("bundle-install");
+        let (bytes, bundle_digest, artifact) = bundle_bytes(&[
+            ("AGENTS.md", "# from a bundle\n", 0o644),
+            ("skills/b.md", "two", 0o644),
+        ]);
+        let artifact_path = target.join("..").join("bundle.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01BUNDLE".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", &target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert_eq!(
+            planned["valid"], true,
+            "a plan carrying a bundle echoes its validity"
+        );
+        assert_eq!(planned["bundle_digest"], bundle_digest.as_str());
+
+        let plan_path = target.join("..").join("bundle-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", &target, &borrowed));
+
+        assert_eq!(applied["state"], "verified");
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# from a bundle\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("skills").join("b.md")).unwrap(),
+            "two"
+        );
+        // The seeded settings.json was not in the bundle, so the complete state
+        // it describes does not include it.
+        assert!(!target.join("settings.json").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "keep me"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(".credentials.json")).unwrap(),
+            "SECRET"
+        );
+    }
+
+    #[test]
+    fn a_bundle_writing_outside_the_declared_surface_never_reaches_the_target() {
+        let target = seeded("bundle-outside");
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[("AGENTS.md", "x", 0o644), ("elsewhere.txt", "y", 0o644)]);
+        let artifact_path = target.join("..").join("hostile.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01HOSTILE".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        plan_args.extend(flags);
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let error = refuse(args("plan-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedNativeSurface));
+        assert!(!target.join("elsewhere.txt").exists());
+    }
+
+    #[test]
+    fn install_without_a_bundle_says_a_bundle_is_what_it_takes() {
+        let target = seeded("bundle-missing");
         for operation in ["install", "replace"] {
             let error = refuse(args(
                 "plan-operation",
@@ -1168,8 +1490,13 @@ mod tests {
                     far_future(),
                 ],
             ));
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::UnsupportedBundleFormat),
+                "{operation}"
+            );
             assert!(
-                error.detail().contains("needs a reader for"),
+                error.detail().contains("none was named"),
                 "{operation}: {error}"
             );
         }
