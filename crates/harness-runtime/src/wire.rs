@@ -104,12 +104,11 @@ fn check_within_surface<'a>(
     paths: impl Iterator<Item = &'a String>,
 ) -> Result<()> {
     for path in paths {
-        let top = path.split('/').next().unwrap_or(path);
-        if !harness.native_namespaces.contains(&top) {
+        if !harness.owns(path) {
             return Err(Error::refuse(
                 WireReason::UnsupportedNativeSurface,
                 format!(
-                    "the bundle writes {path:?}, and {} does not own {top:?}",
+                    "the bundle writes {path:?}, which is outside the surface {} owns",
                     harness.provider_id
                 ),
             ));
@@ -655,18 +654,9 @@ fn write_bundle_files(
 ) -> Result<()> {
     remove_managed(harness, target)?;
     for (relative, (bytes, mode)) in files {
+        // `atomic_write` creates the parent; this used to do it here, and the
+        // catalog path next door did not, which is how they came apart.
         let destination = target.root().join(relative);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                Error::from(
-                    setup_core::Error::new(
-                        setup_core::ReasonCode::StateUnavailable,
-                        format!("cannot create {}", parent.display()),
-                    )
-                    .with_source(error),
-                )
-            })?;
-        }
         lock::atomic_write(&destination, bytes)?;
         set_mode(&destination, *mode)?;
     }
@@ -973,6 +963,46 @@ mod tests {
                 .unwrap()
                 .starts_with("sha256:")
         );
+    }
+
+    #[test]
+    fn a_nested_namespace_is_owned_all_the_way_down() {
+        // Codex declares `.agents/skills` and nothing else under `.agents`.
+        // Matching on the first path component alone read that as `.agents`,
+        // which is not declared, so every write to the route the compiler
+        // actually uses was refused. This fails on that reading.
+        const NESTED: Harness = Harness {
+            native_namespaces: &[".agents/skills", "AGENTS.md"],
+            ..TEST
+        };
+        assert!(NESTED.owns(".agents/skills"));
+        assert!(NESTED.owns(".agents/skills/review/SKILL.md"));
+        assert!(NESTED.owns("AGENTS.md"));
+    }
+
+    #[test]
+    fn a_nested_namespace_does_not_claim_its_parent() {
+        // The other half: declaring `.agents/skills` must not hand this
+        // provider `.agents/hooks.json`, which belongs to the product.
+        const NESTED: Harness = Harness {
+            native_namespaces: &[".agents/skills"],
+            ..TEST
+        };
+        assert!(!NESTED.owns(".agents"));
+        assert!(!NESTED.owns(".agents/hooks.json"));
+    }
+
+    #[test]
+    fn a_namespace_does_not_swallow_a_neighbour_that_starts_with_it() {
+        // `skills-experimental` is a different directory from `skills`, and a
+        // prefix comparison without the separator would take it.
+        const NEIGHBOURS: Harness = Harness {
+            native_namespaces: &["skills"],
+            ..TEST
+        };
+        assert!(NEIGHBOURS.owns("skills/a/SKILL.md"));
+        assert!(!NEIGHBOURS.owns("skills-experimental/a/SKILL.md"));
+        assert!(!NEIGHBOURS.owns("skillsdata"));
     }
 
     #[test]

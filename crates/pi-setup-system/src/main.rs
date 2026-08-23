@@ -1,7 +1,7 @@
 //! The Pi Coding Agent setup system.
 //!
 //! This file is the harness's *facts*. Every command over them lives in
-//! [`harness_runtime`], shared with the other four setup systems, so a change to
+//! [`harness_runtime`], shared with every other setup system, so a change to
 //! behaviour lands once and a change to Pi Coding Agent's surface lands here.
 //!
 //! The owner assigned this harness the program lifecycle as well. It is not

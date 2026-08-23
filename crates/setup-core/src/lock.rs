@@ -163,6 +163,14 @@ impl Drop for TargetLock {
 /// rename, so an interruption leaves either the old file or the new one — never
 /// a half-written file that parses as valid state.
 ///
+/// Missing parent directories are created. A namespace can be nested — Codex
+/// routes skills to `.agents/skills`, Antigravity keeps everything under
+/// subdirectories of a home it shares — so writing one is routinely the act
+/// that first creates its directory. Doing it here rather than at each call
+/// site is what keeps two write paths from disagreeing, which they did: the
+/// bundle path created parents and the catalog path did not, so a setup with a
+/// nested file installed over the wire and failed from disk.
+///
 /// # Errors
 ///
 /// Returns [`ReasonCode::StateUnavailable`] if any step fails.
@@ -179,6 +187,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             format!("{} has no usable file name", path.display()),
         ));
     };
+    fs::create_dir_all(parent).map_err(|source| {
+        Error::new(
+            ReasonCode::StateUnavailable,
+            format!("cannot create {}", parent.display()),
+        )
+        .with_source(source)
+    })?;
     let temporary = parent.join(format!(".{file_name}.staging"));
 
     let write = || -> std::io::Result<()> {
@@ -280,6 +295,22 @@ mod tests {
         let second = TargetLock::acquire(&two);
         assert!(second.is_ok());
         drop(first);
+    }
+
+    #[test]
+    fn an_atomic_write_creates_the_directories_its_path_names() {
+        // A nested namespace is written before its directory exists: Codex's
+        // `.agents/skills` and every Antigravity namespace are the first thing
+        // to create their own parent. This failed with "cannot stage" until the
+        // creation moved in here, where both write paths reach it.
+        let base = scratch("atomic-nested");
+        let file = base.join("antigravity-cli").join("settings.json");
+        atomic_write(&file, b"{}").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"{}");
+
+        let deeper = base.join("a").join("b").join("c").join("leaf");
+        atomic_write(&deeper, b"deep").unwrap();
+        assert_eq!(fs::read(&deeper).unwrap(), b"deep");
     }
 
     #[test]

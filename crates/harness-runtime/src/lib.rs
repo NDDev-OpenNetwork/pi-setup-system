@@ -119,10 +119,17 @@ fn print_help(harness: &Harness) {
         "Configures {} ({}) in a caller-named target directory.",
         harness.product, harness.vendor
     );
-    println!(
-        "Documented configuration home: {} ({})",
-        harness.documented_config_home, harness.config_home_env
-    );
+    if harness.config_home_env.is_empty() {
+        println!(
+            "Documented configuration home: {} (no environment override documented)",
+            harness.documented_config_home
+        );
+    } else {
+        println!(
+            "Documented configuration home: {} ({})",
+            harness.documented_config_home, harness.config_home_env
+        );
+    }
     println!();
     println!("Provider commands (ai-stp protocol v3):");
     println!("  provider-info");

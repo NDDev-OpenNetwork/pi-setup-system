@@ -31,7 +31,14 @@ pub struct Harness {
     pub vendor: &'static str,
     /// The documented configuration home. Documentation, never a fallback.
     pub documented_config_home: &'static str,
-    /// The environment variable that names the configuration home.
+    /// The environment variable a product documents for its configuration home.
+    ///
+    /// Empty when the product documents none. That is a real state -- not every
+    /// product offers an override -- and it is worth saying rather than
+    /// inventing a plausible variable name that nothing reads.
+    ///
+    /// Documentation either way: nothing here resolves a path from it, because
+    /// every command takes an explicit target.
     pub config_home_env: &'static str,
     /// The provider-owned control directory inside a target.
     pub control_directory: &'static str,
@@ -69,6 +76,32 @@ pub const BACKUP_SLOTS: usize = 10;
 pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/1";
 
 impl Harness {
+    /// Whether one relative path falls inside a namespace this harness claims.
+    ///
+    /// A namespace is not always a single path component. Codex routes skills
+    /// to `.agents/skills` while owning nothing else under `.agents`, and
+    /// Antigravity is a guest inside `~/.gemini` where every namespace is
+    /// nested. Comparing only the first component reads those as `.agents` and
+    /// `config` -- directories holding another product's files -- and refuses
+    /// every write to the deeper path this harness genuinely owns.
+    ///
+    /// A path is owned when it *is* a namespace or lies beneath one. The
+    /// trailing separator matters: without it `skills-experimental` would match
+    /// the namespace `skills`, and a neighbour would be swallowed by a prefix.
+    ///
+    /// This lives here, not beside either caller, because the wire surface and
+    /// the local catalog must answer this question identically. They did not
+    /// once, and the catalog refused every setup the wire would have accepted.
+    #[must_use]
+    pub fn owns(&self, path: &str) -> bool {
+        self.native_namespaces.iter().any(|namespace| {
+            path == *namespace
+                || path
+                    .strip_prefix(namespace)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
     /// Top-level entries that are not part of this target's identity.
     ///
     /// The control directory and the state file are this provider's own

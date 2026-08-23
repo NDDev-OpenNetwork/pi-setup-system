@@ -1,3 +1,3 @@
 # Brand and product names clippy's doc_markdown lint would otherwise read as
 # code items. Backticking a brand in prose is worse than naming it here.
-doc-valid-idents = ["NDDev", "OpenNetwork", "GitHub", "macOS", "SetupDefinition", "HarnessBundle", "BackupRef", ".."]
+doc-valid-idents = ["NDDev", "OpenNetwork", "OpenCode", "GitHub", "macOS", "SetupDefinition", "HarnessBundle", "BackupRef", ".."]
