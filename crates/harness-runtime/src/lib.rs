@@ -12,11 +12,10 @@
 //!
 //! # What this runtime does and does not do
 //!
-//! It applies `backup`, `restore` and `remove`, and it plans all five core
-//! operations. `install` and `replace` are planned and then refuse, naming the
-//! missing piece — a reader for the bundle format. They stay declared because
-//! the contract requires all five core operations, and a refusal that names the
-//! real limitation is honest in a way a narrowed declaration could not be.
+//! It performs all five core operations. `backup`, `restore` and `remove` read
+//! the target, a backup slot, or the provider's own state. `install` and
+//! `replace` materialize an `ai-stp-bundle/1` the consumer sends, or a complete
+//! setup from the local catalog when the owner asks for one by name.
 //!
 //! The software lifecycle and `launch` are optional in the contract and are not
 //! declared at all. Declaring an optional operation this runtime cannot perform

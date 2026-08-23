@@ -36,14 +36,17 @@
 //! entirely and never becomes a wire reason; see [`error::Error`].
 
 pub mod argv;
+pub mod bundle;
 pub mod error;
 pub mod info;
 pub mod plan;
 pub mod platform;
 pub mod reason;
 pub mod vocabulary;
+pub mod zip;
 
-pub use argv::{Bundle, Invocation, PlanRequest};
+pub use argv::{Invocation, PlanRequest};
+pub use bundle::Bundle;
 pub use error::{Error, Result};
 pub use info::{Declaration, ProjectionProfile, ProviderInfo};
 pub use plan::{BundleBinding, PlanArtifact, PlanInputs};
