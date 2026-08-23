@@ -691,6 +691,9 @@ mod tests {
         assert!(!payload.join("skills").exists());
     }
 
+    // Creating a symlink on Windows needs a privilege a runner does not have,
+    // so this is asserted where it can be.
+    #[cfg(unix)]
     #[test]
     fn a_symbolic_link_is_refused_rather_than_inlined() {
         // Both shapes: named directly, and found while walking a named
@@ -714,6 +717,9 @@ mod tests {
         assert_eq!(walked.reason(), ReasonCode::IntegrityMismatch);
     }
 
+    // Creating a symlink on Windows needs a privilege a runner does not have,
+    // so this is asserted where it can be.
+    #[cfg(unix)]
     #[test]
     fn a_symbolic_link_outside_the_captured_paths_is_simply_not_seen() {
         // A live Grok install keeps a symlink at `bin/grok`, which no harness
