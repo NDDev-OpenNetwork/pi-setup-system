@@ -61,7 +61,7 @@ jobs:
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
-          toolchain: '1.97.1'
+          toolchain: '1.98.0'
           # This action caches by default, and a release must not build on top
           # of a cache. A run with weaker trust than this one can write the
           # cache a release would restore, so a poisoned entry would be baked
