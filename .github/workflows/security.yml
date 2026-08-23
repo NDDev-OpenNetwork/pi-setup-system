@@ -1,0 +1,67 @@
+name: security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so an advisory published after the last push is still seen.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  codeql:
+    name: codeql
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-codeql.yml@f66a2070d0b714643abb902ef5886ed43365cd47
+    with:
+      languages: '["rust", "actions"]'
+      queries: security-and-quality
+
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-dependency-review.yml@f66a2070d0b714643abb902ef5886ed43365cd47
+    with:
+      fail_on_severity: moderate
+
+  scorecard:
+    name: scorecard
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-scorecard.yml@f66a2070d0b714643abb902ef5886ed43365cd47
+
+  osv:
+    name: osv
+    permissions:
+      contents: read
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/osv-scan.yml@f66a2070d0b714643abb902ef5886ed43365cd47
+
+  zizmor:
+    name: zizmor
+    permissions:
+      contents: read
+      security-events: write
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/zizmor-sarif.yml@f66a2070d0b714643abb902ef5886ed43365cd47
+
+  secret-scan:
+    name: secret-scan
+    permissions:
+      contents: read
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/secret-scan.yml@f66a2070d0b714643abb902ef5886ed43365cd47

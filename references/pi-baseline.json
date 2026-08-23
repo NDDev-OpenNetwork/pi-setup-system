@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "verified_ref": "references/pi-baseline.json",
+  "product": {
+    "name": "Pi Coding Agent",
+    "site": "https://pi.dev/",
+    "documentation": "https://pi.dev/docs/latest",
+    "repository": "https://github.com/earendil-works/pi"
+  },
+  "package": {
+    "name": "@earendil-works/pi-coding-agent",
+    "version": "0.84.1",
+    "registry": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.1.tgz",
+    "integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
+    "shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
+    "node": ">=22.19.0",
+    "repository_directory": "packages/coding-agent"
+  },
+  "cli_identity": {
+    "command": "pi",
+    "bin": "dist/cli.js",
+    "version_probe": {
+      "argv": [
+        "pi",
+        "--version"
+      ],
+      "expected_stdout": "0.0.0",
+      "package_version_source": "package.version",
+      "independent_package_identity_required": true
+    },
+    "install_docs": "https://pi.dev/docs/latest",
+    "install_script": "https://pi.dev/install.sh"
+  },
+  "launch_scope": {
+    "target_role": "configuration-runtime-home",
+    "default_workspace_source": "caller-cwd-captured-once",
+    "manager_workspace_option": "--workspace <absolute-existing-dir>",
+    "explicit_workspace_requirements": [
+      "absolute",
+      "existing-directory",
+      "final-component-not-symlink",
+      "accessible"
+    ],
+    "child_cwd": "resolved-workspace",
+    "native_workspace_argument_supported": false,
+    "native_workspace_argument": null,
+    "official_cli_grammar": {
+      "package": "@earendil-works/pi-coding-agent@0.84.1",
+      "parser": "dist/cli/args.js",
+      "documentation": "https://pi.dev/docs/latest/usage",
+      "workspace_project_cwd_flags": []
+    }
+  },
+  "manager_installation": {
+    "tool": "npm",
+    "argv": [
+      "install",
+      "--global-style",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      "--prefix",
+      "<stage>/install",
+      "<verified-tarball>"
+    ],
+    "trust": false,
+    "consumer_lifecycle_scripts": {
+      "preinstall": null,
+      "install": null,
+      "postinstall": null,
+      "prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
+    },
+    "staging_environment": {
+      "HOME": "<stage>/home",
+      "npm_config_cache": "<stage>/cache",
+      "npm_config_ignore_scripts": "true",
+      "npm_config_userconfig": "<stage>/npmrc",
+      "XDG_CONFIG_HOME": "<stage>/xdg-config",
+      "TMPDIR": "<stage>/tmp"
+    },
+    "metadata_argv": [
+      "view",
+      "@earendil-works/pi-coding-agent@0.84.1",
+      "dist",
+      "--json"
+    ],
+    "pack_argv": [
+      "pack",
+      "--json",
+      "--ignore-scripts",
+      "--pack-destination",
+      "<stage>/tarballs",
+      "@earendil-works/pi-coding-agent@0.84.1"
+    ],
+    "byte_verification": {
+      "metadata_integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
+      "metadata_shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
+      "tarball_integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
+      "tarball_shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
+      "verified_before_extract": true
+    },
+    "local_extraction": {
+      "scripts_disabled": true,
+      "verified_before_extract": true
+    },
+    "local_install_argv": [
+      "install",
+      "--global-style",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      "--prefix",
+      "<stage>/install",
+      "<verified-tarball>"
+    ]
+  },
+  "configuration": {
+    "global_settings": "~/.pi/agent/settings.json",
+    "project_settings": ".pi/settings.json",
+    "trust_file": "~/.pi/agent/trust.json",
+    "environment_override": "PI_CODING_AGENT_DIR",
+    "session_environment_override": "PI_CODING_AGENT_SESSION_DIR",
+    "package_environment_override": "PI_PACKAGE_DIR",
+    "offline_environment_override": "PI_OFFLINE",
+    "skip_version_check_environment_override": "PI_SKIP_VERSION_CHECK",
+    "telemetry_environment_override": "PI_TELEMETRY",
+    "documentation": "https://pi.dev/docs/latest/settings"
+  },
+  "native_capability_surfaces": {
+    "settings": "https://pi.dev/docs/latest/settings",
+    "skills": {
+      "settings_key": "skills",
+      "enable_commands_key": "enableSkillCommands",
+      "global_locations": [
+        "~/.pi/agent/skills",
+        "~/.agents/skills"
+      ],
+      "project_locations": [
+        ".pi/skills",
+        ".agents/skills"
+      ],
+      "cli_flags": [
+        "--skill",
+        "--no-skills"
+      ]
+    },
+    "packages": {
+      "settings_key": "packages",
+      "resource_manifest_key": "pi.skills",
+      "commands": [
+        "pi install",
+        "pi remove",
+        "pi list",
+        "pi update"
+      ],
+      "documentation": "https://pi.dev/docs/latest/packages"
+    },
+    "extensions": {
+      "settings_key": "extensions",
+      "package_manifest_key": "pi.extensions",
+      "documentation": "https://pi.dev/docs/latest"
+    }
+  },
+  "permission_model": {
+    "built_in_filesystem_process_network_restrictions": false,
+    "permission_popups": false,
+    "plan_mode": false,
+    "project_trust_controls": [
+      "defaultProjectTrust",
+      "--approve",
+      "--no-approve"
+    ],
+    "source": "https://github.com/earendil-works/pi"
+  },
+  "manager_projection": {
+    "builder_default_on": true,
+    "builder_surfaces": [
+      "settings.skills",
+      "settings.packages",
+      "package.pi.skills",
+      "agent.AGENTS.md"
+    ],
+    "external_marketplace_published": null,
+    "plugin_marketplace": null,
+    "mcp_projection": null
+  }
+}

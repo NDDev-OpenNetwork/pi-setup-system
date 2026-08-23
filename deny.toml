@@ -1,0 +1,34 @@
+# cargo-deny: bans, licences, advisories and sources.
+#
+# The workspace is deliberately small. Every dependency below is one this
+# kernel could not reasonably implement itself, and each is named here so a new
+# transitive arrival is a review, not a surprise.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive only. The binary is AGPL-3.0-or-later; a copyleft dependency would
+# be fine for us and hostile to anyone vendoring the kernel, so it is refused
+# here rather than discovered downstream.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

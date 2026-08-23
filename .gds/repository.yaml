@@ -1,0 +1,61 @@
+schema_version: 1
+
+repository:
+  id: "repo_01M0QEF36PQQRHG5CNF1FGEH3J"
+  display_name: "pi-setup-system"
+  roles:
+    - "project"
+  lifecycle: "active"
+
+provider:
+  type: "github"
+  installation: "installation:github-opennetwork"
+  owner: "NDDev-OpenNetwork"
+  name: "pi-setup-system"
+
+classification:
+  portfolios:
+    - "portfolio:opennetwork-projects"
+  visibility_contract: "public"
+  data_classification: "public"
+
+policy:
+  profiles:
+    - "repository-default"
+    - "opennetwork-default"
+  rollout_ring: "standard"
+
+git:
+  default_branch: "main"
+  integration: "pull-request"
+  branch_model: "task-branches"
+  handoff_pr: "preferred"
+  cleanup: "merged-only"
+
+verification:
+  commands:
+    test:
+      - "cargo test --locked --all-targets"
+    lint:
+      - "cargo clippy --locked --all-targets -- -D warnings"
+      - "cargo fmt --all --check"
+  required:
+    - "test"
+    - "lint"
+
+agent:
+  context_profile: "public-module"
+  generated_agents: false
+  serena:
+    enabled: false
+    provenance_required: false
+
+release:
+  mode: "github-release"
+  tag_style: "semver"
+
+harness:
+  harness_id: "pi"
+  product: "Pi Coding Agent"
+  protocol: "ai-stp-provider-protocol/3"
+  owns_software_lifecycle: true
