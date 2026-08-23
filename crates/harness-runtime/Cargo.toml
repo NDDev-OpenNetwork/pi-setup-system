@@ -1,22 +1,18 @@
 [package]
-name = "pi-setup-system"
+name = "harness-runtime"
 version = "0.1.0"
-description = "Installs, reselects, restores and removes a complete Pi Coding Agent harness configuration in a caller-named target directory."
+description = "The provider command runtime every NDDev setup system shares, parameterized by one harness's verified facts."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "pi-setup-system"
-path = "src/main.rs"
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+setup-core = { workspace = true }
 provider-v3 = { workspace = true }
-harness-runtime = { workspace = true }
 
 [lints]
 workspace = true
