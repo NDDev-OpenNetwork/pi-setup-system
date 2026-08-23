@@ -1,6 +1,6 @@
 [package]
 name = "provider-v3"
-version = "0.1.0"
+version.workspace = true
 description = "The ai-stp provider protocol v3 wire boundary: argv contract, closed vocabulary and exact echoes."
 edition.workspace = true
 rust-version.workspace = true

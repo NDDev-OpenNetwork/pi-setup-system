@@ -30,15 +30,27 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        # Six, because `provider-info` declares three operating systems and two
+        # architectures. Shipping fewer would leave the declaration true of what
+        # the code supports and false of what anyone can actually download.
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             suffix: ''
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            suffix: ''
           - os: macos-latest
             target: aarch64-apple-darwin
             suffix: ''
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            suffix: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             suffix: '.exe'
     steps:
       - name: Checkout
