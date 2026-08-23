@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 fs4 = { version = "0.13", features = ["sync"] }
-setup-core = { path = "crates/setup-core" }
+setup-core = { path = "crates/setup-core", version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

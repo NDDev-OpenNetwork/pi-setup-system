@@ -14,6 +14,9 @@ version = 2
 # be fine for us and hostile to anyone vendoring the kernel, so it is refused
 # here rather than discovered downstream.
 allow = [
+    # Ours. cargo-deny evaluates the workspace's own crates alongside their
+    # dependencies, so the project licence belongs in this list too.
+    "AGPL-3.0-or-later",
     "Apache-2.0",
     "MIT",
     "BSD-2-Clause",
@@ -23,6 +26,9 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.93
+# An allowance no crate currently matches is a curated intent, not a defect.
+# Failing on one would make removing a dependency break the build.
+unused-allowed-license = "allow"
 
 [bans]
 multiple-versions = "warn"

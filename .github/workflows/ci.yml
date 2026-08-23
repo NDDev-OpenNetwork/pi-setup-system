@@ -51,5 +51,9 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-      pull-requests: read
+      # The labeler applies labels and the stale bot closes threads. Their jobs
+      # declare these statically, so the grant is required even when the toggle
+      # that would use them is off.
+      issues: write
+      pull-requests: write
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@f66a2070d0b714643abb902ef5886ed43365cd47
