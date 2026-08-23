@@ -16,12 +16,29 @@ use crate::error::{Error, ReasonCode, Result};
 /// The `sha256:` prefix every wire digest carries.
 pub const PREFIX: &str = "sha256:";
 
+/// Render bytes as lowercase hexadecimal.
+///
+/// Written here rather than borrowed from a `LowerHex` implementation on the
+/// hasher's output type: that type changed between `sha2` 0.10 and 0.11, and a
+/// digest's spelling is part of this program's contract. It should not move
+/// because a dependency reorganized its traits.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            // Writing into a String cannot fail; the Result exists for the trait.
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 /// Hash bytes and return the prefixed hexadecimal digest.
 #[must_use]
 pub fn of_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{PREFIX}{:x}", hasher.finalize())
+    format!("{PREFIX}{}", hex(&hasher.finalize()))
 }
 
 /// Hash a JSON value through its RFC 8785 canonicalization.
@@ -45,7 +62,7 @@ pub fn of_domain_bytes(domain: &str, payload: &[u8]) -> String {
     hasher.update(domain.as_bytes());
     hasher.update([0]);
     hasher.update(payload);
-    format!("{PREFIX}{:x}", hasher.finalize())
+    format!("{PREFIX}{}", hex(&hasher.finalize()))
 }
 
 /// Hash a JSON value inside a named domain through its RFC 8785 form.
@@ -98,7 +115,7 @@ pub fn of_file(path: &Path) -> Result<String> {
             }
         }
     }
-    Ok(format!("{PREFIX}{:x}", hasher.finalize()))
+    Ok(format!("{PREFIX}{}", hex(&hasher.finalize())))
 }
 
 fn read_chunk(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
@@ -154,7 +171,7 @@ pub fn of_tree_excluding(root: &Path, excluded_top_level: &[&str]) -> Result<Str
         hasher.update(payload.as_bytes());
         hasher.update([0]);
     }
-    Ok(format!("{PREFIX}{:x}", hasher.finalize()))
+    Ok(format!("{PREFIX}{}", hex(&hasher.finalize())))
 }
 
 fn collect(
