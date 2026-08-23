@@ -23,10 +23,13 @@
 //! would let a consumer call something that cannot be honoured, which is worse
 //! than not offering it.
 
+pub mod catalog;
 pub mod expiry;
 pub mod facts;
+pub mod human;
 pub mod wire;
 
+pub use catalog::{Catalog, Setup};
 pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Harness};
 pub use wire::dispatch;
 
@@ -57,6 +60,21 @@ pub fn run(harness: &Harness, arguments: Vec<String>) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         _ => {}
+    }
+
+    // `status` is the one name both surfaces answer to. The human form takes a
+    // bare `--target`; the wire form also takes `--json`, and that is what tells
+    // them apart. Nothing else is ambiguous.
+    let first = arguments.first().map(String::as_str).unwrap_or_default();
+    let human_status = first == "status" && !arguments.iter().any(|a| a == "--json");
+    if human::is_human_command(first) || human_status {
+        return match human::parse(arguments).and_then(|command| human::run(harness, command)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{}: {error}", harness.provider_id);
+                ExitCode::FAILURE
+            }
+        };
     }
 
     let invocation = match provider_v3::argv::parse(arguments) {
@@ -115,6 +133,22 @@ fn print_help(harness: &Harness) {
     println!("  apply-operation   --target <dir> --json --plan <path> --plan-digest <d> ...");
     println!("  recover-operation --target <dir> --json");
     println!();
-    println!("backup, restore and remove are applied. install and replace are");
-    println!("planned and then refuse: this build carries no bundle reader yet.");
+    println!();
+    println!("Your commands:");
+    println!("  list");
+    println!("  status    --target <dir>");
+    println!("  install   <setup> --target <dir>");
+    println!("  select    <setup> --target <dir>");
+    println!("  reinstall --target <dir>");
+    println!("  diff      --target <dir>");
+    println!("  backups   --target <dir>");
+    println!("  restore   [--backup <ref>] --target <dir>");
+    println!("  remove    --target <dir>");
+    println!();
+    println!("Every one takes an explicit --target. There is no default: a change");
+    println!("aimed at a guessed path is a change aimed at someone else's state.");
+    println!();
+    println!("A backup is captured before every change, so `restore` always has");
+    println!("something to return to. Over the wire, install and replace arrive as");
+    println!("a bundle and refuse -- this build reads setups from its own catalog.");
 }

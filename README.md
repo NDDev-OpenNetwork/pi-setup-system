@@ -7,18 +7,42 @@ the whole configuration — not a pointer to somewhere the content really lives.
 That is what makes restore mean something: it returns the instructions, skills,
 agents, commands, hooks, MCP entries and settings together, in one step.
 
-> **Status: the provider surface answers.** `provider-info`, `status`,
-> `validate-bundle`, `plan-operation`, `apply-operation` and `recover-operation`
-> are implemented. `backup`, `restore` and `remove` are applied end to end;
-> `install` and `replace` are planned and then refuse, because this build carries
-> no reader for `ai-stp-bundle/1` yet. They stay *declared* — the contract
-> requires all five core operations — and the refusal names the real limitation.
->
-> The software lifecycle and `launch` are optional in the contract and are not
-> declared at all, because this build does not perform them. Declaring an
-> operation that cannot be honoured is worse than not offering it.
->
-> The human command surface is not wired yet; `--help` says what the binary does.
+> **Status: usable.** The commands below work end to end. What is not here yet
+> is reading a `HarnessBundle` over the wire, so `install` and `replace` arrive
+> from the local catalog rather than from ai-stp; the wire forms of those two
+> refuse and say so. The software lifecycle and `launch` are not declared,
+> because this build does not perform them.
+
+## Using it
+
+```bash
+pi-setup-system list
+pi-setup-system install baseline --target ~/.tool-config
+pi-setup-system status              --target ~/.tool-config
+pi-setup-system select minimal      --target ~/.tool-config
+pi-setup-system diff                --target ~/.tool-config
+pi-setup-system reinstall           --target ~/.tool-config
+pi-setup-system backups             --target ~/.tool-config
+pi-setup-system restore --backup slot-000000000002 --target ~/.tool-config
+pi-setup-system remove              --target ~/.tool-config
+```
+
+Every command takes an explicit `--target`. There is no default and no fallback
+to a configuration home: a change aimed at a guessed path is a change aimed at
+someone else's state. The documented home is printed by `--help` so it can be
+copied, not resolved.
+
+**A backup is captured before every change**, so `restore` always has something
+to return to. `restore` with no reference means the most recent backup that
+existed when you asked — not the one the restore itself just took.
+
+**Selecting a setup reaches its complete state, not a merge.** If the setup you
+leave owned a file the one you choose does not, that file goes. A target is
+always exactly one setup plus whatever this provider never claimed.
+
+Point `PI_SETUP_SYSTEM_SETUP_CATALOG` at a directory to use setups of your own.
+
+## What it manages
 
 ## What it manages
 
