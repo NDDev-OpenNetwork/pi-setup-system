@@ -28,7 +28,6 @@ use setup_core::digest;
 
 use crate::error::{Error, Result};
 use crate::reason::WireReason;
-use crate::vocabulary::PROTOCOL_VERSION;
 use crate::zip;
 
 /// The digest domain for a bundle manifest.
@@ -36,6 +35,15 @@ pub const BUNDLE_DOMAIN: &str = "ai-stp:bundle:v1";
 
 /// The format tag this reader accepts.
 pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/1";
+
+/// The protocol version a bundle manifest declares.
+///
+/// This is **not** the provider protocol. A bundle is `ai-stp-bundle/1` and says
+/// `protocol_version: 1`; the provider speaking about it is protocol v3. Two
+/// numbers, two contracts, one field name each — comparing a manifest against
+/// the provider's version rejects every well-formed bundle, and does it with a
+/// message that sounds right.
+pub const BUNDLE_PROTOCOL_VERSION: u32 = 1;
 
 /// The manifest member, always first.
 pub const MANIFEST_MEMBER: &str = "bundle.json";
@@ -54,6 +62,18 @@ pub const REQUIRED_MEMBERS: &[&str] = &[
 /// The only file modes a bundle may carry.
 const ALLOWED_MODES: &[u32] = &[0o644, 0o755];
 
+/// The contract's own limits, which no bundle may raise.
+///
+/// A manifest *reports* its limits; it does not set them. Taking the bundle's
+/// word would let a hostile one declare a ceiling of its own choosing and then
+/// sit comfortably under it. The effective limit is the smaller of what the
+/// contract fixes and what the bundle claims.
+pub const CONTRACT_MAX_FILES: u64 = 2000;
+/// The largest single file the contract admits: 4 MiB.
+pub const CONTRACT_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// The largest archive the contract admits: 64 MiB.
+pub const CONTRACT_MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Path segments and names that mean credentials, refused by name.
 ///
 /// Opening a file to decide whether it holds a secret is the very act this rule
@@ -70,6 +90,30 @@ const SECRET_MARKERS: &[&str] = &[
     "secrets",
 ];
 
+/// What a manifest record says a file *is*.
+///
+/// A bundle declares this rather than leaving it to the container, and that is
+/// deliberate: a ZIP has no portable hard-link member, so a hostile bundle could
+/// carry one as an ordinary file. The declared kind is refused on its own terms,
+/// and a provider must not reinterpret it as a regular file merely because the
+/// archive format cannot express the difference.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    /// An ordinary file, the only kind that is materialized.
+    #[default]
+    File,
+    /// A symbolic link.
+    Symlink,
+    /// A hard link.
+    Hardlink,
+    /// A device, socket or pipe.
+    Special,
+    /// A kind this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 /// One record in the bundle's file manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BundleFile {
@@ -84,31 +128,88 @@ pub struct BundleFile {
     /// Which surface owns it.
     #[serde(default)]
     pub owner: String,
+    /// What this record says the file is. Absent means an ordinary file.
+    #[serde(default)]
+    pub kind: FileKind,
 }
 
-/// The bundle manifest.
+/// The limits a manifest reports.
+///
+/// Reported, not set. See [`Manifest::effective_max_files`] and its siblings.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct Limits {
+    /// The file count this bundle reports.
+    #[serde(default)]
+    pub max_files: Option<u64>,
+    /// The per-file byte count this bundle reports.
+    #[serde(default)]
+    pub max_file_bytes: Option<u64>,
+    /// The archive byte count this bundle reports.
+    #[serde(default)]
+    pub max_bundle_bytes: Option<u64>,
+}
+
+/// The `bundle.json` a compiler writes into the archive.
+///
+/// This is *not* the compiler's own result object. `cli-harness-bundle.schema.json`
+/// describes the latter — a `CompiledBundle` with `compiled`, `refusals`, and a
+/// flat `max_files` — and reading it as though it described the archive member
+/// costs a day: every field name is plausible and every one is wrong.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Manifest {
+    /// Schema of this manifest.
+    pub schema_version: u32,
     /// Always `ai-stp-bundle/1`.
     pub bundle_format: String,
-    /// The protocol this bundle was compiled for.
+    /// The *bundle* protocol, which is 1. Not the provider protocol.
     pub protocol_version: u32,
     /// The harness this bundle configures.
     pub harness_id: String,
     /// What compiled it.
+    #[serde(default)]
     pub builder_version: String,
-    /// Whether compilation completed.
-    pub compiled: bool,
-    /// The manifest's own identity.
-    pub digest: String,
+    /// The manifest's own identity, over itself without this field.
+    pub bundle_digest: String,
+    /// The digest of the compiler's input.
+    #[serde(default)]
+    pub input_digest: String,
+    /// Every path this bundle is allowed to write.
+    #[serde(default)]
+    pub managed_paths: Vec<String>,
     /// The file manifest.
+    #[serde(default)]
     pub files: Vec<BundleFile>,
-    /// The largest file count this bundle declares.
-    pub max_files: u64,
-    /// The largest single file this bundle declares.
-    pub max_file_bytes: u64,
-    /// The largest archive this bundle declares.
-    pub max_bundle_bytes: u64,
+    /// The limits this bundle reports.
+    #[serde(default)]
+    pub limits: Limits,
+}
+
+impl Manifest {
+    /// The effective file-count limit: the contract's, never raised.
+    #[must_use]
+    pub fn effective_max_files(&self) -> u64 {
+        self.limits
+            .max_files
+            .map_or(CONTRACT_MAX_FILES, |c| c.min(CONTRACT_MAX_FILES))
+    }
+
+    /// The effective per-file limit: the contract's, never raised.
+    #[must_use]
+    pub fn effective_max_file_bytes(&self) -> u64 {
+        self.limits
+            .max_file_bytes
+            .map_or(CONTRACT_MAX_FILE_BYTES, |c| c.min(CONTRACT_MAX_FILE_BYTES))
+    }
+
+    /// The effective archive limit: the contract's, never raised.
+    #[must_use]
+    pub fn effective_max_bundle_bytes(&self) -> u64 {
+        self.limits
+            .max_bundle_bytes
+            .map_or(CONTRACT_MAX_BUNDLE_BYTES, |c| {
+                c.min(CONTRACT_MAX_BUNDLE_BYTES)
+            })
+    }
 }
 
 /// A bundle that passed every check, with its files ready to materialize.
@@ -179,11 +280,11 @@ impl Bundle {
                 format!("the manifest declares {:?}", manifest.bundle_format),
             ));
         }
-        if manifest.protocol_version != PROTOCOL_VERSION {
+        if manifest.protocol_version != BUNDLE_PROTOCOL_VERSION {
             return Err(Error::refuse(
                 WireReason::UnsupportedProtocolVersion,
                 format!(
-                    "the manifest declares protocol {}",
+                    "the manifest declares bundle protocol {}, and this reader speaks {BUNDLE_PROTOCOL_VERSION}",
                     manifest.protocol_version
                 ),
             ));
@@ -197,21 +298,20 @@ impl Bundle {
                 ),
             ));
         }
-        if !manifest.compiled {
-            return Err(Error::refuse(
-                WireReason::UnsupportedBundleFormat,
-                "the manifest says compilation did not complete; there is no partial bundle",
-            ));
-        }
-        check_manifest_digest(manifest_bytes, &manifest.digest)?;
-        if manifest.digest != claim.bundle_digest {
+        let files = check_files(&manifest, &members, actual_length)?;
+
+        // The manifest's own identity is checked after the files, so a bundle
+        // with a concrete defect reports that defect rather than an unstated
+        // field. The artifact digest -- the one that proves these are the bytes
+        // the caller sent -- was already checked before the parser ran.
+        check_manifest_digest(manifest_bytes, &manifest.bundle_digest)?;
+        if manifest.bundle_digest != claim.bundle_digest {
             return Err(Error::refuse(
                 WireReason::DigestMismatch,
                 "the manifest's identity is not the one the caller named",
             ));
         }
 
-        let files = check_files(&manifest, &members, actual_length)?;
         Ok(Self { manifest, files })
     }
 }
@@ -274,7 +374,7 @@ fn check_manifest_digest(bytes: &[u8], declared: &str) -> Result<()> {
         ));
     };
     // A value cannot be part of the input it identifies.
-    object.remove("digest");
+    object.remove("bundle_digest");
     let computed = digest::of_domain_canonical_json(BUNDLE_DOMAIN, &value)?;
     if computed != declared {
         return Err(Error::refuse(
@@ -291,22 +391,18 @@ fn check_files(
     artifact_length: u64,
 ) -> Result<BTreeMap<String, (Vec<u8>, u32)>> {
     let declared = u64::try_from(manifest.files.len()).unwrap_or(u64::MAX);
-    if declared > manifest.max_files {
+    let max_files = manifest.effective_max_files();
+    if declared > max_files {
         return Err(Error::refuse(
             WireReason::LimitExceeded,
-            format!(
-                "{declared} files declared against a limit of {}",
-                manifest.max_files
-            ),
+            format!("{declared} files declared against a limit of {max_files}"),
         ));
     }
-    if artifact_length > manifest.max_bundle_bytes {
+    let max_bundle = manifest.effective_max_bundle_bytes();
+    if artifact_length > max_bundle {
         return Err(Error::refuse(
             WireReason::LimitExceeded,
-            format!(
-                "the artifact is {artifact_length} bytes against a limit of {}",
-                manifest.max_bundle_bytes
-            ),
+            format!("the artifact is {artifact_length} bytes against a limit of {max_bundle}"),
         ));
     }
 
@@ -318,6 +414,9 @@ fn check_files(
                 .strip_prefix(FILES_PREFIX)
                 .map(|rest| (rest, member))
         })
+        // A directory member is structure, not content: `files/` itself appears
+        // in every bundle and declares nothing.
+        .filter(|(rest, _)| !rest.is_empty() && !rest.ends_with('/'))
         .collect();
 
     let mut files = BTreeMap::new();
@@ -383,6 +482,24 @@ fn check_record(
     lowercase: &mut BTreeMap<String, String>,
 ) -> Result<()> {
     check_path(&record.path)?;
+    match record.kind {
+        FileKind::File => {}
+        FileKind::Symlink | FileKind::Hardlink => {
+            return Err(Error::refuse(
+                WireReason::LinkNotAllowed,
+                format!(
+                    "{:?} is declared as a link, which is never materialized",
+                    record.path
+                ),
+            ));
+        }
+        FileKind::Special | FileKind::Unknown => {
+            return Err(Error::refuse(
+                WireReason::SpecialFileNotAllowed,
+                format!("{:?} is declared as neither a file nor a link", record.path),
+            ));
+        }
+    }
     if !ALLOWED_MODES.contains(&record.mode) {
         return Err(Error::refuse(
             WireReason::UnsupportedNativeSurface,
@@ -392,7 +509,7 @@ fn check_record(
             ),
         ));
     }
-    if record.byte_length > manifest.max_file_bytes {
+    if record.byte_length > manifest.effective_max_file_bytes() {
         return Err(Error::refuse(
             WireReason::LimitExceeded,
             format!("{:?} is larger than the declared file limit", record.path),
@@ -521,20 +638,20 @@ mod tests {
         let mut manifest = serde_json::json!({
             "schema_version": 1,
             "bundle_format": BUNDLE_FORMAT,
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": BUNDLE_PROTOCOL_VERSION,
             "harness_id": "test",
             "builder_version": "0.1.0",
-            "compiled": true,
+            "input_digest": "sha256:".to_owned() + &"3".repeat(64),
+            "managed_paths": files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>(),
             "files": records,
-            "refusals": [],
-            "max_files": 2000,
-            "max_file_bytes": 4 * 1024 * 1024,
-            "max_bundle_bytes": 64 * 1024 * 1024,
-            "byte_length": 0,
-            "artifact_digest": "",
+            "limits": {
+                "max_files": 2000,
+                "max_file_bytes": 4 * 1024 * 1024,
+                "max_bundle_bytes": 64 * 1024 * 1024,
+            },
         });
         let bundle_digest = digest::of_domain_canonical_json(BUNDLE_DOMAIN, &manifest).unwrap();
-        manifest["digest"] = serde_json::json!(bundle_digest);
+        manifest["bundle_digest"] = serde_json::json!(bundle_digest);
         let manifest_bytes = setup_core::canonical::to_canonical_bytes(&manifest).unwrap();
 
         let mut entries = vec![Entry {

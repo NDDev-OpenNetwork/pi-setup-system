@@ -242,10 +242,27 @@ pub fn bundle_accepted(bundle: &BundleBinding) -> serde_json::Value {
 /// tell whether the refusal concerns the bytes it sent or some other bundle.
 #[must_use]
 pub fn bundle_rejected(bundle: &BundleBinding, reason: WireReason) -> serde_json::Value {
+    rejected_with_detail(bundle, reason, None)
+}
+
+/// The `validate-bundle` refusal, with the detail that explains it.
+///
+/// The consumer decides from `reason` alone, and the detail is for the person
+/// reading afterwards. A refusal carrying only a code is correct and nearly
+/// useless: it says a bundle was wrong without saying which part.
+#[must_use]
+pub fn rejected_with_detail(
+    bundle: &BundleBinding,
+    reason: WireReason,
+    detail: Option<&str>,
+) -> serde_json::Value {
     let mut response = serde_json::Map::new();
     insert_bundle_echo(&mut response, bundle);
     response.insert("rejected".to_owned(), serde_json::json!(true));
     response.insert("reason".to_owned(), serde_json::json!(reason.as_str()));
+    if let Some(text) = detail {
+        response.insert("detail".to_owned(), serde_json::json!(text));
+    }
     serde_json::Value::Object(response)
 }
 

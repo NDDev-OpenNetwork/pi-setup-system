@@ -49,7 +49,7 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             })
         }
         Invocation::Status { target } => status(harness, &target),
-        Invocation::ValidateBundle { bundle, .. } => validate_bundle(harness, &bundle),
+        Invocation::ValidateBundle { bundle, .. } => Ok(validate_bundle(harness, &bundle)),
         Invocation::PlanOperation { target, request } => plan(harness, &target, &request),
         Invocation::ApplyOperation {
             target,
@@ -126,12 +126,32 @@ fn open(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathBuf,
 }
 
 /// Report the target without changing it, including a schema this build cannot write.
+///
+/// The shape is the consumer's, not ours. `ai_stp` reads exactly two fields to
+/// decide what it is looking at — `state`, one of `missing`, `unmanaged` or
+/// `managed`, and `target_digest` — and it calls this twice, requiring the two
+/// answers to be *identical*. So nothing here may vary between calls: no clock,
+/// no counter, no ordering that depends on a directory walk.
 fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let (resolved, control, pool) = open(harness, target)?;
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
 
-    let state = match ProviderState::read(resolved.root(), harness.state_file)? {
+    let reading = ProviderState::read(resolved.root(), harness.state_file)?;
+    // `missing` is for a target this provider has never written and that holds
+    // nothing of the product either; `unmanaged` for one that exists and is not
+    // ours; `managed` for one carrying our state.
+    let owns_anything = harness
+        .native_namespaces
+        .iter()
+        .any(|namespace| resolved.root().join(namespace).exists());
+    let state = match &reading {
+        StateReading::Current(_) => "managed",
+        _ if owns_anything => "unmanaged",
+        _ => "missing",
+    };
+
+    let provider_state = match reading {
         StateReading::Absent => serde_json::json!({ "present": false }),
         StateReading::ForeignSchema { found_schema } => serde_json::json!({
             "present": true,
@@ -159,13 +179,14 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     };
 
     Ok(serde_json::json!({
-        "state": "verified",
+        "state": state,
+        "target_digest": identity,
         "protocol_version": provider_v3::PROTOCOL_VERSION,
         "provider_id": harness.provider_id,
         "harness_id": harness.harness_id,
         "canonical_target": resolved.root().to_string_lossy(),
         "target_identity_digest": identity,
-        "provider_state": state,
+        "provider_state": provider_state,
         "journal": journal.map(|entry| serde_json::json!({
             "phase": entry.phase.as_str(),
             "operation": entry.operation,
@@ -179,53 +200,31 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     }))
 }
 
-/// Check a bundle's identity against the bytes the caller pointed at.
-fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<serde_json::Value> {
-    let binding = &bundle.binding;
-    if binding.bundle_format != facts::BUNDLE_FORMAT {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::UnsupportedBundleFormat,
-        ));
+/// Check a bundle against the exact claim that named it.
+///
+/// Every answer carries the four echoes, refusal included. That is the point of
+/// them: without the echoes a consumer cannot tell whether a refusal concerns
+/// the bytes it sent or some other bundle entirely, and a refusal it cannot
+/// attribute is a refusal it cannot act on.
+///
+/// So a failure here is *not* propagated as an error. It is turned into an
+/// answer — `rejected: true`, a stable reason, and the echoes — because that is
+/// what `validate-bundle` means.
+fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> serde_json::Value {
+    // There is no error path out of here, and the signature says so.
+    match verified_bundle(harness, bundle) {
+        Ok(_) => provider_v3::plan::bundle_accepted(&bundle.binding),
+        Err(error) => {
+            // A refusal always names a reason. A declaration defect in this
+            // build is not one, and reporting it as a bundle problem would
+            // blame the caller's bytes for our own; it is reported under the
+            // format reason with the detail saying what actually happened.
+            let reason = error
+                .reason()
+                .unwrap_or(WireReason::UnsupportedBundleFormat);
+            provider_v3::plan::rejected_with_detail(&bundle.binding, reason, Some(error.detail()))
+        }
     }
-
-    let Ok(metadata) = fs::symlink_metadata(&bundle.path) else {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::DigestMismatch,
-        ));
-    };
-    if metadata.is_symlink() {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::LinkNotAllowed,
-        ));
-    }
-    if !metadata.is_file() {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::SpecialFileNotAllowed,
-        ));
-    }
-    if metadata.len() != binding.bundle_size {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::DigestMismatch,
-        ));
-    }
-    if metadata.len() > harness.max_bytes {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::LimitExceeded,
-        ));
-    }
-    if digest::of_file(&bundle.path)? != binding.artifact_digest {
-        return Ok(provider_v3::plan::bundle_rejected(
-            binding,
-            WireReason::DigestMismatch,
-        ));
-    }
-    Ok(provider_v3::plan::bundle_accepted(binding))
 }
 
 /// Produce a plan without touching the target.
@@ -255,7 +254,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             let payload = pool.payload_of(&record.backup_ref)?;
             (
                 vec![
-                    format!("capture the current target before restoring"),
+                    "capture the current target before restoring".to_owned(),
                     format!("restore the target from {}", record.backup_ref.as_str()),
                 ],
                 Some(record.backup_ref.as_str().to_owned()),
@@ -981,13 +980,49 @@ mod tests {
         let target = seeded("status");
         let before = fs::read_to_string(target.join("AGENTS.md")).unwrap();
         let answer = run(args("status", &target, &[]));
-        assert_eq!(answer["state"], "verified");
+        // The seeded target holds files this provider owns but no state of ours.
+        assert_eq!(answer["state"], "unmanaged");
         assert_eq!(answer["provider_state"]["present"], false);
         assert!(answer["journal"].is_null());
         assert_eq!(
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn status_speaks_the_three_states_the_consumer_reads() {
+        // `ai_stp` decides what it is looking at from `state` and `target_digest`
+        // alone, and its set is closed. Anything else reads as a broken provider.
+        let empty = scratch("status-missing").join("target");
+        let answer = run(args("status", &empty, &[]));
+        assert_eq!(answer["state"], "missing");
+        assert!(
+            answer["target_digest"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+
+        let seeded_target = seeded("status-unmanaged");
+        assert_eq!(
+            run(args("status", &seeded_target, &[]))["state"],
+            "unmanaged"
+        );
+
+        plan_then_apply(&seeded_target, "backup", &[]);
+        assert_eq!(run(args("status", &seeded_target, &[]))["state"], "managed");
+    }
+
+    #[test]
+    fn two_status_calls_return_the_same_bytes() {
+        // The consumer calls it twice and requires the answers to be identical,
+        // so nothing in here may vary: no clock, no counter, no walk order.
+        let target = seeded("status-repeatable");
+        plan_then_apply(&target, "backup", &[]);
+        let first = run(args("status", &target, &[]));
+        let second = run(args("status", &target, &[]));
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -1320,21 +1355,21 @@ mod tests {
         let mut manifest = serde_json::json!({
             "schema_version": 1,
             "bundle_format": "ai-stp-bundle/1",
-            "protocol_version": provider_v3::PROTOCOL_VERSION,
+            "protocol_version": provider_v3::bundle::BUNDLE_PROTOCOL_VERSION,
             "harness_id": TEST.harness_id,
             "builder_version": "0.1.0",
-            "compiled": true,
+            "input_digest": "sha256:".to_owned() + &"3".repeat(64),
+            "managed_paths": files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>(),
             "files": records,
-            "refusals": [],
-            "max_files": 2000,
-            "max_file_bytes": 4 * 1024 * 1024,
-            "max_bundle_bytes": 64 * 1024 * 1024,
-            "byte_length": 0,
-            "artifact_digest": "",
+            "limits": {
+                "max_files": 2000,
+                "max_file_bytes": 4 * 1024 * 1024,
+                "max_bundle_bytes": 64 * 1024 * 1024,
+            },
         });
         let bundle_digest =
             setup_core::digest::of_domain_canonical_json(BUNDLE_DOMAIN, &manifest).unwrap();
-        manifest["digest"] = serde_json::json!(bundle_digest);
+        manifest["bundle_digest"] = serde_json::json!(bundle_digest);
 
         let mut entries = vec![Entry {
             name: MANIFEST_MEMBER.to_owned(),
