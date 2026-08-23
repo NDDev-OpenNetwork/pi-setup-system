@@ -116,6 +116,25 @@ jobs:
         with:
           subject-path: 'staging/pi-setup-system-*'
 
+      # Written to a file rather than passed inline: a multi-line `--notes`
+      # argument has to escape the YAML block scalar to stay readable, and a
+      # workflow that parses as YAML while meaning something else is worse than
+      # one that fails outright.
+      - name: Compose the release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          Binaries for Linux, macOS and Windows, with `SHA256SUMS` and build provenance.
+
+          This program is AGPL-3.0-or-later and its source is public. `cargo build --release --locked`
+          at this tag produces these binaries, and building it yourself is fully supported --
+          these are a convenience, not the authorised copy.
+
+          To check a download came from this commit through this run, without trusting whoever
+          published it:
+
+              gh attestation verify <file> --repo NDDev-OpenNetwork/pi-setup-system
+          NOTES
+
       - name: Publish one immutable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,6 +143,4 @@ jobs:
           gh release create "$TAG" staging/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
-            --notes "Binaries for Linux, macOS and Windows, with \`SHA256SUMS\` and build provenance.
-
-This program is AGPL-3.0-or-later and its source is public: \`cargo build --release --locked\` at this tag produces these binaries, and building it yourself is fully supported. The attestation lets you verify a download came from this commit through this run without having to trust anyone."
+            --notes-file notes.md
