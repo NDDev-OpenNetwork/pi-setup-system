@@ -124,6 +124,20 @@ fn open(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathBuf,
     Ok((resolved, control, pool))
 }
 
+/// Open a target for reading, creating nothing inside it.
+///
+/// [`open`] makes the control directory and the backup pool, which is right
+/// when an effect is about to be written and wrong when a command is only
+/// reporting. `status` used [`open`], so observing a fresh target left a
+/// directory behind -- and a consumer that had just been told the target was
+/// empty found it no longer was, because asking had changed the answer.
+fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathBuf, Pool)> {
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    let control = resolved.control_directory();
+    let pool = Pool::observe(&control, facts::BACKUP_SLOTS)?;
+    Ok((resolved, control, pool))
+}
+
 /// Report the target without changing it, including a schema this build cannot write.
 ///
 /// The shape is the consumer's, not ours. `ai_stp` reads exactly two fields to
@@ -132,22 +146,25 @@ fn open(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathBuf,
 /// answers to be *identical*. So nothing here may vary between calls: no clock,
 /// no counter, no ordering that depends on a directory walk.
 fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
-    let (resolved, control, pool) = open(harness, target)?;
+    let (resolved, control, pool) = observe(harness, target)?;
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
 
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
-    // `missing` is for a target this provider has never written and that holds
-    // nothing of the product either; `unmanaged` for one that exists and is not
-    // ours; `managed` for one carrying our state.
-    let owns_anything = harness
-        .native_namespaces
-        .iter()
-        .any(|namespace| resolved.root().join(namespace).exists());
+    // `managed` carries our state; `unmanaged` holds content that is not ours;
+    // `missing` means there is nothing here at all.
+    //
+    // That last one used to be looser -- it asked whether this provider owned
+    // anything, so a directory full of another product's files reported
+    // `missing`. A consumer reads this to decide what it is looking at, and
+    // being told a populated directory is missing invites it to treat the
+    // place as free. Emptiness is about the directory, not about us.
+    let is_empty =
+        fs::read_dir(resolved.root()).map_or(true, |mut entries| entries.next().is_none());
     let state = match &reading {
         StateReading::Current(_) => "managed",
-        _ if owns_anything => "unmanaged",
-        _ => "missing",
+        _ if is_empty => "missing",
+        _ => "unmanaged",
     };
 
     let provider_state = match reading {
@@ -226,14 +243,32 @@ fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> serde_json::Value 
     }
 }
 
-/// Produce a plan without touching the target.
-fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde_json::Value> {
-    let (resolved, control, pool) = open(harness, target)?;
-    setup_core::journal::require_clean_for_planning(
-        &control,
-        &control.join("transaction"),
-        &pool.partial_slots()?,
-    )?;
+/// Refuse a request this build could not honour as asked, before promising it.
+///
+/// Both checks belong before any effect is described, because both describe a
+/// plan that could never be applied -- and a refusal deferred to apply time
+/// arrives after the consumer has stored the plan, scheduled it, and come back.
+fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
+    // A profile this build never advertised cannot be honoured, and recording
+    // it in a plan would be worse than refusing: the apply would run under the
+    // only posture this build has while the artifact claimed another.
+    //
+    // The reason is a compromise and worth naming as one. The contract's closed
+    // set carries no permission-profile refusal -- `unsupported_operation` is
+    // false because the operation is supported, and this is the nearest thing
+    // to "a profile you named is not one I have". The detail says exactly what
+    // happened, because that is the part a reader can trust here.
+    if let Some(profile) = request.permission_profile.as_deref()
+        && !harness.permission_profiles.contains(&profile)
+    {
+        return Err(Error::refuse(
+            WireReason::ProjectionProfileMismatch,
+            format!(
+                "{profile:?} is not a permission profile {} declares; it offers {:?}",
+                harness.provider_id, harness.permission_profiles
+            ),
+        ));
+    }
 
     // Read the deadline before promising anything. A plan carrying an expiry
     // this build cannot parse is a plan that can never authorize an apply, and
@@ -248,6 +283,20 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             ),
         ));
     }
+
+    Ok(())
+}
+
+/// Produce a plan without touching the target.
+fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde_json::Value> {
+    let (resolved, control, pool) = open(harness, target)?;
+    setup_core::journal::require_clean_for_planning(
+        &control,
+        &control.join("transaction"),
+        &pool.partial_slots()?,
+    )?;
+
+    honourable(harness, request)?;
 
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
     let profile = harness.projection_profile()?;
@@ -1050,6 +1099,55 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_profile_this_build_never_advertised_is_refused() {
+        // `provider-info` publishes a closed list. Accepting anything else and
+        // writing it into the plan would record a posture the apply would not
+        // use -- the artifact would claim one thing and the effect be another.
+        let target = seeded("permission-profile");
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+                "--permission-profile",
+                "not-declared-anywhere",
+            ],
+        ));
+        assert!(error.reason().is_some(), "a refusal must name a reason");
+        assert!(
+            error.detail().contains("not-declared-anywhere"),
+            "{}",
+            error.detail()
+        );
+
+        // The declared one still plans.
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+                "--permission-profile",
+                "default",
+            ],
+        ));
+        assert_eq!(planned["state"], "planned");
+    }
+
+    #[test]
     fn an_unreadable_expiry_says_so_instead_of_claiming_the_plan_expired() {
         // Both refusals are `stale` and both are right to refuse. What differs
         // is where the reader is sent to look: a clock, or a format. Being told
@@ -1079,6 +1177,25 @@ mod tests {
     }
 
     #[test]
+    fn observing_a_target_leaves_nothing_behind() {
+        // `status` used to create the control directory, so asking a fresh
+        // target what it held made it hold something. The consumer's own
+        // conformance caught it from the outside: it hands over a directory the
+        // operator named and then finds it is no longer empty.
+        let empty = scratch("status-creates-nothing").join("target");
+        fs::create_dir_all(&empty).unwrap();
+
+        let answer = run(args("status", &empty, &[]));
+        assert_eq!(answer["state"], "missing");
+
+        let left = fs::read_dir(&empty).unwrap().count();
+        assert_eq!(
+            left, 0,
+            "status wrote into a target it was only reporting on"
+        );
+    }
+
+    #[test]
     fn status_speaks_the_three_states_the_consumer_reads() {
         // `ai_stp` decides what it is looking at from `state` and `target_digest`
         // alone, and its set is closed. Anything else reads as a broken provider.
@@ -1097,6 +1214,14 @@ mod tests {
             run(args("status", &seeded_target, &[]))["state"],
             "unmanaged"
         );
+
+        // Content that is not ours still makes a target populated: reporting
+        // `missing` would tell a consumer the place is free while another
+        // product's files sit in it.
+        let foreign = scratch("status-foreign").join("target");
+        fs::create_dir_all(foreign.join("someone-elses")).unwrap();
+        fs::write(foreign.join("someone-elses/notes.md"), "not ours").unwrap();
+        assert_eq!(run(args("status", &foreign, &[]))["state"], "unmanaged");
 
         plan_then_apply(&seeded_target, "backup", &[]);
         assert_eq!(run(args("status", &seeded_target, &[]))["state"], "managed");
