@@ -53,8 +53,12 @@ jobs:
 
       # A release whose tag disagrees with the version it builds is a trap that
       # only shows up months later, in a bug report about the wrong binary.
+      # Linux only, and once is enough: the tag and the crate version are the
+      # same everywhere, and `python3` is not on PATH on the Windows runner --
+      # only `python` is. Running this on all three would fail there for a
+      # reason that has nothing to do with the release.
       - name: Refuse a tag that does not match the crate version
-        if: github.event_name == 'push'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         env:
           TAG: ${{ github.ref_name }}
         run: |
