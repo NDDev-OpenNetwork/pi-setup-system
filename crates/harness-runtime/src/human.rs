@@ -340,16 +340,16 @@ fn status(harness: &Harness, target: &Path) -> Result<()> {
         }
     }
 
-    let control = resolved.ensure_control_directory()?;
-    let pool = Pool::open(&control, facts::BACKUP_SLOTS)?;
+    // Observing, not opening: reporting how many backups exist must not create
+    // the place they would live. Asking a question should not change its answer.
+    let pool = Pool::observe(&resolved.control_directory(), facts::BACKUP_SLOTS)?;
     println!("Backups  {}", pool.list()?.len());
     Ok(())
 }
 
 fn backups(harness: &Harness, target: &Path) -> Result<()> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let control = resolved.ensure_control_directory()?;
-    let records = Pool::open(&control, facts::BACKUP_SLOTS)?.list()?;
+    let records = Pool::observe(&resolved.control_directory(), facts::BACKUP_SLOTS)?.list()?;
     if records.is_empty() {
         println!("No backups. One is captured before every change.");
         return Ok(());

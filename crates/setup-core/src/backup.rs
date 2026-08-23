@@ -136,6 +136,31 @@ impl Pool {
         Ok(Self { root, capacity })
     }
 
+    /// Read an existing pool without creating one.
+    ///
+    /// `open` makes the pool directory, which is right when a mutation is about
+    /// to capture into it and wrong when a command is only reporting: a caller
+    /// that asks what backups exist should not thereby create the place they
+    /// would live. `list` and friends work on the returned value either way,
+    /// because a pool whose root is absent simply has no slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReasonCode::IntegrityMismatch`] if `capacity` is zero, for the
+    /// same reason [`Pool::open`] does.
+    pub fn observe(control_directory: &Path, capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::new(
+                ReasonCode::IntegrityMismatch,
+                "a backup pool with no slots cannot support restore",
+            ));
+        }
+        Ok(Self {
+            root: control_directory.join(POOL_DIRECTORY_NAME),
+            capacity,
+        })
+    }
+
     /// Completed slots, newest first.
     ///
     /// # Errors
