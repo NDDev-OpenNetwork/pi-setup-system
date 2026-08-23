@@ -1,6 +1,6 @@
 [package]
 name = "pi-setup-system"
-version = "0.1.0"
+version.workspace = true
 description = "Installs, reselects, restores and removes a complete Pi Coding Agent harness configuration in a caller-named target directory."
 edition.workspace = true
 rust-version.workspace = true

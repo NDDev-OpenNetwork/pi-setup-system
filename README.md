@@ -99,6 +99,45 @@ planning refuses with `recovery_required` instead of guessing. Only
 <ref>` restores a chosen one. Slots are numbered by a monotonic sequence rather
 than a timestamp, so "the last backup" does not change meaning when a clock does.
 
+## Installing
+
+Linux and macOS:
+
+```bash
+sh install.sh
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Each fetches the release artifact for this platform, checks it against the
+release's own `SHA256SUMS`, and places it at a predictable path: `~/.local/bin`
+on Linux and macOS, `%LOCALAPPDATA%\Programs` on Windows. Neither needs
+privilege and neither registers anything anywhere.
+
+Releases carry six binaries — Linux, macOS and Windows, on x86_64 and arm64 —
+which is what `provider-info` declares, so the declaration and what you can
+download say the same thing.
+
+### Pointing `ai-stp` at it
+
+`ai-stp` does not search for a provider. Its `resolve_executable` requires a
+real file at a path the caller names and refuses without one, on the stated
+ground that it never writes a target itself. So the path is what an installer
+owes you, and you hand it over in full:
+
+```bash
+ai-stp provider conformance --harness pi \
+  --executable ~/.local/bin/pi-setup-system \
+  --target <dir> --protocol-version 3 --json
+```
+
+Building it yourself is equally supported and produces the same binary; a
+release is a convenience, not the authorised copy.
+
 ## Building
 
 ```bash

@@ -1,6 +1,6 @@
 [package]
 name = "harness-runtime"
-version = "0.1.0"
+version.workspace = true
 description = "The provider command runtime every NDDev setup system shares, parameterized by one harness's verified facts."
 edition.workspace = true
 rust-version.workspace = true
