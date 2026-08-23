@@ -1,2 +1,6 @@
 /target
 **/*.rs.bk
+
+# Local agent-tool state. Serena is disabled for these repositories in their GDS
+# anchor, so anything it leaves here is residue rather than project content.
+.serena/
