@@ -32,6 +32,8 @@ product:
   entrypoints:
     - change: "the shared lock, journal, backup and atomic-apply kernel"
       path: "crates/setup-core"
+    - change: "the ai-stp provider protocol v3 wire boundary"
+      path: "crates/provider-v3"
     - change: "the harness adapter and both command surfaces"
       path: "crates/pi-setup-system"
     - change: "the setup catalog"

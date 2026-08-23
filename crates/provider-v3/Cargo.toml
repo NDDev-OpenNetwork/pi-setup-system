@@ -1,22 +1,17 @@
 [package]
-name = "pi-setup-system"
-description = "Installs, reselects, restores and removes a complete Pi harness configuration, and owns the program lifecycle."
-version.workspace = true
+name = "provider-v3"
+version = "0.1.0"
+description = "The ai-stp provider protocol v3 wire boundary: argv contract, closed vocabulary and exact echoes."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "pi-setup-system"
-path = "src/main.rs"
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 setup-core = { workspace = true }
-provider-v3 = { workspace = true }
 
 [lints]
 workspace = true

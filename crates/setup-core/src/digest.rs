@@ -33,6 +33,33 @@ pub fn of_canonical_json(value: &serde_json::Value) -> Result<String> {
     Ok(of_bytes(&canonical::to_canonical_bytes(value)?))
 }
 
+/// Hash bytes inside a named domain: `sha256(domain || 0x00 || payload)`.
+///
+/// Domain separation is what stops two object classes with identical bytes from
+/// producing an interchangeable identifier. A plan and a projection profile that
+/// happened to serialize the same way would otherwise share a digest, and a
+/// consumer checking one against the other would find them equal.
+#[must_use]
+pub fn of_domain_bytes(domain: &str, payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(payload);
+    format!("{PREFIX}{:x}", hasher.finalize())
+}
+
+/// Hash a JSON value inside a named domain through its RFC 8785 form.
+///
+/// # Errors
+///
+/// Propagates the refusal from [`canonical::to_canonical_bytes`].
+pub fn of_domain_canonical_json(domain: &str, value: &serde_json::Value) -> Result<String> {
+    Ok(of_domain_bytes(
+        domain,
+        &canonical::to_canonical_bytes(value)?,
+    ))
+}
+
 /// Hash a regular file without loading it whole.
 ///
 /// # Errors
@@ -234,6 +261,20 @@ mod tests {
     #[test]
     fn bytes_are_tagged_with_the_algorithm() {
         assert!(of_bytes(b"x").starts_with(PREFIX));
+    }
+
+    #[test]
+    fn a_domain_changes_the_digest_of_identical_bytes() {
+        let one = of_domain_bytes("ai-stp:provider-plan:v3", b"payload");
+        let two = of_domain_bytes("ai-stp:provider-projection:v3", b"payload");
+        assert_ne!(one, two);
+        assert_ne!(one, of_bytes(b"payload"));
+    }
+
+    #[test]
+    fn the_domain_separator_is_a_nul_byte_not_a_concatenation() {
+        // Without the separator, ("ab", "c") and ("a", "bc") would collide.
+        assert_ne!(of_domain_bytes("ab", b"c"), of_domain_bytes("a", b"bc"));
     }
 
     #[test]
