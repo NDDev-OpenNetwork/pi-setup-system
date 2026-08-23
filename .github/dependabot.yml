@@ -7,6 +7,8 @@ updates:
       day: monday
       time: "06:00"
       timezone: Asia/Almaty
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       cargo:
@@ -22,6 +24,8 @@ updates:
       day: monday
       time: "06:30"
       timezone: Asia/Almaty
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       github-actions:
