@@ -424,7 +424,11 @@ fn apply_setup(
         target,
         operation,
         Effect::Materialize { setup: &setup },
-        Some(setup_id),
+        wire::Applied {
+            setup_id: Some(setup_id.to_owned()),
+            setup_definition_digest: Some(setup.definition_digest.clone()),
+            ..wire::Applied::default()
+        },
     )?;
     println!("Applied setup {setup_id} to {}.", target.display());
     println!(
@@ -461,7 +465,7 @@ fn restore(harness: &Harness, target: &Path, backup: Option<String>) -> Result<(
         target,
         Operation::Restore,
         Effect::Restore { backup_ref: backup },
-        None,
+        wire::Applied::default(),
     )?;
     match named {
         Some(reference) => println!("Restored {reference} into {}.", target.display()),
@@ -475,7 +479,13 @@ fn restore(harness: &Harness, target: &Path, backup: Option<String>) -> Result<(
 }
 
 fn remove(harness: &Harness, target: &Path) -> Result<()> {
-    let report = mutate(harness, target, Operation::Remove, Effect::Remove, None)?;
+    let report = mutate(
+        harness,
+        target,
+        Operation::Remove,
+        Effect::Remove,
+        wire::Applied::default(),
+    )?;
     println!(
         "Removed everything {} owns from {}.",
         harness.provider_id,
@@ -495,7 +505,7 @@ fn mutate(
     target: &Path,
     operation: Operation,
     effect: Effect<'_>,
-    setup_id: Option<&str>,
+    applied: wire::Applied,
 ) -> Result<serde_json::Value> {
     let resolved = Target::resolve(target, harness.control_directory)?;
     let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
@@ -549,7 +559,7 @@ fn mutate(
         restore_target_digest,
         permission_profile: None,
         expires_at: &expiry::deadline_in(PLAN_WINDOW_SECONDS, SystemTime::now()),
-        effects: effect_lines(harness, &effect, setup_id),
+        effects: effect_lines(harness, &effect, applied.setup_id.as_deref()),
     })?;
     let plan_digest = artifact.digest()?;
     let provenance = serde_json::to_value(&artifact)
@@ -565,7 +575,7 @@ fn mutate(
             expected_target_digest: identity,
             effect,
             provenance,
-            setup_id: setup_id.map(str::to_owned),
+            applied,
         },
     )
 }
@@ -861,7 +871,11 @@ mod tests {
             target,
             operation,
             Effect::Materialize { setup: &setup },
-            Some(id),
+            wire::Applied {
+                setup_id: Some(id.to_owned()),
+                setup_definition_digest: Some(setup.definition_digest.clone()),
+                ..wire::Applied::default()
+            },
         )
         .unwrap();
     }
@@ -904,7 +918,10 @@ mod tests {
             &target,
             Operation::Install,
             Effect::Materialize { setup: &setup },
-            Some("exact"),
+            wire::Applied {
+                setup_id: Some("exact".to_owned()),
+                ..wire::Applied::default()
+            },
         )
         .unwrap();
 
@@ -975,7 +992,7 @@ mod tests {
             Effect::Restore {
                 backup_ref: Some("slot-000000000001".to_owned()),
             },
-            None,
+            wire::Applied::default(),
         )
         .unwrap();
         assert!(!target.join("AGENTS.md").exists());
@@ -983,6 +1000,50 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join("unrelated.txt")).unwrap(),
             "mine"
+        );
+    }
+
+    /// Read the provider state a mutation left behind.
+    fn state(target: &Path) -> setup_core::stamp::ProviderState {
+        match ProviderState::read(target, harness().state_file).unwrap() {
+            StateReading::Current(current) => *current,
+            other => panic!("no current state: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_restore_names_the_setup_the_slot_it_restored_wrote_down() {
+        // A restore returns exact bytes, and until this guard it returned them
+        // anonymously: the slot records which setup was in effect when it was
+        // captured, and the restore threw that away. `status` then said
+        // "(unnamed)" about a target that was byte-for-byte a known setup.
+        let (catalog, target) = world("restore-names-its-setup");
+        install(&catalog, &target, "baseline", Operation::Install);
+        let installed = state(&target);
+        install(&catalog, &target, "minimal", Operation::Replace);
+
+        mutate(
+            &harness(),
+            &target,
+            Operation::Restore,
+            Effect::Restore { backup_ref: None },
+            wire::Applied::default(),
+        )
+        .unwrap();
+
+        let restored = state(&target);
+        assert_eq!(
+            restored.target_identity_digest, installed.target_identity_digest,
+            "the bytes must come back exactly"
+        );
+        assert_eq!(
+            restored.setup_stable_id.as_deref(),
+            Some("baseline"),
+            "and so must the name the slot recorded"
+        );
+        assert_eq!(
+            restored.setup_definition_digest, installed.setup_definition_digest,
+            "and the definition it was identified by"
         );
     }
 
@@ -997,7 +1058,7 @@ mod tests {
             &target,
             Operation::Restore,
             Effect::Restore { backup_ref: None },
-            None,
+            wire::Applied::default(),
         )
         .unwrap();
         // The newest capture preceded the replace, so baseline comes back.
@@ -1032,7 +1093,14 @@ mod tests {
         let (catalog, target) = world("remove");
         install(&catalog, &target, "baseline", Operation::Install);
 
-        mutate(&harness(), &target, Operation::Remove, Effect::Remove, None).unwrap();
+        mutate(
+            &harness(),
+            &target,
+            Operation::Remove,
+            Effect::Remove,
+            wire::Applied::default(),
+        )
+        .unwrap();
         assert!(!target.join("AGENTS.md").exists());
         assert!(!target.join("settings.json").exists());
         assert_eq!(
@@ -1056,7 +1124,10 @@ mod tests {
             &target,
             Operation::Install,
             Effect::Materialize { setup: &setup },
-            Some("sneaky"),
+            wire::Applied {
+                setup_id: Some("sneaky".to_owned()),
+                ..wire::Applied::default()
+            },
         )
         .unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedNativeSurface));
