@@ -251,8 +251,33 @@ impl Manifest {
 pub struct Bundle {
     /// The manifest as read.
     pub manifest: Manifest,
+    /// What the setup passport says the setup is.
+    pub passport: SetupPassport,
     /// Each declared file's bytes and mode, by target-relative path.
     pub files: BTreeMap<String, (Vec<u8>, u32)>,
+}
+
+/// The two things the setup passport states that a provider must record.
+///
+/// `setup-passport.json` is a required member and was required and then
+/// discarded, so a target configured from a bundle recorded no setup identity
+/// and no setup version at all -- both are provenance fields the contract names,
+/// and both were null for every bundle install.
+///
+/// Only what the passport *states* is copied. Its own digest is not computed
+/// here: the passport does not carry one and the contract does not define how
+/// it is taken, so a value produced here would be this program's opinion rather
+/// than the passport's identity, and that is worse than the null the field is
+/// allowed to hold. Everything else the passport carries -- tags, permissions,
+/// component version references, evidence links -- belongs to the consumer.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct SetupPassport {
+    /// The setup's stable identity.
+    #[serde(default)]
+    pub stable_id: String,
+    /// The setup version this bundle was built from.
+    #[serde(default)]
+    pub version: String,
 }
 
 /// What the caller claimed about the bytes it sent.
@@ -346,7 +371,21 @@ impl Bundle {
             ));
         }
 
-        Ok(Self { manifest, files })
+        // The passport is required to be the second member and was, until now,
+        // required and then discarded. What it states about the setup is the
+        // only source for two provenance fields, and a malformed one is not a
+        // reason to refuse a bundle whose files and digests all hold — so it is
+        // read leniently and its absence of content reads as no content.
+        let passport = members
+            .get(1)
+            .and_then(|member| serde_json::from_slice::<SetupPassport>(&member.data).ok())
+            .unwrap_or_default();
+
+        Ok(Self {
+            manifest,
+            passport,
+            files,
+        })
     }
 }
 

@@ -180,7 +180,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("setup-core-target-{name}"));
+        let base =
+            std::env::temp_dir().join(format!("setup-core-target-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         fs::canonicalize(&base).unwrap()

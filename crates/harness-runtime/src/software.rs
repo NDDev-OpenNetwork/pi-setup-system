@@ -119,23 +119,76 @@ pub(crate) fn plan(
     let entry_point = format!("bin/{}", declared.command);
     let exposed = root.join(&entry_point);
 
+    // Planning may read the local disk and may not reach the network, so what
+    // is already under the prefix belongs in the plan. Without it an install
+    // and an update produced byte-identical effects -- two names for one act,
+    // and neither said what was about to be replaced.
+    let present = software::Present::under(&root, declared.command);
+
     if operation == Operation::SoftwareRemove {
-        return Ok((
-            Vec::new(),
-            vec![
-                format!(
-                    "remove {}, the {} tree this provider installed",
-                    root.join(declared.version).display(),
-                    declared.version
-                ),
-                format!("remove {}", exposed.display()),
-            ],
+        let mut effects = vec![
+            format!(
+                "remove {}, the {} tree this provider installed",
+                root.join(declared.version).display(),
+                declared.version
+            ),
+            format!("remove {}", exposed.display()),
+        ];
+        // Other versions are left, and saying which is the difference between
+        // leaving them and losing track of them. This build pins one version
+        // and cannot know whether an older tree is still wanted.
+        let kept: Vec<&str> = present
+            .versions
+            .iter()
+            .map(String::as_str)
+            .filter(|version| *version != declared.version)
+            .collect();
+        if !kept.is_empty() {
+            effects.push(format!(
+                "leave {} in place: this build pins {} and does not decide about versions it \
+                 does not pin",
+                kept.join(", "),
+                declared.version
+            ));
+        }
+        return Ok((Vec::new(), effects));
+    }
+
+    // An update of nothing is a request that cannot be honoured as asked.
+    // Installing instead would be doing something else and calling it done.
+    if operation == Operation::SoftwareUpdate && present.versions.is_empty() {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "there is no {} under {} to update; software_install is the operation that \
+                 puts one there",
+                declared.command,
+                root.display()
+            ),
         ));
     }
 
     let (os, arch) = platform_of_this_host();
     let artifact = declared.artifact_for(os, arch)?;
-    let effects = vec![
+    let mut effects = Vec::new();
+    if present.holds(declared.version) {
+        effects.push(format!(
+            "replace {}, which is already installed",
+            declared.version
+        ));
+    } else if let Some(running) = present.exposed.as_deref() {
+        effects.push(format!(
+            "move {} from {running} to {}, keeping {running} where it is",
+            declared.command, declared.version
+        ));
+    } else if !present.versions.is_empty() {
+        effects.push(format!(
+            "install {} beside {}, which no entry point names",
+            declared.version,
+            present.versions.join(", ")
+        ));
+    }
+    effects.extend([
         format!(
             "download {} ({} bytes) in the operation's own download phase",
             artifact.url, artifact.bytes
@@ -153,7 +206,7 @@ pub(crate) fn plan(
             ),
         },
         format!("point {} at it", exposed.display()),
-    ];
+    ]);
 
     Ok((
         vec![SoftwareArtifact {
@@ -227,6 +280,25 @@ pub(crate) fn apply(
             ),
         ));
     };
+
+    // Re-checked here, not trusted from the plan: applying happens later, and
+    // the prefix could have been emptied in between. The plan's digest binds
+    // what was decided, not what the disk still holds.
+    if operation == Operation::SoftwareUpdate
+        && software::Present::under(&root, declared.command)
+            .versions
+            .is_empty()
+    {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "there is no {} under {} to update any more; software_install is the operation \
+                 that puts one there",
+                declared.command,
+                root.display()
+            ),
+        ));
+    }
 
     let (os, arch) = platform_of_this_host();
     let artifact = declared.artifact_for(os, arch)?;

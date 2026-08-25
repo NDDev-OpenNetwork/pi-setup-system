@@ -93,6 +93,72 @@ pub struct Software {
     pub unsupported: &'static [&'static str],
 }
 
+/// What is already under a program directory.
+///
+/// Read at plan time, which is allowed to look at the local disk and is not
+/// allowed to reach the network. Without it `software_install` and
+/// `software_update` produced byte-identical plans — two names for one act, and
+/// neither of them said what was about to be replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Present {
+    /// Every version directory found, sorted.
+    pub versions: Vec<String>,
+    /// The version the exposed command currently resolves into, when it does.
+    pub exposed: Option<String>,
+}
+
+impl Present {
+    /// Whether this build's pinned version is one of the ones already there.
+    #[must_use]
+    pub fn holds(&self, version: &str) -> bool {
+        self.versions.iter().any(|found| found == version)
+    }
+
+    /// Read what a program directory holds.
+    ///
+    /// A missing or unreadable directory reads as empty rather than failing: a
+    /// plan for a prefix that does not exist yet is exactly the ordinary case.
+    #[must_use]
+    pub fn under(root: &Path, command: &str) -> Self {
+        let mut versions: Vec<String> = fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            // `bin` holds the exposed command and a dotted directory holds this
+            // provider's own bookkeeping. Neither is a version.
+            .filter(|name| name != "bin" && !name.starts_with('.'))
+            .collect();
+        versions.sort();
+
+        // The link points into the version directory it was installed from, so
+        // the version is the component right under the root.
+        //
+        // Resolved rather than read. `expose` writes an absolute target, which
+        // a plain `strip_prefix` handles — but a link someone rewrote by hand
+        // as `../<version>/<member>` does not: its first component is `bin`,
+        // and the answer becomes "no entry point names this version" while the
+        // entry point names it. Resolving costs one syscall and is right for
+        // both. A dangling link resolves to nothing, which is also correct:
+        // nothing usable is exposed.
+        let link = root.join("bin").join(command);
+        let exposed = fs::canonicalize(&link)
+            .ok()
+            .zip(fs::canonicalize(root).ok())
+            .and_then(|(to, base)| {
+                to.strip_prefix(&base).ok().and_then(|rest| {
+                    rest.components()
+                        .next()
+                        .map(|first| first.as_os_str().to_string_lossy().into_owned())
+                })
+            })
+            .filter(|name| versions.contains(name));
+
+        Self { versions, exposed }
+    }
+}
+
 /// What an install produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
@@ -575,6 +641,81 @@ mod tests {
         assert!(installed.executable.symlink_metadata().is_err());
         // Removing what is already gone is not a failure, and says so.
         assert!(!remove(&software(), &root).unwrap());
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn an_empty_or_absent_prefix_reads_as_holding_nothing() {
+        // A plan for a prefix that does not exist yet is the ordinary first
+        // case, not a failure.
+        let nowhere = scratch("present-absent");
+        assert_eq!(Present::under(&nowhere, "codex"), Present::default());
+    }
+
+    #[test]
+    fn what_is_under_a_prefix_is_read_including_which_version_is_exposed() {
+        let (at, artifact) = staged("present-read", b"payload", CODEX_MEMBER);
+        let root = at.join("software");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+
+        // A second version, installed but not exposed.
+        fs::create_dir_all(root.join("9.9.9")).unwrap();
+
+        let found = Present::under(&root, "codex");
+        assert_eq!(found.versions, vec!["1.2.3".to_owned(), "9.9.9".to_owned()]);
+        assert!(found.holds("1.2.3"));
+        assert!(!found.holds("0.0.1"));
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_exposed_version_is_read_through_the_link_however_it_was_written() {
+        let (at, artifact) = staged("present-link", b"payload", CODEX_MEMBER);
+        let root = at.join("software");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        let link = root.join("bin").join("codex");
+
+        // What `expose` writes: an absolute target.
+        assert!(fs::read_link(&link).unwrap().is_absolute());
+        assert_eq!(
+            Present::under(&root, "codex").exposed.as_deref(),
+            Some("1.2.3")
+        );
+
+        // What a person might write instead. Taking the first component of
+        // `../1.2.3/...` without resolving it gives `bin`, and the answer
+        // becomes "no entry point names this version" while one does.
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(
+            std::path::Path::new("..").join("1.2.3").join(CODEX_MEMBER),
+            &link,
+        )
+        .unwrap();
+        assert!(!fs::read_link(&link).unwrap().is_absolute());
+        assert_eq!(
+            Present::under(&root, "codex").exposed.as_deref(),
+            Some("1.2.3")
+        );
+
+        // A dangling link exposes nothing, which is what it means.
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(root.join("9.9.9").join("codex"), &link).unwrap();
+        assert_eq!(Present::under(&root, "codex").exposed, None);
+
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn bin_and_the_control_directory_are_not_versions() {
+        let at = scratch("present-notversions");
+        fs::create_dir_all(at.join("bin")).unwrap();
+        fs::create_dir_all(at.join(".codex-setup-system")).unwrap();
+        fs::create_dir_all(at.join("1.2.3")).unwrap();
+        assert_eq!(
+            Present::under(&at, "codex").versions,
+            vec!["1.2.3".to_owned()]
+        );
         fs::remove_dir_all(&at).unwrap();
     }
 

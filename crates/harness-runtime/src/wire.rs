@@ -564,12 +564,31 @@ pub(crate) struct Applied {
     pub setup_id: Option<String>,
     /// The digest of that setup's definition, which is its real identity.
     pub setup_definition_digest: Option<String>,
+    /// The setup version, when the thing that arrived stated one.
+    ///
+    /// A bundle's setup passport does; a setup in the local catalog carries an
+    /// id and a description and no version, and inventing one there would be
+    /// worse than the null.
+    pub setup_version: Option<String>,
     /// The bundle format, when a bundle put it there.
     pub bundle_format: Option<String>,
     /// The bundle's own digest.
     pub bundle_digest: Option<String>,
     /// The digest of the artifact the bundle arrived in.
     pub artifact_digest: Option<String>,
+    /// The components the projection carried, in the order it declared them.
+    ///
+    /// The contract asks a provider to record which components a target holds,
+    /// and the bundle's conversion report is the only place their stable
+    /// identities appear — the manifest carries paths and the setup passport
+    /// carries references without kinds. This was written as an empty list
+    /// whatever arrived, so a target configured from a bundle reported that it
+    /// held no components while holding every one the bundle named.
+    ///
+    /// Empty is still correct for the local catalog: a setup there is a tree of
+    /// files with an id and a description, and it has no component identities
+    /// to record. Inventing some would be worse than the empty list.
+    pub component_refs: Vec<String>,
 }
 
 /// Apply one exact plan under the target lock.
@@ -658,6 +677,23 @@ fn apply(
             applied.bundle_format = Some(named.binding.bundle_format.clone());
             applied.bundle_digest = Some(named.binding.bundle_digest.clone());
             applied.artifact_digest = Some(named.binding.artifact_digest.clone());
+            // Two provenance fields the contract names and the passport
+            // states. They were null for every bundle install, because the
+            // passport was a required member that nothing read.
+            if !ready.passport.stable_id.is_empty() {
+                applied.setup_id = Some(ready.passport.stable_id.clone());
+            }
+            if !ready.passport.version.is_empty() {
+                applied.setup_version = Some(ready.passport.version.clone());
+            }
+            applied.component_refs = ready
+                .manifest
+                .conversion_report
+                .entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .filter(|stable_id| !stable_id.is_empty())
+                .collect();
             Effect::MaterializeBundle {
                 files: &ready.files,
             }
@@ -979,11 +1015,16 @@ fn write_state(
         setup_stable_id: applied.setup_id.clone(),
         // A local setup carries an id and a description and no version, so
         // there is no version to record and inventing one would be worse than
-        // the null. These stay for setups that arrive with a version passport.
-        setup_version: None,
+        // the null. A bundle states one in its passport, and that is where this
+        // comes from.
+        setup_version: applied.setup_version.clone(),
+        // Still null, deliberately. The passport does not carry its own digest
+        // and the contract does not define how one is taken, so a value
+        // computed here would be this program's opinion of the passport's
+        // identity rather than the passport's.
         setup_version_passport_digest: None,
         setup_definition_digest: applied.setup_definition_digest.clone(),
-        component_refs: Vec::new(),
+        component_refs: applied.component_refs.clone(),
         bundle_format: applied.bundle_format.clone(),
         bundle_digest: applied.bundle_digest.clone(),
         artifact_digest: applied.artifact_digest.clone(),
@@ -1154,7 +1195,8 @@ mod tests {
     /// correctly refuse its own plan as stale. It must also be unique per test,
     /// because these run in parallel.
     fn scratch(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("harness-runtime-{name}"));
+        let base =
+            std::env::temp_dir().join(format!("harness-runtime-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("target")).unwrap();
         fs::canonicalize(&base).unwrap()
@@ -1851,9 +1893,22 @@ mod tests {
             mode: 0o644,
         }];
         for name in REQUIRED_MEMBERS.iter().skip(1) {
+            // The passport carries the setup identity a provider must record.
+            // An empty object here would have made every bundle test agree with
+            // a provider that read nothing, which is how the field stayed null.
+            let data = if *name == "setup-passport.json" {
+                serde_json::to_vec(&serde_json::json!({
+                    "stable_id": "setup_00000000000000000000000000",
+                    "version": "3.1.0",
+                    "harness_id": TEST.harness_id,
+                }))
+                .unwrap()
+            } else {
+                b"{}".to_vec()
+            };
             entries.push(Entry {
                 name: (*name).to_owned(),
-                data: b"{}".to_vec(),
+                data,
                 mode: 0o644,
             });
         }
@@ -1882,6 +1937,84 @@ mod tests {
             "--bundle-size".to_owned(),
             size.to_string(),
         ]
+    }
+
+    #[test]
+    fn what_a_bundle_states_about_itself_is_recorded_in_provider_state() {
+        // `component_refs` is a provenance field the contract asks for, and the
+        // conversion report is the only place a component's stable identity
+        // appears. It was written as an empty list whatever arrived, so a
+        // target configured from a bundle reported holding no components while
+        // holding every one the bundle named.
+        let target = seeded("bundle-components");
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes_declaring(&[("AGENTS.md", "# named\n", 0o644)], Some("instruction"));
+        let artifact_path = target.join("..").join("components.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01COMPONENT".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", &target, &borrowed));
+        let plan_path = target.join("..").join("components-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        assert_eq!(
+            run(args("apply-operation", &target, &borrowed))["state"],
+            "verified"
+        );
+
+        let state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(target.join(TEST.state_file)).unwrap())
+                .unwrap();
+        assert_eq!(
+            state["component_refs"],
+            serde_json::json!(["component_00000000000000000000000000"])
+        );
+        // The passport is a required member and was required and discarded, so
+        // a target configured from a bundle recorded no setup identity and no
+        // setup version at all.
+        assert_eq!(state["setup_stable_id"], "setup_00000000000000000000000000");
+        assert_eq!(state["setup_version"], "3.1.0");
+        // Still null, and deliberately: the passport does not state its own
+        // digest and the contract does not define how one is taken.
+        assert!(state["setup_version_passport_digest"].is_null());
+    }
+
+    #[test]
+    fn a_setup_from_the_local_catalog_records_no_components_because_it_has_none() {
+        // A catalog setup is a tree of files with an id and a description. It
+        // carries no component identities, and inventing some would be worse
+        // than the empty list the contract allows.
+        let target = seeded("catalog-components");
+        plan_then_apply(&target, "backup", &[]);
+        let state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(target.join(TEST.state_file)).unwrap())
+                .unwrap();
+        assert_eq!(state["component_refs"], serde_json::json!([]));
     }
 
     #[test]
@@ -2394,6 +2527,70 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
             "test-harness 1.2.3"
+        );
+    }
+
+    #[test]
+    fn an_update_of_nothing_is_refused_rather_than_quietly_installing() {
+        // Two names for one act is what this had been: install and update
+        // produced byte-identical plans. An update of nothing is a request that
+        // cannot be honoured as asked, and installing instead would be doing
+        // something else and calling it done.
+        let target = seeded("software-update-empty");
+        let prefix = ready_prefix(&target);
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &software_plan_args("software_update", &prefix),
+        ));
+        assert!(
+            error.detail().contains("software_install is the operation"),
+            "{}",
+            error.detail()
+        );
+    }
+
+    #[test]
+    fn a_plan_says_what_is_already_under_the_prefix() {
+        let target = seeded("software-plan-present");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        plan_then_install(&target, "software_install", Some(&file));
+
+        // Installing the pinned version again says so, rather than reading
+        // exactly like the first install did.
+        let planned = software_plan(&target, "software_install");
+        let effects = planned["effects"].as_array().unwrap();
+        assert!(
+            effects[0].as_str().unwrap().contains("already installed"),
+            "{effects:?}"
+        );
+
+        // And an update is now a different plan from an install, because there
+        // is something to update.
+        let updating = software_plan(&target, "software_update");
+        assert_eq!(updating["state"], "planned");
+    }
+
+    #[test]
+    fn a_remove_names_the_versions_it_leaves_behind() {
+        // This build pins one version and cannot know whether an older tree is
+        // still wanted. Leaving it is right; leaving it silently is not.
+        let target = seeded("software-remove-others");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        plan_then_install(&target, "software_install", Some(&file));
+        let prefix = ready_prefix(&target);
+        fs::create_dir_all(Path::new(&prefix).join("0.9.0")).unwrap();
+
+        let planned = software_plan(&target, "software_remove");
+        let effects: Vec<&str> = planned["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| effect.as_str().unwrap())
+            .collect();
+        assert!(
+            effects.iter().any(|effect| effect.contains("leave 0.9.0")),
+            "{effects:?}"
         );
     }
 
