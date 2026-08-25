@@ -207,21 +207,11 @@ fn refuse(detail: impl Into<String>) -> Error {
 
 /// CRC-32, the variant ZIP uses.
 ///
-/// Written here rather than taken as a dependency: it is twenty lines, and a
-/// checksum this reader uses to decide whether to trust bytes is not a good
-/// place to add a supply-chain edge.
-#[must_use]
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFF_u32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            let mask = 0_u32.wrapping_sub(crc & 1);
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
+/// Re-exported rather than written twice: gzip uses the same polynomial, so
+/// this reader and `setup-core::archive` were carrying identical loops. One
+/// implementation means one place for a checksum bug to be, and the path here
+/// stays where every caller already expects it.
+pub use setup_core::checksum::crc32;
 
 pub mod build {
     //! A canonical writer: the reader's statement of what it expects, executable.

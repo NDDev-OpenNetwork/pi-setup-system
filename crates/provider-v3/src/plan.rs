@@ -21,7 +21,7 @@
 //! provider that planned against a different target or a different bundle is
 //! caught by disagreement rather than by trust.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use setup_core::digest;
 
 use crate::error::{Error, Result};
@@ -44,6 +44,35 @@ pub struct BundleBinding {
     pub artifact_digest: String,
     /// The exact artifact size in bytes.
     pub bundle_size: u64,
+}
+
+/// The artifact a software operation needs, stated before any network is open.
+///
+/// This is the whole reason the contract gives software a download phase of its
+/// own. Planning names the exact bytes -- one url, one length, one digest --
+/// while the provider is offline, and applying re-checks them while it is
+/// offline again. Whoever holds the network in between fetches what this names
+/// and nothing else, so no part of *what* gets installed is decided at a moment
+/// when the answer could come from the network.
+/// The five fields agreed on `ai_stp#414` and recorded in
+/// `docs/contracts/provider-protocol.md`, and no others.
+///
+/// Everything the fetching side needs and nothing it does not. Whether the
+/// bytes are the program or enclose it is this provider's business, decided
+/// from the table compiled into it, and putting it here would invite a consumer
+/// to act on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoftwareArtifact {
+    /// The platform this artifact is for, as the consumer spells it.
+    pub platform: String,
+    /// Where the bytes come from.
+    pub url: String,
+    /// The `sha256:`-prefixed digest of those bytes.
+    pub sha256: String,
+    /// How many bytes to expect.
+    pub byte_length: u64,
+    /// The path, relative to `--prefix`, that will run the program.
+    pub entry_point: String,
 }
 
 /// The provider's immutable description of one effect.
@@ -83,6 +112,14 @@ pub struct PlanArtifact {
     pub platform: serde_json::Value,
     /// When this plan stops being applicable.
     pub expires_at: String,
+    /// The artifacts a software operation will fetch and install.
+    ///
+    /// One element is one file. `apply` receives one `--software-artifact` per
+    /// element in this order, so which file answers which entry never has to be
+    /// inferred. Empty for every configuration operation, which reaches nothing,
+    /// and for `software_remove`, which downloads nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub software_artifacts: Vec<SoftwareArtifact>,
     /// What applying it will do, in order. Never empty.
     pub effects: Vec<String>,
 }
@@ -118,6 +155,9 @@ pub struct PlanInputs<'a> {
     pub permission_profile: Option<String>,
     /// When the plan expires.
     pub expires_at: &'a str,
+    /// The artifacts a software operation will fetch, in the order `apply`
+    /// will be handed them.
+    pub software_artifacts: Vec<SoftwareArtifact>,
     /// What applying it will do. Never empty.
     pub effects: Vec<String>,
 }
@@ -175,6 +215,7 @@ impl PlanArtifact {
             permission_profile: inputs.permission_profile,
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),
+            software_artifacts: inputs.software_artifacts,
             effects: inputs.effects,
         })
     }
@@ -304,6 +345,7 @@ mod tests {
 
     fn inputs(operation: Operation) -> PlanInputs<'static> {
         PlanInputs {
+            software_artifacts: Vec::new(),
             provider_id: "claude-setup-system",
             provider_version: "0.1.0",
             provider_build_digest: DIGEST,

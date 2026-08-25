@@ -15,6 +15,7 @@ use provider_v3::{
     Command, ComponentKind, Declaration, Operation, ProjectionKind, ProjectionProfile, ProviderInfo,
 };
 use setup_core::digest;
+use setup_core::software::{Delivery, Software};
 
 /// One harness, as the runtime needs to know it.
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +68,13 @@ pub struct Harness {
     pub max_bytes: u64,
     /// The exact provider-kit revision this build was compiled against.
     pub kit_identity: &'static str,
+    /// How the product's own software is installed, when this build can do it.
+    ///
+    /// `None` means the software lifecycle is not offered at all. So does a
+    /// [`Delivery::Manager`], which is a different statement -- the product is
+    /// installable, but not by fetching bytes whose digest was fixed in advance
+    /// -- and the refusal says which.
+    pub software: Option<Software>,
 }
 
 /// How many backup slots a target keeps.
@@ -180,6 +188,24 @@ impl Harness {
     /// implement them — declaring one would let a consumer call an operation
     /// that cannot be honoured, which is worse than not offering it.
     ///
+    /// The operations this build actually performs.
+    ///
+    /// The software lifecycle is optional in the contract, and declaring an
+    /// operation a build cannot perform lets a consumer ask for something that
+    /// cannot be honoured. So it appears here only when this harness carries an
+    /// artifact table -- never when the product is delivered by a package
+    /// manager this provider does not run.
+    #[must_use]
+    pub fn operations(&self) -> &'static [Operation] {
+        match self.software {
+            Some(Software {
+                delivery: Delivery::Artifacts(_),
+                ..
+            }) => Operation::CORE_AND_SOFTWARE,
+            _ => Operation::CORE,
+        }
+    }
+
     /// # Errors
     ///
     /// Propagates a declaration refusal.
@@ -191,7 +217,7 @@ impl Harness {
             provider_version: self.version,
             provider_build_digest: &build_digest,
             commands: Command::CORE,
-            operations: Operation::CORE,
+            operations: self.operations(),
             supported_os: &["linux", "macos", "windows"],
             supported_arch: &["x86_64", "arm64"],
             permission_profiles: self.permission_profiles,
@@ -206,7 +232,10 @@ mod tests {
 
     use super::*;
 
+    /// A harness that offers no software lifecycle, which is most of what the
+    /// declaration tests are about.
     pub(crate) const SAMPLE: Harness = Harness {
+        software: None,
         harness_id: "sample",
         provider_id: "sample-setup-system",
         version: "0.1.0",

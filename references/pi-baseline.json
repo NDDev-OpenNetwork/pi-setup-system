@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "verified_ref": "references/pi-baseline.json",
   "product": {
     "name": "Pi Coding Agent",
@@ -187,5 +187,16 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-25T12:00:26+00:00"
+  "verified_at": "2026-08-25T13:05:56+00:00",
+  "software_artifacts": {
+    "command": "pi",
+    "shape": "manager",
+    "platforms": {},
+    "version": "0.84.3",
+    "manager": {
+      "tool": "npm",
+      "reason": "its dependency closure is resolved at install time, so there is no single artifact whose digest can be decided in advance"
+    },
+    "verified_at": "2026-08-25T13:05:56+00:00"
+  }
 }

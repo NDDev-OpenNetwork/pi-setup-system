@@ -44,6 +44,8 @@ pub enum WireReason {
     UnsupportedOperation,
     /// The bundle was compiled for a different projection profile.
     ProjectionProfileMismatch,
+    /// A permission profile this provider does not offer.
+    UnsupportedPermissionProfile,
     /// The running operating system is outside the declared matrix.
     UnsupportedPlatform,
     /// The running architecture is outside the declared matrix.
@@ -77,6 +79,7 @@ impl WireReason {
         Self::UnsupportedProtocolVersion,
         Self::UnsupportedOperation,
         Self::ProjectionProfileMismatch,
+        Self::UnsupportedPermissionProfile,
         Self::UnsupportedPlatform,
         Self::UnsupportedArchitecture,
         Self::RecoveryRequired,
@@ -100,6 +103,7 @@ impl WireReason {
             Self::UnsupportedNativeSurface => "unsupported_native_surface",
             Self::UnsupportedProtocolVersion => "unsupported_protocol_version",
             Self::UnsupportedOperation => "unsupported_operation",
+            Self::UnsupportedPermissionProfile => "unsupported_permission_profile",
             Self::ProjectionProfileMismatch => "projection_profile_mismatch",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::UnsupportedArchitecture => "unsupported_architecture",
@@ -141,6 +145,7 @@ impl From<ReasonCode> for WireReason {
             ReasonCode::UnsupportedBundleFormat => Self::UnsupportedBundleFormat,
             ReasonCode::UnsupportedProtocolVersion => Self::UnsupportedProtocolVersion,
             ReasonCode::ProjectionProfileMismatch => Self::ProjectionProfileMismatch,
+            ReasonCode::UnsupportedPermissionProfile => Self::UnsupportedPermissionProfile,
             ReasonCode::UnsupportedPlatform => Self::UnsupportedPlatform,
             ReasonCode::UnsupportedArchitecture => Self::UnsupportedArchitecture,
             ReasonCode::RecoveryRequired => Self::RecoveryRequired,

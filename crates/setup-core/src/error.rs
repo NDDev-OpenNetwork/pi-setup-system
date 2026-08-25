@@ -23,6 +23,8 @@ pub enum ReasonCode {
     UnsupportedProtocolVersion,
     /// The projection profile does not match the one the bundle was built for.
     ProjectionProfileMismatch,
+    /// A permission profile this provider does not offer.
+    UnsupportedPermissionProfile,
     /// The running operating system is outside the declared support matrix.
     UnsupportedPlatform,
     /// The running architecture is outside the declared support matrix.
@@ -55,6 +57,7 @@ impl ReasonCode {
             Self::UnsupportedBundleFormat => "unsupported_bundle_format",
             Self::UnsupportedProtocolVersion => "unsupported_protocol_version",
             Self::ProjectionProfileMismatch => "projection_profile_mismatch",
+            Self::UnsupportedPermissionProfile => "unsupported_permission_profile",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::UnsupportedArchitecture => "unsupported_architecture",
             Self::RecoveryRequired => "recovery_required",

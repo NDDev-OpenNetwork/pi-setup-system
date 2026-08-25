@@ -49,7 +49,7 @@ pub use argv::{Invocation, PlanRequest};
 pub use bundle::Bundle;
 pub use error::{Error, Result};
 pub use info::{Declaration, ProjectionProfile, ProviderInfo};
-pub use plan::{BundleBinding, PlanArtifact, PlanInputs};
+pub use plan::{BundleBinding, PlanArtifact, PlanInputs, SoftwareArtifact};
 pub use reason::WireReason;
 pub use vocabulary::{
     Command, ComponentKind, Operation, PLAN_DOMAIN, PLAN_FORMAT, PROJECTION_DOMAIN,

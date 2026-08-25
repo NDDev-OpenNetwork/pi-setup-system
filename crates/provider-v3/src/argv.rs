@@ -81,6 +81,17 @@ pub enum Invocation {
         provider_release_digest: String,
         /// The bundle, when the operation carries one.
         bundle: Option<Bundle>,
+        /// The program directory, when the operation installs software.
+        prefix: Option<PathBuf>,
+        /// The downloaded files, one per artifact the plan named, in its order.
+        ///
+        /// The contract gives software a download phase between planning and
+        /// applying and gives the provider no command to run it in -- there is
+        /// no `download` among the seven. So the consumer fetches what the plan
+        /// named and hands the files back here, which is why this provider never
+        /// opens a socket in any phase. The order is how each file is matched to
+        /// its entry, so nothing about which is which has to be inferred.
+        software_artifacts: Vec<PathBuf>,
     },
     /// Resolve an interrupted operation from its journal.
     RecoverOperation {
@@ -127,6 +138,17 @@ pub struct PlanRequest {
     pub permission_profile: Option<String>,
     /// The bundle, when the operation carries one.
     pub bundle: Option<Bundle>,
+    /// The program directory, when the operation installs software.
+    ///
+    /// Not the target. The configuration a provider owns and the program it
+    /// installs are different paths with different lifetimes, and conflating
+    /// them would tie a program to one of the several targets it can serve.
+    pub prefix: Option<PathBuf>,
+    /// The exact version to install.
+    ///
+    /// Omitted means the version this build pins. Given means exactly that one,
+    /// and anything else is refused rather than quietly installing a neighbour.
+    pub software_version: Option<String>,
 }
 
 impl Invocation {
@@ -224,6 +246,8 @@ where
                     backup_ref: flags.take_optional("--backup-ref"),
                     permission_profile: flags.take_optional("--permission-profile"),
                     bundle: flags.take_bundle()?,
+                    prefix: flags.take_prefix()?,
+                    software_version: flags.take_optional("--software-version"),
                 },
             }
         }
@@ -233,6 +257,12 @@ where
             plan_digest: flags.take_required("--plan-digest")?,
             provider_release_digest: flags.take_required("--provider-release-digest")?,
             bundle: flags.take_bundle()?,
+            prefix: flags.take_prefix()?,
+            software_artifacts: flags
+                .take_repeated("--software-artifact")
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
         },
     };
 
@@ -250,13 +280,21 @@ fn local(detail: impl Into<String>) -> Error {
 /// than something to ignore. A provider that silently dropped an argument it did
 /// not understand would report success for a request it only partly performed.
 struct Flags {
-    values: BTreeMap<String, String>,
+    values: BTreeMap<String, Vec<String>>,
     switches: Vec<String>,
 }
 
+/// The flags a caller may give more than once.
+///
+/// Exactly one: `apply-operation` receives one downloaded file per artifact the
+/// plan named, in the plan's order. Every other flag is still refused twice
+/// over, because a second value where one is expected is a caller that meant
+/// two different things and only one of them would happen.
+const REPEATABLE: &[&str] = &["--software-artifact"];
+
 impl Flags {
     fn parse(tokens: &[String]) -> Result<Self> {
-        let mut values = BTreeMap::new();
+        let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut switches = Vec::new();
         let mut index = 0;
         while index < tokens.len() {
@@ -280,22 +318,31 @@ impl Flags {
             if value.starts_with("--") {
                 return Err(local(format!("{token} has no value")));
             }
-            if values.insert(token.clone(), value.clone()).is_some() {
+            let seen = values.entry(token.clone()).or_default();
+            if !seen.is_empty() && !REPEATABLE.contains(&token.as_str()) {
                 return Err(local(format!("{token} was given twice")));
             }
+            seen.push(value.clone());
             index += 2;
         }
         Ok(Self { values, switches })
     }
 
     fn take_required(&mut self, name: &str) -> Result<String> {
-        self.values
-            .remove(name)
+        self.take_optional(name)
             .ok_or_else(|| local(format!("{name} is required")))
     }
 
     fn take_optional(&mut self, name: &str) -> Option<String> {
-        self.values.remove(name)
+        self.values.remove(name)?.into_iter().next()
+    }
+
+    /// Every value of a flag a caller may repeat, in the order they were given.
+    ///
+    /// The order is load-bearing: it is how `apply` knows which file answers
+    /// which entry of the plan's `software_artifacts` array.
+    fn take_repeated(&mut self, name: &str) -> Vec<String> {
+        self.values.remove(name).unwrap_or_default()
     }
 
     fn take_switch(&mut self, name: &str) -> bool {
@@ -345,6 +392,22 @@ impl Flags {
                 bundle_size,
             },
         }))
+    }
+
+    /// The program directory, checked to be absolute.
+    ///
+    /// The contract says both `--target` and `--prefix` are absolute. A relative
+    /// one would resolve against whatever directory the caller happened to be
+    /// in, which is not a property a plan can be bound to.
+    fn take_prefix(&mut self) -> Result<Option<PathBuf>> {
+        let Some(text) = self.take_optional("--prefix") else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(&text);
+        if !path.is_absolute() {
+            return Err(local(format!("--prefix {text:?} is not an absolute path")));
+        }
+        Ok(Some(path))
     }
 
     fn require_exhausted(&self) -> Result<()> {
