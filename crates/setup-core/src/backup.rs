@@ -101,6 +101,13 @@ pub struct SlotRecord {
     pub target_identity_digest: String,
     /// The setup identity in effect at capture time, when one was stamped.
     pub setup_id: Option<String>,
+    /// The definition digest that setup was identified by, when one was stamped.
+    ///
+    /// Added after the schema was in use, and deliberately not a schema bump: a
+    /// slot written before it is still a complete, restorable capture, and
+    /// refusing to read one would trade a recoverable target for a field.
+    #[serde(default)]
+    pub setup_definition_digest: Option<String>,
 }
 
 /// The bounded pool of backup slots for one target.
@@ -547,7 +554,26 @@ mod tests {
             operation_id: "op_test".to_owned(),
             target_identity_digest: "sha256:target".to_owned(),
             setup_id: Some("full-auto".to_owned()),
+            setup_definition_digest: Some("sha256:definition".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_slot_written_before_the_definition_digest_existed_still_reads() {
+        // The field was added without a schema bump, so a slot captured by an
+        // earlier build must still restore. Refusing one would trade a
+        // recoverable target for a field that is allowed to be absent.
+        let older = serde_json::json!({
+            "schema_version": SLOT_SCHEMA,
+            "backup_ref": "slot-000000000001",
+            "operation": "install",
+            "operation_id": "op_test",
+            "target_identity_digest": "sha256:target",
+            "setup_id": "full-auto",
+        });
+        let read: SlotRecord = serde_json::from_value(older).unwrap();
+        assert_eq!(read.setup_id.as_deref(), Some("full-auto"));
+        assert_eq!(read.setup_definition_digest, None);
     }
 
     #[test]

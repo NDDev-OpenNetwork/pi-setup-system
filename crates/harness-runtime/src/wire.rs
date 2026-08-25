@@ -481,8 +481,28 @@ pub(crate) struct Mutation<'a> {
     pub effect: Effect<'a>,
     /// The plan artifact, recorded into provider state as provenance.
     pub provenance: serde_json::Value,
-    /// The setup identity this mutation leaves applied, when there is one.
+    /// What provider state should record about whatever this leaves applied.
+    pub applied: Applied,
+}
+
+/// The identity of what a mutation leaves in the target, as state records it.
+///
+/// The contract asks a provider to say *what* is applied, not only that
+/// something is. Before this existed only the setup's name was carried, and a
+/// restore carried nothing at all -- so a target holding a known setup byte for
+/// byte reported itself as unnamed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Applied {
+    /// The setup in effect, when one is named.
     pub setup_id: Option<String>,
+    /// The digest of that setup's definition, which is its real identity.
+    pub setup_definition_digest: Option<String>,
+    /// The bundle format, when a bundle put it there.
+    pub bundle_format: Option<String>,
+    /// The bundle's own digest.
+    pub bundle_digest: Option<String>,
+    /// The digest of the artifact the bundle arrived in.
+    pub artifact_digest: Option<String>,
 }
 
 /// Apply one exact plan under the target lock.
@@ -519,6 +539,9 @@ fn apply(
         Some(_) => {}
     }
 
+    // A bundle names itself: the contract asks provider state to record which
+    // bundle put the bytes there, and it arrives bound to exact identities.
+    let mut applied = Applied::default();
     let effect = match operation {
         Operation::Backup => Effect::Backup,
         Operation::Restore => Effect::Restore {
@@ -544,6 +567,9 @@ fn apply(
                     "bundle vanished",
                 ));
             };
+            applied.bundle_format = Some(named.binding.bundle_format.clone());
+            applied.bundle_digest = Some(named.binding.bundle_digest.clone());
+            applied.artifact_digest = Some(named.binding.artifact_digest.clone());
             Effect::MaterializeBundle {
                 files: &ready.files,
             }
@@ -565,7 +591,7 @@ fn apply(
             plan_digest: plan_digest.to_owned(),
             expected_target_digest: string_field(&artifact, "expected_target_digest")?,
             effect,
-            setup_id: None,
+            applied,
             provenance: artifact,
         },
     )
@@ -603,10 +629,13 @@ pub(crate) fn perform(
 
     let operation_id = mutation.operation_id.clone();
     let operation_name = mutation.operation.as_str().to_owned();
-    let previous_setup = match ProviderState::read(resolved.root(), harness.state_file)? {
-        StateReading::Current(current) => current.setup_stable_id,
-        _ => None,
-    };
+    let (previous_setup, previous_definition) =
+        match ProviderState::read(resolved.root(), harness.state_file)? {
+            StateReading::Current(current) => {
+                (current.setup_stable_id, current.setup_definition_digest)
+            }
+            _ => (None, None),
+        };
     let captured = pool.capture(resolved.root(), harness.native_namespaces, |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
@@ -615,6 +644,7 @@ pub(crate) fn perform(
             operation_id: operation_id.clone(),
             target_identity_digest: identity.clone(),
             setup_id: previous_setup.clone(),
+            setup_definition_digest: previous_definition.clone(),
         }
     })?;
 
@@ -629,12 +659,22 @@ pub(crate) fn perform(
     }
     .publish_prepared(&control)?;
 
+    // What the state will say is applied. A restore learns it from the slot it
+    // restores; every other effect was told at plan time.
+    let mut applied = mutation.applied.clone();
     let outcome = match &mutation.effect {
         // The capture above *is* the effect. Nothing else is written.
         Effect::Backup => Ok(()),
         Effect::Restore { backup_ref } => {
             let record = chosen_backup(&pool, backup_ref.as_deref())?;
             let payload = pool.payload_of(&record.backup_ref)?;
+            // The slot wrote down which setup was in effect when it was taken.
+            // Returning its bytes without its name would report a target that
+            // is a known setup byte for byte as one nobody can name.
+            applied.setup_id.clone_from(&record.setup_id);
+            applied
+                .setup_definition_digest
+                .clone_from(&record.setup_definition_digest);
             replace_managed_from(harness, &resolved, &payload)
         }
         Effect::Remove => remove_managed(harness, &resolved),
@@ -657,7 +697,7 @@ pub(crate) fn perform(
         &identity,
         &after,
         &captured,
-        mutation.setup_id.as_deref(),
+        &applied,
     )?;
     journal.promote_to_committed(&control)?;
     Journal::clear(&control)?;
@@ -669,7 +709,7 @@ pub(crate) fn perform(
         "expected_target_digest": identity,
         "target_identity_digest": after,
         "backup_ref": captured.backup_ref.as_str(),
-        "setup_id": mutation.setup_id,
+        "setup_id": applied.setup_id,
     }))
 }
 
@@ -826,7 +866,7 @@ fn write_state(
     before: &str,
     after: &str,
     captured: &SlotRecord,
-    setup_id: Option<&str>,
+    applied: &Applied,
 ) -> Result<()> {
     let previous = match ProviderState::read(target.root(), harness.state_file)? {
         StateReading::Current(current) => Some(current.target_identity_digest),
@@ -845,14 +885,17 @@ fn write_state(
         harness_id: harness.harness_id.to_owned(),
         canonical_target: target.root().to_string_lossy().into_owned(),
         target_identity_digest: after.to_owned(),
-        setup_stable_id: setup_id.map(str::to_owned),
+        setup_stable_id: applied.setup_id.clone(),
+        // A local setup carries an id and a description and no version, so
+        // there is no version to record and inventing one would be worse than
+        // the null. These stay for setups that arrive with a version passport.
         setup_version: None,
         setup_version_passport_digest: None,
-        setup_definition_digest: None,
+        setup_definition_digest: applied.setup_definition_digest.clone(),
         component_refs: Vec::new(),
-        bundle_format: None,
-        bundle_digest: None,
-        artifact_digest: None,
+        bundle_format: applied.bundle_format.clone(),
+        bundle_digest: applied.bundle_digest.clone(),
+        artifact_digest: applied.artifact_digest.clone(),
         projection_profile_digest: Some(harness.projection_profile()?.digest),
         provider_plan_digest: artifact
             .get("plan_digest")
