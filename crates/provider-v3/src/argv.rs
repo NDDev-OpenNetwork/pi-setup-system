@@ -106,7 +106,16 @@ pub enum Invocation {
     /// Start the product. Optional command.
     Launch {
         /// The target the caller named.
+        ///
+        /// Becomes the product's configuration home, through the environment
+        /// variable the product documents for it. A product that documents none
+        /// cannot honour a target, which is why this command is not declared
+        /// there.
         target: PathBuf,
+        /// The program directory holding what a software install placed.
+        prefix: Option<PathBuf>,
+        /// Everything after a bare `--`, handed to the product verbatim.
+        arguments: Vec<String>,
     },
 }
 
@@ -162,7 +171,7 @@ impl Invocation {
             | Self::ApplyOperation { target, .. }
             | Self::RecoverOperation { target }
             | Self::Status { target }
-            | Self::Launch { target } => Some(target),
+            | Self::Launch { target, .. } => Some(target),
         }
     }
 
@@ -211,7 +220,12 @@ where
         return Ok(Invocation::ProviderInfo);
     }
 
-    let mut flags = Flags::parse(rest)?;
+    // Everything after a bare `--` belongs to the product `launch` starts, so
+    // it is taken off before this parser sees it. No other command has anything
+    // to pass on, and one that finds a `--` gets an empty tail and refuses the
+    // leftovers the same way it always would.
+    let (mine, passthrough) = Flags::split_passthrough(rest);
+    let mut flags = Flags::parse(&mine)?;
     let target = PathBuf::from(flags.take_required("--target")?);
     if !flags.take_switch("--json") {
         return Err(local(format!("{command} requires --json")));
@@ -221,7 +235,11 @@ where
         Command::ProviderInfo => return Err(local("provider-info never reaches this branch")),
         Command::Status => Invocation::Status { target },
         Command::RecoverOperation => Invocation::RecoverOperation { target },
-        Command::Launch => Invocation::Launch { target },
+        Command::Launch => Invocation::Launch {
+            target,
+            prefix: flags.take_prefix()?,
+            arguments: passthrough,
+        },
         Command::ValidateBundle => {
             let Some(bundle) = flags.take_bundle()? else {
                 return Err(local("validate-bundle requires a bundle"));
@@ -293,6 +311,19 @@ struct Flags {
 const REPEATABLE: &[&str] = &["--software-artifact"];
 
 impl Flags {
+    /// Split a bare `--` off the end, keeping what follows verbatim.
+    ///
+    /// Only `launch` has anything to pass on, and what it passes belongs to
+    /// another program: `-p`, `--help` and `--version` all mean something to the
+    /// product and nothing here. A separator is the one way to say "stop
+    /// reading these as mine" without guessing which of them are.
+    fn split_passthrough(tokens: &[String]) -> (Vec<String>, Vec<String>) {
+        match tokens.iter().position(|token| token == "--") {
+            Some(at) => (tokens[..at].to_vec(), tokens[at + 1..].to_vec()),
+            None => (tokens.to_vec(), Vec::new()),
+        }
+    }
+
     fn parse(tokens: &[String]) -> Result<Self> {
         let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut switches = Vec::new();

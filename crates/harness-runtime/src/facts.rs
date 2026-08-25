@@ -45,6 +45,17 @@ pub struct Harness {
     pub control_directory: &'static str,
     /// The provider-owned state file inside a target.
     pub state_file: &'static str,
+    /// The state file the frozen estate's program wrote in this same target.
+    ///
+    /// Empty when that estate had no module for this product. It is a fact per
+    /// harness and not derivable: this build's `NDDEV-GROK-PROVIDER.json` had a
+    /// predecessor called `NDDEV-GROK-BUILD-SETUP.json`, and cursor's and
+    /// antigravity's differ from their stems too. Deriving the name would have
+    /// been wrong for three of the seven.
+    ///
+    /// Read only by `adopt`, which is a command someone types. Nothing else
+    /// looks at it, and no automatic path acts on its presence.
+    pub predecessor_state_file: &'static str,
     /// The projection profile identity a compiler builds against.
     pub profile_id: &'static str,
     /// The top-level entries this provider owns inside a target.
@@ -188,6 +199,40 @@ impl Harness {
     /// implement them — declaring one would let a consumer call an operation
     /// that cannot be honoured, which is worse than not offering it.
     ///
+    /// Whether this build can start the product it installed.
+    ///
+    /// Two things have to hold. It must have installed one -- launching a name
+    /// found on `PATH` starts whatever else shares that spelling, which is not
+    /// this product and not this build's business. And the product must
+    /// document an environment variable for its configuration home, because
+    /// every command in this contract takes a `--target` and a launch that
+    /// could not point the product at it would be answering a different
+    /// question than the one asked.
+    ///
+    /// Antigravity documents no such variable. It installs and does not launch,
+    /// and that is the honest pair rather than a launch that ignores its target.
+    #[must_use]
+    pub fn can_launch(&self) -> bool {
+        !self.config_home_env.is_empty()
+            && matches!(
+                self.software,
+                Some(Software {
+                    delivery: Delivery::Artifacts(_),
+                    ..
+                })
+            )
+    }
+
+    /// The commands this build answers.
+    #[must_use]
+    pub fn commands(&self) -> &'static [Command] {
+        if self.can_launch() {
+            Command::ALL
+        } else {
+            Command::CORE
+        }
+    }
+
     /// The operations this build actually performs.
     ///
     /// The software lifecycle is optional in the contract, and declaring an
@@ -197,11 +242,21 @@ impl Harness {
     /// manager this provider does not run.
     #[must_use]
     pub fn operations(&self) -> &'static [Operation] {
-        match self.software {
-            Some(Software {
-                delivery: Delivery::Artifacts(_),
-                ..
-            }) => Operation::CORE_AND_SOFTWARE,
+        match (self.can_launch(), self.software) {
+            (
+                true,
+                Some(Software {
+                    delivery: Delivery::Artifacts(_),
+                    ..
+                }),
+            ) => Operation::ALL,
+            (
+                false,
+                Some(Software {
+                    delivery: Delivery::Artifacts(_),
+                    ..
+                }),
+            ) => Operation::CORE_AND_SOFTWARE,
             _ => Operation::CORE,
         }
     }
@@ -216,7 +271,7 @@ impl Harness {
             harness_id: self.harness_id,
             provider_version: self.version,
             provider_build_digest: &build_digest,
-            commands: Command::CORE,
+            commands: self.commands(),
             operations: self.operations(),
             supported_os: &["linux", "macos", "windows"],
             supported_arch: &["x86_64", "arm64"],
@@ -236,6 +291,7 @@ mod tests {
     /// declaration tests are about.
     pub(crate) const SAMPLE: Harness = Harness {
         software: None,
+        predecessor_state_file: "",
         harness_id: "sample",
         provider_id: "sample-setup-system",
         version: "0.1.0",

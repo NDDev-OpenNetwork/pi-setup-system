@@ -70,10 +70,11 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             &software_artifacts,
         ),
         Invocation::RecoverOperation { target } => recover(harness, &target),
-        Invocation::Launch { .. } => Err(Error::refuse(
-            WireReason::UnsupportedOperation,
-            "this provider owns the configuration only and does not start the product",
-        )),
+        Invocation::Launch {
+            target,
+            prefix,
+            arguments,
+        } => software::launch(harness, &target, prefix.as_deref(), &arguments),
     }
 }
 
@@ -516,6 +517,17 @@ pub(crate) enum Effect<'a> {
         /// The setup to write.
         setup: &'a Setup,
     },
+    /// Take over a target the frozen estate's program still claims.
+    ///
+    /// Writes none of the product's files: they are already what the old stamp
+    /// recorded, and this only changes who owns them. The stamp itself is moved
+    /// into this provider's control directory rather than deleted — the old
+    /// program stops recognising it there, and the pre-adoption state is one
+    /// `mv` away from being back.
+    Adopt {
+        /// The stamp file to move aside.
+        stamp: std::path::PathBuf,
+    },
     /// Write a verified `HarnessBundle` over those namespaces.
     ///
     /// The bundle is read and checked *before* this effect exists, so reaching
@@ -759,6 +771,9 @@ pub(crate) fn perform(
             replace_managed_from(harness, &resolved, &setup.payload)
         }
         Effect::MaterializeBundle { files } => write_bundle_files(harness, &resolved, files),
+        Effect::Adopt { stamp } => {
+            crate::adopt::keep_aside(&control, stamp, harness.predecessor_state_file).map(|_| ())
+        }
     };
 
     // On failure the journal stays in `prepared`, which is what makes the
@@ -1091,6 +1106,7 @@ pub(crate) mod tests_support {
 
     pub(crate) const TEST: Harness = Harness {
         software: Some(TEST_SOFTWARE),
+        predecessor_state_file: "NDDEV-TEST-SETUP.json",
         harness_id: "test",
         provider_id: "test-setup-system",
         version: "0.1.0",
@@ -1999,12 +2015,96 @@ mod tests {
     }
 
     #[test]
-    fn launch_is_refused_because_this_runtime_does_not_start_a_product() {
-        let target = seeded("launch");
-        assert_eq!(
-            refuse(args("launch", &target, &[])).reason(),
-            Some(WireReason::UnsupportedOperation)
+    fn launch_with_nothing_installed_says_to_install_first() {
+        // The failure this command exists to avoid is starting a name found on
+        // PATH. So an empty prefix is a refusal that names the path it looked
+        // at, not a fallback to whatever else answers to `test-harness`.
+        let target = seeded("launch-empty");
+        let prefix = ready_prefix(&target);
+        let error = refuse(args("launch", &target, &["--prefix", &prefix]));
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+        assert!(
+            error.detail().contains("software_install"),
+            "{}",
+            error.detail()
         );
+    }
+
+    #[test]
+    fn launch_without_a_prefix_says_where_a_program_lives() {
+        let target = seeded("launch-noprefix");
+        let error = refuse(args("launch", &target, &[]));
+        assert!(error.detail().contains("--prefix"), "{}", error.detail());
+    }
+
+    #[test]
+    fn a_build_that_cannot_point_the_product_at_a_target_does_not_declare_launch() {
+        // Every command here takes a `--target`. A product documenting no
+        // environment variable for its configuration home cannot be pointed at
+        // one, so a launch would be answering a different question.
+        let mut mute = TEST;
+        mute.config_home_env = "";
+        assert!(!mute.can_launch());
+        let info = mute.provider_info().unwrap();
+        assert!(!info.declares(Operation::Launch));
+
+        let error = software::launch(&mute, Path::new("/nowhere"), None, &[]).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("configuration home"),
+            "{}",
+            error.detail()
+        );
+    }
+
+    #[test]
+    fn a_build_that_installs_nothing_does_not_declare_launch_either() {
+        let mut bare = TEST;
+        bare.software = None;
+        assert!(!bare.can_launch());
+        assert!(!bare.provider_info().unwrap().declares(Operation::Launch));
+        let error = software::launch(&bare, Path::new("/nowhere"), None, &[]).unwrap_err();
+        assert!(error.detail().contains("PATH"), "{}", error.detail());
+    }
+
+    #[test]
+    fn a_build_that_installs_and_can_be_pointed_declares_launch() {
+        assert!(TEST.can_launch());
+        let info = TEST.provider_info().unwrap();
+        assert!(info.declares(Operation::Launch));
+        assert!(info.supported_commands.iter().any(|c| c == "launch"));
+    }
+
+    #[test]
+    fn what_launch_starts_is_the_file_that_was_installed() {
+        // Proven without replacing this process: install, then check that the
+        // path launch resolves is the exact executable the install exposed,
+        // and that it runs and reports the version the plan named.
+        let target = seeded("launch-installed");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        let applied = plan_then_install(&target, "software_install", Some(&file));
+        let exposed = std::path::PathBuf::from(applied["executable"].as_str().unwrap());
+
+        let prefix = ready_prefix(&target);
+        assert_eq!(
+            exposed,
+            std::path::Path::new(&prefix)
+                .join("bin")
+                .join("test-harness")
+        );
+        assert!(exposed.symlink_metadata().is_ok());
+
+        #[cfg(unix)]
+        {
+            let output = std::process::Command::new(&exposed)
+                .env(TEST.config_home_env, &target)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "test-harness 1.2.3"
+            );
+        }
     }
 
     #[test]

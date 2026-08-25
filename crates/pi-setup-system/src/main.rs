@@ -28,6 +28,7 @@ pub const PI: Harness = Harness {
     config_home_env: "PI_CODING_AGENT_DIR",
     control_directory: ".pi-setup-system",
     state_file: "NDDEV-PI-PROVIDER.json",
+    predecessor_state_file: "NDDEV-PI-SETUP.json",
     profile_id: "pi/native-files/1",
     // Everything outside this list is a sibling overlay preserved verbatim.
     // `extensions` is where Pi's plugins live. It was missing here while the
