@@ -34,6 +34,7 @@ use setup_core::{digest, lock};
 use crate::catalog::Setup;
 use crate::expiry;
 use crate::facts::{self, Harness};
+use crate::software;
 
 /// Answer one parsed invocation.
 ///
@@ -56,8 +57,18 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             plan_path,
             plan_digest,
             bundle,
+            prefix,
+            software_artifacts,
             ..
-        } => apply(harness, &target, &plan_path, &plan_digest, bundle.as_ref()),
+        } => apply(
+            harness,
+            &target,
+            &plan_path,
+            &plan_digest,
+            bundle.as_ref(),
+            prefix.as_deref(),
+            &software_artifacts,
+        ),
         Invocation::RecoverOperation { target } => recover(harness, &target),
         Invocation::Launch { .. } => Err(Error::refuse(
             WireReason::UnsupportedOperation,
@@ -279,20 +290,46 @@ fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> serde_json::Value 
 /// plan that could never be applied -- and a refusal deferred to apply time
 /// arrives after the consumer has stored the plan, scheduled it, and come back.
 fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
+    // A flag that means nothing to this operation is refused rather than
+    // dropped: silently ignoring it would report success for a request that was
+    // only partly understood, which is the rule the argv parser already keeps.
+    if !Operation::SOFTWARE.contains(&request.operation) {
+        if let Some(named) = request.prefix.as_deref() {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                format!(
+                    "{} configures a target and installs no program, so --prefix {} means \
+                     nothing to it",
+                    request.operation,
+                    named.display()
+                ),
+            ));
+        }
+        if let Some(asked) = request.software_version.as_deref() {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                format!(
+                    "{} installs no program, so --software-version {asked:?} means nothing to it",
+                    request.operation
+                ),
+            ));
+        }
+    }
+
     // A profile this build never advertised cannot be honoured, and recording
     // it in a plan would be worse than refusing: the apply would run under the
     // only posture this build has while the artifact claimed another.
     //
-    // The reason is a compromise and worth naming as one. The contract's closed
-    // set carries no permission-profile refusal -- `unsupported_operation` is
-    // false because the operation is supported, and this is the nearest thing
-    // to "a profile you named is not one I have". The detail says exactly what
-    // happened, because that is the part a reader can trust here.
+    // This used to answer `projection_profile_mismatch`, documented here as a
+    // compromise: the closed set carried no permission-profile refusal, and that
+    // was the nearest thing to "a profile you named is not one I have". Kit
+    // 0.2.1 added `unsupported_permission_profile`, so the compromise is over
+    // and the reason says what actually happened.
     if let Some(profile) = request.permission_profile.as_deref()
         && !harness.permission_profiles.contains(&profile)
     {
         return Err(Error::refuse(
-            WireReason::ProjectionProfileMismatch,
+            WireReason::UnsupportedPermissionProfile,
             format!(
                 "{profile:?} is not a permission profile {} declares; it offers {:?}",
                 harness.provider_id, harness.permission_profiles
@@ -318,6 +355,38 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
 }
 
 /// Produce a plan without touching the target.
+/// What writing a bundle over the target will do, enumerated for the plan.
+///
+/// The bundle is read and verified here rather than at apply time only, so a
+/// plan is never issued for bytes that would be refused when it was applied.
+fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String>> {
+    let Some(named) = request.bundle.as_ref() else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedBundleFormat,
+            format!(
+                "{} arrives as a bundle, and none was named",
+                request.operation
+            ),
+        ));
+    };
+    let verified = verified_bundle(harness, named)?;
+    let mut effects = vec![
+        "capture the current target into a new backup slot".to_owned(),
+        format!(
+            "write the {} declared files over the entries this provider owns",
+            verified.files.len()
+        ),
+    ];
+    effects.extend(
+        verified
+            .files
+            .keys()
+            .take(16)
+            .map(|path| format!("write {path}")),
+    );
+    Ok(effects)
+}
+
 fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde_json::Value> {
     let (resolved, control, pool) = open(harness, target)?;
     setup_core::journal::require_clean_for_planning(
@@ -332,7 +401,18 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     let profile = harness.projection_profile()?;
     let build_digest = harness.build_digest()?;
 
+    let mut software_artifacts = Vec::new();
     let (effects, backup_ref, restore_target_digest) = match request.operation {
+        Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove => {
+            let (planned, effects) = software::plan(
+                harness,
+                request.prefix.as_deref(),
+                request.operation,
+                request.software_version.as_deref(),
+            )?;
+            software_artifacts = planned;
+            (effects, None, None)
+        }
         Operation::Backup => (
             vec![format!(
                 "capture {} into a new backup slot",
@@ -361,34 +441,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             None,
             None,
         ),
-        Operation::Install | Operation::Replace => {
-            let Some(named) = request.bundle.as_ref() else {
-                return Err(Error::refuse(
-                    WireReason::UnsupportedBundleFormat,
-                    format!(
-                        "{} arrives as a bundle, and none was named",
-                        request.operation
-                    ),
-                ));
-            };
-            let verified = verified_bundle(harness, named)?;
-            let mut effects = vec![
-                "capture the current target into a new backup slot".to_owned(),
-                format!(
-                    "write the {} declared files over the entries this provider owns",
-                    verified.files.len()
-                ),
-            ];
-            effects.extend(
-                verified
-                    .files
-                    .keys()
-                    .take(16)
-                    .map(|path| format!("write {path}")),
-            );
-            (effects, None, None)
-        }
-        other => {
+        Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
+        other @ Operation::Launch => {
             return Err(Error::refuse(
                 WireReason::UnsupportedOperation,
                 format!("{other} is not declared by this provider"),
@@ -411,6 +465,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         restore_target_digest,
         permission_profile: request.permission_profile.clone(),
         expires_at: &request.expires_at,
+        software_artifacts,
         effects,
     })?
     .into_response()
@@ -512,6 +567,10 @@ fn apply(
     plan_path: &Path,
     plan_digest: &str,
     bundle: Option<&ArgvBundle>,
+    prefix: Option<&Path>,
+    // `downloaded`, not `artifacts`: the plan artifact is read into a local of
+    // a similar name a few lines below, and one of the two had to give way.
+    downloaded: &[std::path::PathBuf],
 ) -> Result<serde_json::Value> {
     let verified: Option<Bundle>;
     let artifact = load_plan(plan_path, plan_digest)?;
@@ -537,6 +596,23 @@ fn apply(
             ));
         }
         Some(_) => {}
+    }
+
+    // The software lifecycle writes under the control directory and never
+    // touches the namespaces the effect machinery below exists to mutate, so it
+    // parts company here rather than pretending to be one of those effects.
+    if Operation::SOFTWARE.contains(&operation) {
+        return software::apply(harness, prefix, operation, downloaded);
+    }
+    if let Some(named) = prefix {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{operation} configures a target and installs no program, so --prefix {} means \
+                 nothing to it",
+                named.display()
+            ),
+        ));
     }
 
     // A bundle names itself: the contract asks provider state to record which
@@ -977,7 +1053,44 @@ pub(crate) mod tests_support {
 
     use crate::facts::Harness;
 
+    /// The bytes `TEST_SOFTWARE` installs. A shell script rather than a real
+    /// binary, so the test can run what it installed and read the answer.
+    pub(crate) const TEST_PAYLOAD: &[u8] = b"#!/bin/sh\nexec echo test-harness 1.2.3\n";
+
+    /// One artifact, published for every platform, so the test does not depend
+    /// on which machine runs it. `Raw` because raw bytes have one digest on
+    /// every system, where a compressor's output is only as stable as its
+    /// version.
+    pub(crate) const TEST_ARTIFACTS: &[setup_core::software::Artifact] = &[
+        test_artifact("linux/x86_64"),
+        test_artifact("linux/arm64"),
+        test_artifact("macos/x86_64"),
+        test_artifact("macos/arm64"),
+        test_artifact("windows/x86_64"),
+        test_artifact("windows/arm64"),
+    ];
+
+    const fn test_artifact(platform: &'static str) -> setup_core::software::Artifact {
+        setup_core::software::Artifact {
+            platform,
+            url: "https://example.invalid/test-harness",
+            bytes: 39,
+            sha256: "sha256:0c7c47cc1bc9116feb15bd468d039e954093ccfca8d6246b32ea94d1ab2213ad",
+            shape: setup_core::software::Shape::Raw,
+            member: "",
+        }
+    }
+
+    pub(crate) const TEST_SOFTWARE: setup_core::software::Software =
+        setup_core::software::Software {
+            version: "1.2.3",
+            command: "test-harness",
+            delivery: setup_core::software::Delivery::Artifacts(TEST_ARTIFACTS),
+            unsupported: &[],
+        };
+
     pub(crate) const TEST: Harness = Harness {
+        software: Some(TEST_SOFTWARE),
         harness_id: "test",
         provider_id: "test-setup-system",
         version: "0.1.0",
@@ -1014,7 +1127,7 @@ mod tests {
 
     use super::*;
 
-    use crate::wire::tests_support::TEST;
+    use crate::wire::tests_support::{TEST, TEST_PAYLOAD};
 
     const RELEASE: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 
@@ -1226,7 +1339,13 @@ mod tests {
                 "not-declared-anywhere",
             ],
         ));
-        assert!(error.reason().is_some(), "a refusal must name a reason");
+        // This assertion used to be `is_some()`, because the closed set carried
+        // no permission-profile refusal and the reason on the wire was a
+        // documented compromise. Kit 0.2.1 added one, so the test names it.
+        assert_eq!(
+            error.reason(),
+            Some(WireReason::UnsupportedPermissionProfile)
+        );
         assert!(
             error.detail().contains("not-declared-anywhere"),
             "{}",
@@ -1910,5 +2029,414 @@ mod tests {
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             "# first\n"
         );
+    }
+
+    // ── the software lifecycle ───────────────────────────────────────────────
+
+    /// The program directory: a sibling of the target, never inside it.
+    fn prefix_for(target: &Path) -> std::path::PathBuf {
+        target.join("..").join("program")
+    }
+
+    /// Write the bytes a consumer would have fetched between the two phases.
+    fn downloaded(target: &Path, bytes: &[u8]) -> std::path::PathBuf {
+        let at = target.join("..").join("downloaded-artifact");
+        fs::write(&at, bytes).unwrap();
+        at
+    }
+
+    /// The argv every software plan in these tests shares.
+    fn software_plan_args<'a>(operation: &'a str, prefix: &'a str) -> Vec<&'a str> {
+        vec![
+            "--operation",
+            operation,
+            "--provider-release-digest",
+            RELEASE,
+            "--operation-id",
+            "operation_01SOFT",
+            "--expires-at",
+            far_future(),
+            "--prefix",
+            prefix,
+        ]
+    }
+
+    /// An absolute program directory beside the target, created and canonical.
+    fn ready_prefix(target: &Path) -> String {
+        let prefix = prefix_for(target);
+        fs::create_dir_all(&prefix).unwrap();
+        fs::canonicalize(&prefix)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn plan_then_install(
+        target: &Path,
+        operation: &str,
+        artifact: Option<&Path>,
+    ) -> serde_json::Value {
+        let prefix = ready_prefix(target);
+        let planned = run(args(
+            "plan-operation",
+            target,
+            &software_plan_args(operation, &prefix),
+        ));
+        assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+        let plan_path = target.join("..").join(format!("plan-{operation}.json"));
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+
+        let digest = planned["plan_digest"].as_str().unwrap().to_owned();
+        let path = plan_path.to_string_lossy().into_owned();
+        let mut extra = vec![
+            "--plan",
+            &path,
+            "--plan-digest",
+            &digest,
+            "--provider-release-digest",
+            RELEASE,
+            "--prefix",
+            &prefix,
+        ];
+        let held;
+        if let Some(file) = artifact {
+            held = file.to_string_lossy().into_owned();
+            extra.push("--software-artifact");
+            extra.push(&held);
+        }
+        run(args("apply-operation", target, &extra))
+    }
+
+    /// Plan a software operation and return the whole response.
+    fn software_plan(target: &Path, operation: &str) -> serde_json::Value {
+        let prefix = ready_prefix(target);
+        run(args(
+            "plan-operation",
+            target,
+            &software_plan_args(operation, &prefix),
+        ))
+    }
+
+    #[test]
+    fn a_software_plan_names_the_exact_bytes_before_any_network_is_open() {
+        let target = seeded("software-plan");
+        let planned = software_plan(&target, "software_install");
+
+        // The array, and the five fields agreed on ai_stp#414. One element is
+        // one file, and apply receives one --software-artifact per element.
+        let artifacts = planned["plan"]["software_artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 1);
+        let only = &artifacts[0];
+        let mut fields: Vec<&str> = only
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec!["byte_length", "entry_point", "platform", "sha256", "url"],
+            "the plan carries the agreed fields and no others"
+        );
+        assert_eq!(only["byte_length"], 39);
+        assert_eq!(
+            only["sha256"],
+            "sha256:0c7c47cc1bc9116feb15bd468d039e954093ccfca8d6246b32ea94d1ab2213ad"
+        );
+        assert_eq!(only["entry_point"], "bin/test-harness");
+
+        // The plan says the download is somebody else's phase, which is why
+        // this provider opens no socket in any of the three.
+        let effects = planned["effects"].as_array().unwrap();
+        assert!(
+            effects[0].as_str().unwrap().contains("download phase"),
+            "{effects:?}"
+        );
+    }
+
+    #[test]
+    fn a_software_operation_without_a_prefix_says_where_a_program_lives() {
+        let target = seeded("software-noprefix");
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "software_install",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01SOFT",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert!(error.detail().contains("--prefix"), "{}", error.detail());
+    }
+
+    #[test]
+    fn a_relative_prefix_is_refused_because_a_plan_cannot_be_bound_to_one() {
+        // Refused by the parser, before dispatch sees it: a path that resolves
+        // against whatever directory the caller happened to be in is not
+        // something a plan can be bound to, and that is true of every command.
+        let target = seeded("software-relprefix");
+        let error = argv::parse(args(
+            "plan-operation",
+            &target,
+            &software_plan_args("software_install", "program"),
+        ))
+        .unwrap_err();
+        assert!(error.detail().contains("absolute"), "{}", error.detail());
+    }
+
+    #[test]
+    fn a_prefix_on_an_operation_that_installs_nothing_is_refused_not_ignored() {
+        let target = seeded("software-strayprefix");
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01SOFT",
+                "--expires-at",
+                far_future(),
+                "--prefix",
+                "/tmp",
+            ],
+        ));
+        assert!(
+            error.detail().contains("means nothing"),
+            "{}",
+            error.detail()
+        );
+    }
+
+    #[test]
+    fn a_version_this_build_does_not_pin_is_refused_rather_than_neighboured() {
+        let target = seeded("software-version");
+        let prefix = ready_prefix(&target);
+        let mut arguments = software_plan_args("software_install", &prefix);
+        arguments.extend_from_slice(&["--software-version", "9.9.9"]);
+        let error = refuse(args("plan-operation", &target, &arguments));
+        assert!(error.detail().contains("1.2.3"), "{}", error.detail());
+
+        // The pinned one is accepted when named explicitly.
+        let mut exact = software_plan_args("software_install", &prefix);
+        exact.extend_from_slice(&["--software-version", "1.2.3"]);
+        let planned = run(args("plan-operation", &target, &exact));
+        assert_eq!(planned["state"], "planned");
+    }
+
+    #[test]
+    fn installing_places_a_command_and_leaves_the_configuration_alone() {
+        let target = seeded("software-install");
+        let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
+
+        let file = downloaded(&target, TEST_PAYLOAD);
+        let applied = plan_then_install(&target, "software_install", Some(&file));
+        assert_eq!(applied["state"], "verified");
+        assert_eq!(applied["version"], "1.2.3");
+
+        let exposed = Path::new(&ready_prefix(&target))
+            .to_path_buf()
+            .join("bin")
+            .join("test-harness");
+        assert!(exposed.symlink_metadata().is_ok(), "no command was exposed");
+        assert_eq!(fs::read(&exposed).unwrap(), TEST_PAYLOAD);
+
+        // The bytes live in a directory named for their version, so a second
+        // version can arrive without disturbing this one.
+        assert!(
+            Path::new(&ready_prefix(&target))
+                .to_path_buf()
+                .join("1.2.3")
+                .join("test-harness")
+                .is_file()
+        );
+
+        // The whole claim of this path: a program was installed and not one
+        // byte of the configuration this provider owns moved.
+        let after = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_eq!(
+            before, after,
+            "installing software moved the target identity"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# first\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn what_was_installed_actually_runs() {
+        let target = seeded("software-runs");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        let applied = plan_then_install(&target, "software_install", Some(&file));
+
+        let output = std::process::Command::new(applied["executable"].as_str().unwrap())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "test-harness 1.2.3"
+        );
+    }
+
+    #[test]
+    fn installing_software_spends_no_backup_slot() {
+        // Ten slots exist and they hold configuration. If a software install
+        // captured one, installing ten times would evict every backup a person
+        // took of the thing this provider actually owns.
+        let target = seeded("software-slots");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        plan_then_install(&target, "software_install", Some(&file));
+
+        let slots = target.join(TEST.control_directory).join("backups");
+        let taken = fs::read_dir(&slots).map_or(0, Iterator::count);
+        assert_eq!(
+            taken, 0,
+            "a software install captured a configuration backup"
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_the_ones_the_plan_named_are_refused() {
+        let target = seeded("software-digest");
+        let mut tampered = TEST_PAYLOAD.to_vec();
+        tampered[0] = b'X';
+        let file = downloaded(&target, &tampered);
+
+        let prefix = ready_prefix(&target);
+        let planned = software_plan(&target, "software_install");
+        let plan_path = target.join("..").join("plan-tampered.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let error = refuse(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                &plan_path.to_string_lossy(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+                "--prefix",
+                &prefix,
+                "--software-artifact",
+                &file.to_string_lossy(),
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert!(
+            !Path::new(&ready_prefix(&target))
+                .to_path_buf()
+                .join("bin")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn an_install_with_no_artifact_says_what_is_missing() {
+        let target = seeded("software-missing");
+        let prefix = ready_prefix(&target);
+        let planned = software_plan(&target, "software_install");
+        let plan_path = target.join("..").join("plan-missing.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let error = refuse(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                &plan_path.to_string_lossy(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+                "--prefix",
+                &prefix,
+            ],
+        ));
+        assert!(
+            error.detail().contains("--software-artifact"),
+            "{}",
+            error.detail()
+        );
+    }
+
+    #[test]
+    fn removing_takes_the_program_back_down() {
+        let target = seeded("software-remove");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        plan_then_install(&target, "software_install", Some(&file));
+        assert!(
+            Path::new(&ready_prefix(&target))
+                .to_path_buf()
+                .join("bin/test-harness")
+                .symlink_metadata()
+                .is_ok()
+        );
+
+        let removed = plan_then_install(&target, "software_remove", None);
+        assert_eq!(removed["removed"], true);
+        assert!(
+            !Path::new(&ready_prefix(&target))
+                .to_path_buf()
+                .join("1.2.3")
+                .exists()
+        );
+        assert!(
+            Path::new(&ready_prefix(&target))
+                .to_path_buf()
+                .join("bin/test-harness")
+                .symlink_metadata()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_build_that_installs_software_declares_all_three_operations() {
+        let info = TEST.provider_info().unwrap();
+        assert!(info.declares(Operation::SoftwareInstall));
+        assert!(info.declares(Operation::SoftwareUpdate));
+        assert!(info.declares(Operation::SoftwareRemove));
+    }
+
+    #[test]
+    fn a_build_that_installs_no_software_declares_none_of_them() {
+        // Declaring an operation a build cannot perform lets a consumer ask for
+        // something that cannot be honoured, which is worse than not offering.
+        let mut bare = TEST;
+        bare.software = None;
+        let info = bare.provider_info().unwrap();
+        assert!(!info.declares(Operation::SoftwareInstall));
+        assert!(!info.declares(Operation::SoftwareUpdate));
+        assert!(!info.declares(Operation::SoftwareRemove));
+
+        let error = software::plan(
+            &bare,
+            Some(Path::new("/nowhere")),
+            Operation::SoftwareInstall,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
     }
 }

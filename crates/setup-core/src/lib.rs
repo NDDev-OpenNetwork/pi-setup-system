@@ -17,13 +17,32 @@
 //! leaves evidence rather than ambiguity. [`journal`] owns what that evidence
 //! means and which command is allowed to resolve it.
 
+pub mod archive;
 pub mod backup;
 pub mod canonical;
+pub mod checksum;
 pub mod digest;
 pub mod error;
 pub mod journal;
 pub mod lock;
+pub mod software;
 pub mod stamp;
 pub mod target;
 
 pub use error::{Error, ReasonCode, Result};
+
+/// This host's operating system and architecture, in the consumer's spellings.
+///
+/// `provider-v3` owns the canonical answer and depends on this crate, so it
+/// cannot be asked from here. The two are bound by a test rather than by an
+/// import.
+#[must_use]
+pub fn platform_of_this_host() -> (&'static str, &'static str) {
+    (
+        std::env::consts::OS,
+        match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            other => other,
+        },
+    )
+}

@@ -4,11 +4,15 @@
 //! [`harness_runtime`], shared with every other setup system, so a change to
 //! behaviour lands once and a change to Pi Coding Agent's surface lands here.
 //!
-//! The owner assigned this harness the program lifecycle as well. It is not
-//! declared yet, for the same reason as Grok: this runtime does not install the
-//! product.
+//! The program lifecycle is the one thing this harness does not offer. Pi is a
+//! Node package whose dependency closure npm resolves at install time, so there
+//! is no single artifact whose digest could be named in a plan, and declaring
+//! an operation on that footing would promise something this build cannot keep.
+//! `src/software.rs` records that as a fact rather than leaving it an absence.
 
 use std::process::ExitCode;
+
+mod software;
 
 use harness_runtime::Harness;
 use provider_v3::{ComponentKind, ProjectionKind};
@@ -51,6 +55,7 @@ pub const PI: Harness = Harness {
     max_files: 8192,
     max_bytes: 64 * 1024 * 1024,
     kit_identity: include_str!("../../../provider-kit/v3/KIT-IDENTITY.json"),
+    software: Some(software::SOFTWARE),
 };
 
 fn main() -> ExitCode {

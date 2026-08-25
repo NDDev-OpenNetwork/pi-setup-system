@@ -17,19 +17,27 @@
 //! `replace` materialize an `ai-stp-bundle/1` the consumer sends, or a complete
 //! setup from the local catalog when the owner asks for one by name.
 //!
-//! The software lifecycle and `launch` are optional in the contract and are not
-//! declared at all. Declaring an optional operation this runtime cannot perform
-//! would let a consumer call something that cannot be honoured, which is worse
-//! than not offering it.
+//! The software lifecycle is optional in the contract, and a harness declares
+//! it only when it carries an artifact table -- so six of the seven do, and pi
+//! does not, because npm resolves its dependency closure at install time and
+//! there is no single artifact whose digest can be fixed in advance. `launch`
+//! is declared by none. Declaring an optional operation this runtime cannot
+//! perform would let a consumer call something that cannot be honoured, which
+//! is worse than not offering it.
 
 pub mod catalog;
 pub mod expiry;
 pub mod facts;
 pub mod human;
+pub(crate) mod software;
 pub mod wire;
 
 pub use catalog::{Catalog, Setup};
+// The software types belong to the kernel, but a setup system declares its
+// artifact table and depends only on this crate. Re-exported so that stays
+// true rather than widening seven dependency lists to reach past it.
 pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Harness};
+pub use setup_core::software::{Artifact, Delivery, Shape, Software};
 pub use wire::dispatch;
 
 use std::process::ExitCode;

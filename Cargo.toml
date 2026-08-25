@@ -19,6 +19,10 @@ authors = ["Danil Silantyev / NDDev"]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
+# DEFLATE only. The gzip framing and the tar reading are ours (see
+# `setup-core::archive`); an inflate loop is not, because its bugs are
+# memory-safety bugs and it is not improved by being hand-written here.
+miniz_oxide = "0.9"
 setup-core = { path = "crates/setup-core", version = "0.0.1" }
 provider-v3 = { path = "crates/provider-v3", version = "0.0.1" }
 harness-runtime = { path = "crates/harness-runtime", version = "0.0.1" }

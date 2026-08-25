@@ -559,6 +559,10 @@ fn mutate(
         restore_target_digest,
         permission_profile: None,
         expires_at: &expiry::deadline_in(PLAN_WINDOW_SECONDS, SystemTime::now()),
+        // The human surface drives configuration, never the product's own
+        // install: that arrives over the wire, with artifacts somebody else
+        // downloaded between planning and applying.
+        software_artifacts: Vec::new(),
         effects: effect_lines(harness, &effect, applied.setup_id.as_deref()),
     })?;
     let plan_digest = artifact.digest()?;

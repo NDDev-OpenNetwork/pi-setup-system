@@ -158,6 +158,28 @@ impl Operation {
         Self::Restore,
     ];
 
+    /// Core plus the software lifecycle, for a provider that performs both.
+    pub const CORE_AND_SOFTWARE: &'static [Self] = &[
+        Self::Backup,
+        Self::Install,
+        Self::Remove,
+        Self::Replace,
+        Self::Restore,
+        Self::SoftwareInstall,
+        Self::SoftwareUpdate,
+        Self::SoftwareRemove,
+    ];
+
+    /// The optional operations that install the product itself.
+    ///
+    /// Declared together or not at all. A provider offering to install but not
+    /// to remove leaves a caller holding something it cannot put down.
+    pub const SOFTWARE: &'static [Self] = &[
+        Self::SoftwareInstall,
+        Self::SoftwareUpdate,
+        Self::SoftwareRemove,
+    ];
+
     /// The wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
