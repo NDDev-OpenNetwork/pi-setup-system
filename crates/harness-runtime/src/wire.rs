@@ -2229,10 +2229,9 @@ mod tests {
 
         #[cfg(unix)]
         {
-            let output = std::process::Command::new(&exposed)
-                .env(TEST.config_home_env, &target)
-                .output()
-                .unwrap();
+            let output = run_once_it_is_not_busy(
+                std::process::Command::new(&exposed).env(TEST.config_home_env, &target),
+            );
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout).trim(),
                 "test-harness 1.2.3"
@@ -2514,6 +2513,35 @@ mod tests {
         );
     }
 
+    /// Run something that was just written, tolerating a fork that has not
+    /// finished exec'ing yet.
+    ///
+    /// Linux refuses to exec a file any process holds open for writing, with
+    /// `ETXTBSY`. The test harness runs these in threads, and
+    /// `Command::output` forks: between the fork and the child's exec, the
+    /// child holds a copy of every descriptor its parent had, including a write
+    /// handle another thread is about to close. A thread exec'ing that file in
+    /// exactly that window is told it is busy.
+    ///
+    /// The window is microseconds and closes on its own, which is why this
+    /// failed on one CI runner out of seven and passes locally every time. It
+    /// is a property of writing and exec'ing in one multi-threaded process, and
+    /// this program does neither: `launch` is its own invocation, reading a
+    /// file some earlier invocation wrote. So the retry belongs here, in the
+    /// test that creates the condition, and not in the code under test.
+    #[cfg(unix)]
+    fn run_once_it_is_not_busy(command: &mut std::process::Command) -> std::process::Output {
+        for _ in 0..50 {
+            match command.output() {
+                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other.unwrap(),
+            }
+        }
+        panic!("it stayed busy for a second, which is longer than the fork race lasts");
+    }
+
     #[test]
     #[cfg(unix)]
     fn what_was_installed_actually_runs() {
@@ -2521,9 +2549,9 @@ mod tests {
         let file = downloaded(&target, TEST_PAYLOAD);
         let applied = plan_then_install(&target, "software_install", Some(&file));
 
-        let output = std::process::Command::new(applied["executable"].as_str().unwrap())
-            .output()
-            .unwrap();
+        let output = run_once_it_is_not_busy(&mut std::process::Command::new(
+            applied["executable"].as_str().unwrap(),
+        ));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
             "test-harness 1.2.3"
