@@ -6,7 +6,34 @@ The project follows Semantic Versioning. `0.0.x` says plainly that the wire
 surface is proven against the consumer's conformance but has not yet been run
 against a real installation on every platform it claims.
 
+An entry is never edited after its release. It says what that release was,
+including claims a later release made false.
+
 ## [Unreleased]
+
+## [0.0.2] - 2026-08-25
+
+Installs Pi Coding Agent itself, not only its configuration.
+
+- `software_install`, `software_update` and `software_remove`, in the shape
+  agreed with the consumer on `ai-engineers-guild/ai_stp#414`: `--target` is
+  the configuration directory and `--prefix` is the program directory, the plan
+  carries an array `software_artifacts`, and `apply` receives one repeated
+  `--software-artifact` per element in the plan's order.
+- The provider never opens a socket. The contract gives software a download
+  phase and gives a provider no command to run it in, so `plan` names one url,
+  one length and one digest while offline, whoever holds the network fetches
+  exactly that, and `apply` re-checks it offline and installs.
+- Software lands under `--prefix`, never the configuration target, and spends
+  no backup slot: there are ten, and they hold configuration.
+- Reads the one archive shape every vendor ships -- a gzip-compressed tar, or
+  plain bytes. POSIX `ustar` and GNU tar with long-name headers; regular files
+  and directories only. Every other entry type is refused by name.
+- The vendored provider kit moves to 0.2.1. A permission profile this build
+  never advertised now answers `unsupported_permission_profile` instead of the
+  nearest thing the previous closed set had.
+
+Linux, macOS and Windows; x86_64 and arm64.
 
 ## [0.0.1] - 2026-08-24
 

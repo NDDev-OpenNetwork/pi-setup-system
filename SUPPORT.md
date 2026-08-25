@@ -20,11 +20,14 @@ slot holds whatever the target held when it was captured.
 
 ## What is not supported
 
-The software lifecycle — installing, updating or removing the product itself —
-and `launch` are optional in the provider contract and are not declared here,
-because this build does not perform them. A provider that advertised them would
-let a caller ask for something that cannot be honoured, which is worse than not
-offering them.
+The software lifecycle — installing, updating or removing the product
+itself — is not declared here. This product is delivered by a package
+manager that resolves a dependency closure at install time, so there is no
+single artifact whose digest a plan could name in advance.
+
+`launch` is optional in the provider contract and is not declared here. A
+provider that advertised an operation it cannot perform would let a caller ask
+for something that cannot be honoured, which is worse than not offering it.
 
 All five core operations do work: `backup`, `restore`, `remove`, `install` and
 `replace`, both from the local setup catalog and from an `ai-stp-bundle/1`

@@ -7,10 +7,15 @@ the whole configuration — not a pointer to somewhere the content really lives.
 That is what makes restore mean something: it returns the instructions, skills,
 agents, commands, hooks, MCP entries and settings together, in one step.
 
-> **Status: complete for the five core operations.** `install`, `replace`,
-> `backup`, `restore` and `remove` all work, over the wire and from the local
-> catalog. The software lifecycle and `launch` are optional in the contract and
-> are not declared, because this build does not perform them.
+> **Status: complete for the five core operations.**
+>
+> `install`, `replace`, `backup`, `restore` and `remove` all work, over the wire
+> and from the local catalog. `launch` is optional in the contract and is not
+> declared.
+>
+> The software lifecycle is not declared. This product is delivered by
+> a package manager that resolves a dependency closure at install time,
+> so there is no single artifact whose digest a plan could name.
 
 ## Using it
 
@@ -50,7 +55,7 @@ Point `PI_SETUP_SYSTEM_SETUP_CATALOG` at a directory to use setups of your own.
 | Documented configuration home | `~/.pi/agent` |
 | Environment override | `PI_CODING_AGENT_DIR` |
 | Configuration lifecycle | owned |
-| Program lifecycle | owned |
+| Program lifecycle | not owned |
 
 The configuration home above is documentation. Every mutation takes an explicit
 absolute `--target`; nothing is inferred from a home directory or the working
@@ -142,7 +147,7 @@ release is a convenience, not the authorised copy.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.1 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.2 \
   status --target /config/<dir> --json
 ```
 
