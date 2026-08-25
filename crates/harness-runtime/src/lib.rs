@@ -25,6 +25,7 @@
 //! perform would let a consumer call something that cannot be honoured, which
 //! is worse than not offering it.
 
+pub(crate) mod adopt;
 pub mod catalog;
 pub mod expiry;
 pub mod facts;
@@ -146,8 +147,28 @@ fn print_help(harness: &Harness) {
     println!("  plan-operation    --target <dir> --json --operation <op> ...");
     println!("  apply-operation   --target <dir> --json --plan <path> --plan-digest <d> ...");
     println!("  recover-operation --target <dir> --json");
+    if harness.can_launch() {
+        println!("  launch            --target <dir> --prefix <dir> --json [-- <args>]");
+    }
     println!();
-    println!();
+    if harness
+        .operations()
+        .contains(&provider_v3::Operation::SoftwareInstall)
+    {
+        println!(
+            "This build also installs {} itself. Those operations take a",
+            harness.product
+        );
+        println!("`--prefix` for the program, distinct from the `--target` that holds");
+        println!("its configuration, and the bytes are fetched between planning and");
+        println!("applying by whoever holds the network:");
+        println!();
+        println!(
+            "  plan-operation  --operation software_install --target <dir> --prefix <dir> ..."
+        );
+        println!("  apply-operation --prefix <dir> --software-artifact <file> ...");
+        println!();
+    }
     println!("Your commands:");
     println!("  list");
     println!("  status    --target <dir>");
@@ -158,7 +179,19 @@ fn print_help(harness: &Harness) {
     println!("  backups   --target <dir>");
     println!("  restore   [--backup <ref>] --target <dir>");
     println!("  remove    --target <dir>");
+    if !harness.predecessor_state_file.is_empty() {
+        println!("  adopt     --target <dir>");
+    }
     println!();
+    if !harness.predecessor_state_file.is_empty() {
+        println!(
+            "`adopt` takes over a target still carrying {},",
+            harness.predecessor_state_file
+        );
+        println!("written by the estate that came before this one. It is a command you");
+        println!("type, never something install does behind you, and it deletes nothing.");
+        println!();
+    }
     println!("Every one takes an explicit --target. There is no default: a change");
     println!("aimed at a guessed path is a change aimed at someone else's state.");
     println!();

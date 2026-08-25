@@ -242,3 +242,126 @@ pub(crate) fn apply(
         "files": installed.files,
     }))
 }
+
+/// Start the exact program a software install placed, replacing this process.
+///
+/// Not a name looked up on `PATH`: that starts whatever else shares the
+/// spelling, which is the failure this command exists to avoid. The path comes
+/// from the same table the plan was built from, and it must resolve to a
+/// regular file this host can execute — an existing but non-executable file is
+/// a refusal with a reason, not a process error surfacing from somewhere else.
+///
+/// On success this does not return. The caller's stdio and exit status become
+/// the product's, which is what starting a program means; everything that could
+/// refuse has already refused by then.
+///
+/// # Errors
+///
+/// Refuses when this build does not declare `launch`, when no `--prefix` was
+/// given, when nothing is installed there, or when what is there cannot be run.
+pub(crate) fn launch(
+    harness: &Harness,
+    target: &Path,
+    prefix: Option<&Path>,
+    arguments: &[String],
+) -> Result<serde_json::Value> {
+    if !harness.can_launch() {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} does not declare launch: {}",
+                harness.provider_id,
+                if harness.config_home_env.is_empty() {
+                    format!(
+                        "{} documents no environment variable for its configuration home, so a \
+                         launch could not point it at the target this command was given",
+                        harness.product
+                    )
+                } else {
+                    "this build installs no software, and launching a name found on PATH would \
+                     start whatever else shares it"
+                        .to_owned()
+                },
+            ),
+        ));
+    }
+
+    let declared = declared(harness)?;
+    let root = program_directory(prefix, Operation::Launch)?;
+    let executable = root.join("bin").join(declared.command);
+
+    let found = executable.metadata().map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} is not installed under {}: {error}; run software_install first",
+                declared.command,
+                root.display()
+            ),
+        )
+    })?;
+    if !found.is_file() {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!("{} is not a regular file", executable.display()),
+        ));
+    }
+    if !is_executable(&found) {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} exists but this host cannot execute it",
+                executable.display()
+            ),
+        ));
+    }
+
+    let mut command = std::process::Command::new(&executable);
+    command.args(arguments);
+    // The target is what this provider configured, and the product's own
+    // documented variable is how it is told. Nothing else in the environment is
+    // touched: filtering another program's environment would be deciding what
+    // it needs, and only its vendor knows that.
+    command.env(harness.config_home_env, target);
+
+    Err(replace_this_process(command, &executable))
+}
+
+/// Whether the mode bits say this host can run it.
+#[cfg(unix)]
+fn is_executable(found: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    found.mode() & 0o111 != 0
+}
+
+/// Windows decides by extension, not by a mode bit there is none of.
+#[cfg(not(unix))]
+fn is_executable(_found: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// Hand this process to the product, and only return if that failed.
+#[cfg(unix)]
+fn replace_this_process(mut command: std::process::Command, executable: &Path) -> Error {
+    use std::os::unix::process::CommandExt;
+    // `exec` returns only on failure. The product inherits this process, so its
+    // stdio and its exit status are the ones the caller sees, with nothing of
+    // this program's left in between.
+    let failure = command.exec();
+    Error::refuse(
+        WireReason::ProviderUnavailable,
+        format!("{} could not be started: {failure}", executable.display()),
+    )
+}
+
+/// Windows has no `exec`, so the status is carried back by hand.
+#[cfg(not(unix))]
+fn replace_this_process(mut command: std::process::Command, executable: &Path) -> Error {
+    match command.status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(failure) => Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!("{} could not be started: {failure}", executable.display()),
+        ),
+    }
+}

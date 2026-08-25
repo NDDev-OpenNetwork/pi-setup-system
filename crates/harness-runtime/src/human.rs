@@ -25,6 +25,7 @@ use setup_core::backup::Pool;
 use setup_core::stamp::{ProviderState, StateReading};
 use setup_core::target::Target;
 
+use crate::adopt;
 use crate::catalog::{CATALOG_DIRECTORY, Catalog};
 use crate::expiry;
 use crate::facts::{self, Harness};
@@ -77,6 +78,11 @@ pub enum Command {
         /// The slot to read, or the most recent when absent.
         backup: Option<String>,
     },
+    /// Take over a target the frozen estate's program still claims.
+    Adopt {
+        /// The directory to take over.
+        target: PathBuf,
+    },
     /// Withdraw everything this provider owns.
     Remove {
         /// The directory to clear.
@@ -94,7 +100,15 @@ pub enum Command {
 pub fn is_human_command(name: &str) -> bool {
     matches!(
         name,
-        "list" | "install" | "reinstall" | "select" | "backups" | "restore" | "remove" | "diff"
+        "list"
+            | "install"
+            | "reinstall"
+            | "select"
+            | "backups"
+            | "restore"
+            | "remove"
+            | "adopt"
+            | "diff"
     )
 }
 
@@ -241,6 +255,12 @@ impl Arguments {
                     target: self.target(name)?,
                 })
             }
+            "adopt" => {
+                self.no_setup(name)?;
+                Ok(Command::Adopt {
+                    target: self.target(name)?,
+                })
+            }
             "diff" => {
                 self.no_setup(name)?;
                 Ok(Command::Diff {
@@ -271,6 +291,7 @@ pub fn run(harness: &Harness, command: Command) -> Result<()> {
         }
         Command::Reinstall { target } => reinstall(harness, &target),
         Command::Restore { target, backup } => restore(harness, &target, backup),
+        Command::Adopt { target } => adopt_target(harness, &target),
         Command::Remove { target } => remove(harness, &target),
     }
 }
@@ -499,6 +520,96 @@ fn remove(harness: &Harness, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Take over a target the frozen estate's program still claims.
+///
+/// Everything that could refuse happens before anything is captured or moved:
+/// the stamp is read, its schema and its directory are checked, every file it
+/// claims is accounted for against what is on disk, and any path it names that
+/// this provider does not own is a refusal rather than a silent partial claim.
+fn adopt_target(harness: &Harness, target: &Path) -> Result<()> {
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    let Some((stamp, found)) = adopt::read(harness, &resolved)? else {
+        return Err(local(if harness.predecessor_state_file.is_empty() {
+            format!(
+                "{} had no module in the frozen estate, so there is no stamp to adopt",
+                harness.product
+            )
+        } else {
+            format!(
+                "{} holds no {}; there is nothing to adopt",
+                resolved.root().display(),
+                harness.predecessor_state_file
+            )
+        }));
+    };
+
+    let outside = found.outside(harness);
+    if !outside.is_empty() {
+        return Err(local(format!(
+            "{} claims {}, which {} does not own; adopting it would record ownership of files no              later operation of this provider would write, restore or remove",
+            stamp.display(),
+            outside.join(", "),
+            harness.provider_id
+        )));
+    }
+
+    if let Some(elsewhere) = found.written_elsewhere(&resolved) {
+        println!(
+            "This stamp was written for {elsewhere}, and is being adopted at {}.",
+            resolved.root().display()
+        );
+        println!("  every path it claims is checked against this target, not that one");
+    }
+
+    let accounted = found.account_for(&resolved)?;
+    println!(
+        "{} wrote {} for setup {:?}, build {}.",
+        found.product_name, harness.predecessor_state_file, found.setup_id, found.build_version
+    );
+    for (relative, claim) in &accounted {
+        println!("  {:-8} {relative}", claim.as_str());
+    }
+    let changed = accounted
+        .iter()
+        .filter(|(_, claim)| *claim != adopt::Claim::Intact)
+        .count();
+    if changed > 0 {
+        println!(
+            "  {changed} of {} are not what the stamp recorded; they are adopted as they are, and              the backup below holds them",
+            accounted.len()
+        );
+    }
+
+    let report = mutate(
+        harness,
+        target,
+        Operation::Install,
+        Effect::Adopt {
+            stamp: stamp.clone(),
+        },
+        wire::Applied {
+            setup_id: Some(found.setup_id.clone()),
+            ..wire::Applied::default()
+        },
+    )?;
+
+    println!();
+    println!(
+        "{} now owns {}.",
+        harness.provider_id,
+        resolved.root().display()
+    );
+    println!(
+        "  previous state captured as {}",
+        report_field(&report, "backup_ref")
+    );
+    println!(
+        "  the old stamp is kept at {}/adopted/{}",
+        harness.control_directory, harness.predecessor_state_file
+    );
+    Ok(())
+}
+
 /// Build a plan and apply it through the one write path.
 fn mutate(
     harness: &Harness,
@@ -597,6 +708,18 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
                 ),
             ]
         }
+        Effect::Adopt { stamp } => vec![
+            capture,
+            format!(
+                "record {} as the setup this target holds, without writing one file of it",
+                setup_id.unwrap_or("the setup the old stamp names")
+            ),
+            format!(
+                "move {} into {}/adopted, where the old program no longer sees it",
+                stamp.display(),
+                harness.control_directory
+            ),
+        ],
         Effect::Restore { backup_ref } => vec![
             capture,
             match backup_ref {
@@ -657,6 +780,8 @@ fn short(digest: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
+    use crate::wire::tests_support::TEST;
+
     use super::*;
 
     #[test]
@@ -669,6 +794,7 @@ mod tests {
             "backups",
             "restore",
             "remove",
+            "adopt",
             "diff",
         ] {
             let tokens = if matches!(name, "install" | "select") {
@@ -796,6 +922,7 @@ mod tests {
             "backups",
             "restore",
             "remove",
+            "adopt",
             "diff",
         ] {
             assert!(
@@ -1163,5 +1290,442 @@ mod tests {
         assert_eq!(one, two);
         assert_ne!(one, operation_id(&harness, "sha256:def"));
         assert!(one.starts_with("operation_"));
+    }
+
+    // ── adoption ─────────────────────────────────────────────────────────────
+
+    /// A target holding what the frozen estate's stamp claims.
+    fn estate_managed(name: &str, files: &[(&str, &str)], claimed: &[(&str, &str)]) -> PathBuf {
+        let target = std::env::temp_dir().join(format!("adopt-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(&target).unwrap();
+        for (relative, body) in files {
+            let at = target.join(relative);
+            if let Some(parent) = at.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(at, body).unwrap();
+        }
+        let managed: serde_json::Map<String, serde_json::Value> = claimed
+            .iter()
+            .map(|(relative, hex)| ((*relative).to_owned(), serde_json::json!(hex)))
+            .collect();
+        fs::write(
+            target.join(TEST.predecessor_state_file),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "product_name": "nddev-test-app",
+                "build_version": "0.1.0",
+                "setup_id": "full-auto",
+                "canonical_target": target.to_string_lossy(),
+                "managed_files": managed,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        target
+    }
+
+    fn hex_of(body: &str) -> String {
+        setup_core::digest::of_bytes(body.as_bytes())
+            .trim_start_matches(setup_core::digest::PREFIX)
+            .to_owned()
+    }
+
+    #[test]
+    fn adopt_takes_over_a_target_the_old_program_still_claims() {
+        let body = "# from the estate\n";
+        let target = estate_managed(
+            "takeover",
+            &[("AGENTS.md", body)],
+            &[("AGENTS.md", &hex_of(body))],
+        );
+
+        run(
+            &TEST,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+
+        // The setup the old stamp named is now what this provider records.
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let StateReading::Current(state) =
+            ProviderState::read(resolved.root(), TEST.state_file).unwrap()
+        else {
+            panic!("adoption left no state");
+        };
+        assert_eq!(state.setup_stable_id.as_deref(), Some("full-auto"));
+
+        // The old program looks for its stamp at the top level and no longer
+        // finds it — but nothing was destroyed.
+        assert!(!target.join(TEST.predecessor_state_file).exists());
+        assert!(
+            target
+                .join(TEST.control_directory)
+                .join("adopted")
+                .join(TEST.predecessor_state_file)
+                .is_file()
+        );
+
+        // The file the stamp claimed is untouched: adoption changes who owns
+        // the target, not what is in it.
+        assert_eq!(fs::read_to_string(target.join("AGENTS.md")).unwrap(), body);
+
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn adopt_captures_the_state_it_took_over() {
+        let body = "# before\n";
+        let target = estate_managed(
+            "captured",
+            &[("AGENTS.md", body)],
+            &[("AGENTS.md", &hex_of(body))],
+        );
+        run(
+            &TEST,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let slots = resolved.root().join(TEST.control_directory).join("backups");
+        let taken = fs::read_dir(&slots).map_or(0, Iterator::count);
+        assert_eq!(taken, 1, "adoption captured nothing to return to");
+
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn a_stamp_claiming_what_this_provider_does_not_own_is_refused() {
+        // Recording ownership of a path no later operation would write,
+        // restore or remove is a claim this build could not keep.
+        let target = estate_managed(
+            "outside",
+            &[("AGENTS.md", "x"), ("somebody-elses.toml", "y")],
+            &[
+                ("AGENTS.md", &hex_of("x")),
+                ("somebody-elses.toml", &hex_of("y")),
+            ],
+        );
+        let error = run(
+            &TEST,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.detail().contains("somebody-elses.toml"),
+            "{}",
+            error.detail()
+        );
+        // Nothing was taken over, and the stamp is where it was.
+        assert!(target.join(TEST.predecessor_state_file).is_file());
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn adopt_on_a_target_with_no_stamp_says_there_is_nothing_to_adopt() {
+        let target = std::env::temp_dir().join(format!("adopt-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(&target).unwrap();
+        let error = run(
+            &TEST,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.detail().contains("nothing to adopt"),
+            "{}",
+            error.detail()
+        );
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn a_harness_with_no_predecessor_says_so_rather_than_looking_for_a_file() {
+        let mut fresh = TEST;
+        fresh.predecessor_state_file = "";
+        let target = std::env::temp_dir().join(format!("adopt-fresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(&target).unwrap();
+        let error = run(
+            &fresh,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.detail().contains("no module in the frozen estate"),
+            "{}",
+            error.detail()
+        );
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn a_file_that_drifted_since_the_stamp_is_accounted_for_not_assumed() {
+        // The estate's own digest is the only record of what it wrote. A file
+        // that no longer matches is adopted as it is, and the backup holds it —
+        // but the difference is stated rather than passed over.
+        let target = estate_managed(
+            "drifted",
+            &[("AGENTS.md", "what is there now")],
+            &[("AGENTS.md", &hex_of("what the estate wrote"))],
+        );
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let (_, found) = adopt::read(&TEST, &resolved).unwrap().unwrap();
+        let accounted = found.account_for(&resolved).unwrap();
+        assert_eq!(
+            accounted,
+            vec![("AGENTS.md".to_owned(), adopt::Claim::Changed)]
+        );
+
+        // And adoption still succeeds: it is a takeover, not a verification.
+        run(
+            &TEST,
+            Command::Adopt {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "what is there now"
+        );
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    // ── a populated home, through the whole lifecycle ────────────────────────
+
+    /// Fingerprint a tree using nothing this program owns.
+    ///
+    /// `setup_core::digest::of_tree` is what the provider itself uses to decide
+    /// a target is unchanged, so comparing against it would be asking the same
+    /// function twice and believing the answer. This walks with `std::fs` and
+    /// hashes with `sha2` directly. A restore that returned *almost* the right
+    /// tree — a mode dropped, an empty directory lost, a byte reordered — is
+    /// caught here and would not be caught by the other.
+    ///
+    /// The provider's own bookkeeping is skipped: the control directory and the
+    /// state file are this build's, not the target's, and they are supposed to
+    /// appear.
+    fn independent_fingerprint(root: &Path, harness: &Harness) -> String {
+        fn walk(at: &Path, base: &Path, skip: &[&str], into: &mut Vec<String>) {
+            let mut entries: Vec<_> = fs::read_dir(at)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                let relative = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if skip.iter().any(|name| relative == *name) {
+                    continue;
+                }
+                let found = fs::symlink_metadata(&path).unwrap();
+                if found.is_dir() {
+                    into.push(format!("d {relative}"));
+                    walk(&path, base, skip, into);
+                } else if found.is_symlink() {
+                    let to = fs::read_link(&path).unwrap();
+                    into.push(format!("l {relative} -> {}", to.to_string_lossy()));
+                } else {
+                    let bytes = fs::read(&path).unwrap();
+                    let readonly = found.permissions().readonly();
+                    into.push(format!(
+                        "f {relative} {} {} ro={readonly}",
+                        bytes.len(),
+                        setup_core::digest::of_bytes(&bytes)
+                    ));
+                }
+            }
+        }
+        let skip = [harness.control_directory, harness.state_file];
+        let mut lines = Vec::new();
+        walk(root, root, &skip, &mut lines);
+        setup_core::digest::of_bytes(lines.join("\n").as_bytes())
+    }
+
+    /// A target with the awkward content a real configuration home grows.
+    fn populated(name: &str) -> (PathBuf, PathBuf) {
+        let base = scratch(name);
+        let catalog = base.join("setups");
+        fs::create_dir_all(&catalog).unwrap();
+        write_setup(
+            &catalog,
+            "baseline",
+            &[("AGENTS.md", "# baseline\n"), ("settings.json", "{}")],
+        );
+        let target = base.join("target");
+
+        // Inside what this provider owns.
+        let deep = target.join("skills/one/two/three/four/five/six");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("leaf.md"), "a long way down\n").unwrap();
+        fs::write(target.join("skills/пример.md"), "имя не в ASCII\n").unwrap();
+        fs::write(target.join("skills/empty.md"), b"").unwrap();
+        // CRLF on purpose: a restore that normalized line endings would be
+        // returning a different file and reporting success.
+        fs::write(target.join("skills/crlf.md"), b"one\r\ntwo\r\n").unwrap();
+        fs::write(target.join("skills/big.md"), vec![b'x'; 300_000]).unwrap();
+        fs::create_dir_all(target.join("skills/an-empty-directory")).unwrap();
+        fs::write(target.join("AGENTS.md"), "# what was here first\n").unwrap();
+
+        // Beside it, and none of this provider's business.
+        fs::write(target.join("unrelated.txt"), "mine").unwrap();
+        fs::write(target.join(".credentials.json"), "SECRET").unwrap();
+        fs::create_dir_all(target.join("sessions/2026")).unwrap();
+        fs::write(target.join("sessions/2026/log.jsonl"), "{}\n").unwrap();
+
+        (catalog, target)
+    }
+
+    #[test]
+    fn a_populated_target_comes_back_byte_for_byte_after_a_restore() {
+        let (catalog, target) = populated("populated-restore");
+        let harness = harness();
+        let before = independent_fingerprint(&target, &harness);
+
+        install(&catalog, &target, "baseline", Operation::Install);
+
+        // What the setup declares is now what is there, and the deep tree that
+        // was in the same namespace is gone with it — that is what owning a
+        // namespace means.
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# baseline\n"
+        );
+        assert!(!target.join("skills/one").exists());
+
+        // Nothing outside those namespaces moved.
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(".credentials.json")).unwrap(),
+            "SECRET"
+        );
+        assert!(target.join("sessions/2026/log.jsonl").is_file());
+
+        run(
+            &harness,
+            Command::Restore {
+                target: target.clone(),
+                backup: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            independent_fingerprint(&target, &harness),
+            before,
+            "the restored target is not the one that was captured"
+        );
+
+        let _ = fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    #[test]
+    fn a_backup_never_holds_what_it_could_not_put_back() {
+        // The slot is what a restore replays. A credential swept into one would
+        // be a secret this program copied without being asked, and a restore
+        // would then write it back over whatever the product had since stored.
+        let (catalog, target) = populated("populated-slot");
+        install(&catalog, &target, "baseline", Operation::Install);
+
+        let slots = target.join(harness().control_directory).join("backups");
+        let mut swept = Vec::new();
+        for slot in fs::read_dir(&slots).unwrap() {
+            let slot = slot.unwrap().path();
+            if slot.is_dir() {
+                for found in walkdir(&slot) {
+                    let name = found.to_string_lossy().into_owned();
+                    if name.contains("credentials") || name.contains("sessions") {
+                        swept.push(name);
+                    }
+                }
+            }
+        }
+        assert!(swept.is_empty(), "a backup slot holds {swept:?}");
+
+        let _ = fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    /// Every path under a root, for a test that needs to look at all of them.
+    fn walkdir(root: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(at) = pending.pop() {
+            let Ok(entries) = fs::read_dir(&at) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path.clone());
+                }
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn remove_takes_a_populated_namespace_and_leaves_the_rest() {
+        let (catalog, target) = populated("populated-remove");
+        let harness = harness();
+        install(&catalog, &target, "baseline", Operation::Install);
+
+        run(
+            &harness,
+            Command::Remove {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+
+        for owned in ["AGENTS.md", "settings.json", "skills"] {
+            assert!(
+                !target.join(owned).exists(),
+                "{owned} survived a remove that claims to own it"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "mine"
+        );
+        assert!(target.join("sessions/2026/log.jsonl").is_file());
+
+        let _ = fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_read_only_file_in_an_owned_namespace_is_still_replaced() {
+        // A product, or a person, can leave a file unwritable. The namespace is
+        // still this provider's to replace, and failing there would leave a
+        // half-applied target behind a permission bit.
+        use std::os::unix::fs::PermissionsExt;
+        let (catalog, target) = populated("populated-readonly");
+        let stubborn = target.join("skills/пример.md");
+        fs::set_permissions(&stubborn, fs::Permissions::from_mode(0o444)).unwrap();
+
+        install(&catalog, &target, "baseline", Operation::Install);
+        assert!(!stubborn.exists(), "a read-only file blocked the install");
+
+        let _ = fs::remove_dir_all(target.parent().unwrap());
     }
 }

@@ -18,15 +18,18 @@ Never open a public issue for a vulnerability, and never paste credentials,
 tokens, or the contents of a backup slot anywhere in this repository. A backup
 slot holds whatever the target held when it was captured.
 
-## What is not supported
+## What this build does, and what it does not
 
 The software lifecycle — installing, updating or removing the product
 itself — is not declared here. This product is delivered by a package
 manager that resolves a dependency closure at install time, so there is no
 single artifact whose digest a plan could name in advance.
 
-`launch` is optional in the provider contract and is not declared here. A
-provider that advertised an operation it cannot perform would let a caller ask
+`launch` is not declared here.
+This build installs no software, and starting a name found on `PATH`
+would run whatever else answers to it.
+
+A provider that advertised an operation it cannot perform would let a caller ask
 for something that cannot be honoured, which is worse than not offering it.
 
 All five core operations do work: `backup`, `restore`, `remove`, `install` and
