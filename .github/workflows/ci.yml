@@ -18,7 +18,7 @@ jobs:
     name: rust
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-ci.yml@5adeab2d8b168b68b8cab8c04cb28ed98b36fe80
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-ci.yml@66fc19d6ee02c703bc219aa4f31d5f98a3def54b
     with:
       toolchain: '1.98.0'
       # The three-OS matrix is the evidence ADR-0113 asks for, and standard
@@ -34,7 +34,7 @@ jobs:
     name: supply-chain
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-supply-chain.yml@5adeab2d8b168b68b8cab8c04cb28ed98b36fe80
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-supply-chain.yml@66fc19d6ee02c703bc219aa4f31d5f98a3def54b
     with:
       enable_deny: true
       enable_audit: true
@@ -44,7 +44,7 @@ jobs:
     name: actionlint
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@5adeab2d8b168b68b8cab8c04cb28ed98b36fe80
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@66fc19d6ee02c703bc219aa4f31d5f98a3def54b
 
   pr-hygiene:
     name: pr-hygiene
@@ -56,4 +56,4 @@ jobs:
       # that would use them is off.
       issues: write
       pull-requests: write
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@5adeab2d8b168b68b8cab8c04cb28ed98b36fe80
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@66fc19d6ee02c703bc219aa4f31d5f98a3def54b

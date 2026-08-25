@@ -9,11 +9,11 @@
   },
   "package": {
     "name": "@earendil-works/pi-coding-agent",
-    "version": "0.84.1",
+    "version": "0.84.3",
     "registry": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent",
-    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.1.tgz",
-    "integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
-    "shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+    "integrity": "sha512-Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w==",
+    "shasum": "c040a5c2cfacd996731ce302a323269f124c8bdc",
     "node": ">=22.19.0",
     "repository_directory": "packages/coding-agent"
   },
