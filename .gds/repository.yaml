@@ -24,7 +24,7 @@ product:
   purpose: >-
     An ai-stp provider-protocol v3 setup system for Pi Coding Agent: it
     installs, reselects, restores and removes a complete harness configuration
-    in a caller-named target directory, and owns the program lifecycle as well as the configuration.
+    in a caller-named target directory, and owns the configuration only.
   capabilities:
     - "install, reinstall and reselect a complete harness setup"
     - "restore the last backup or a chosen one by reference"
