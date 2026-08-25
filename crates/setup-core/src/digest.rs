@@ -269,7 +269,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let base = std::env::temp_dir().join(format!("setup-core-digest-{name}"));
+        let base =
+            std::env::temp_dir().join(format!("setup-core-digest-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base

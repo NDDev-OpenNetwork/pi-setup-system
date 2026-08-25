@@ -943,7 +943,8 @@ mod tests {
     use crate::catalog::{SETUP_MANIFEST, SETUP_PAYLOAD, SETUP_SCHEMA, SetupManifest};
 
     fn scratch(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("harness-human-{name}"));
+        let base =
+            std::env::temp_dir().join(format!("harness-human-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("target")).unwrap();
         fs::canonicalize(&base).unwrap()
