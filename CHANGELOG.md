@@ -11,6 +11,28 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-08-25
+
+Two operations that were one, and three provenance fields that were null.
+
+- `software_install` and `software_update` produced byte-identical plans. The
+  plan phase may read the local disk, so what is already under `--prefix` is in
+  it now: installing over the same version says so, updating from an older one
+  says which, and updating a prefix that holds nothing is refused rather than
+  quietly installing. `software_remove` names the versions it leaves.
+- `component_refs`, `setup_stable_id` and `setup_version` were written empty for
+  every bundle install, and the bundle carried all three. `setup-passport.json`
+  is a required member of the format that this reader required and then
+  discarded, so a target configured over the wire reported no applied setup
+  while the same target from the local catalogue reported one.
+  `setup_version_passport_digest` stays null on purpose: the passport does not
+  carry its own digest and the contract does not define how one is taken.
+- Antigravity ships a first-party `nddev-builder` setup: one native plugin
+  carrying one skill about where this product's configuration lives inside a
+  home it shares with Gemini CLI, and which neighbouring files are not its own.
+
+Linux, macOS and Windows; x86_64 and arm64.
+
 ## [0.0.3] - 2026-08-25
 
 Starts Pi Coding Agent, and takes over a target the estate before this one
