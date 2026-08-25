@@ -2197,6 +2197,11 @@ mod tests {
     #[test]
     fn a_prefix_on_an_operation_that_installs_nothing_is_refused_not_ignored() {
         let target = seeded("software-strayprefix");
+        // Not a literal `/tmp`: on Windows that is rooted but not absolute, so
+        // the parser refuses it one step earlier and this test never reaches
+        // its assertion. The three-OS matrix caught exactly that.
+        let elsewhere = std::env::temp_dir();
+        let elsewhere = elsewhere.to_string_lossy();
         let error = refuse(args(
             "plan-operation",
             &target,
@@ -2210,7 +2215,7 @@ mod tests {
                 "--expires-at",
                 far_future(),
                 "--prefix",
-                "/tmp",
+                &elsewhere,
             ],
         ));
         assert!(
