@@ -26,15 +26,26 @@ pub const PI: Harness = Harness {
     state_file: "NDDEV-PI-PROVIDER.json",
     profile_id: "pi/native-files/1",
     // Everything outside this list is a sibling overlay preserved verbatim.
-    native_namespaces: &["AGENTS.md", "settings.json", "skills"],
+    // `extensions` is where Pi's plugins live. It was missing here while the
+    // consumer's own two descriptions of that route disagreed -- the composition
+    // rule said `packages`, the catalog layout said `extensions` -- and claiming
+    // a route while the product's own sources contradicted each other would have
+    // been guessing at someone else's directory. Settled on their side by the
+    // layout 1.1 correction, and the canonical compiler now answers `extensions`
+    // for `plugin`, so it is declared.
+    native_namespaces: &["AGENTS.md", "settings.json", "skills", "extensions"],
     // The product's own: credentials, session history and runtime caches. Never
     // read, never written, and never copied into a backup slot.
     never_touch: &["trust.json", "sessions"],
     permission_profiles: &["default"],
+    // Exactly what the canonical compiler routes for Pi. It answers `None` for
+    // mcp, hook, command and agent, so declaring any of those would promise a
+    // destination the product does not have.
     component_kinds: &[
         ComponentKind::Instruction,
         ComponentKind::Skill,
         ComponentKind::Setting,
+        ComponentKind::Plugin,
     ],
     projection_kinds: &[ProjectionKind::NativeFiles, ProjectionKind::Package],
     max_files: 8192,
