@@ -11,6 +11,31 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-08-25
+
+Starts Pi Coding Agent, and takes over a target the estate before this one
+still claims.
+
+- `launch`, where this build installs the product and the product documents an
+  environment variable for its configuration home. It starts the exact
+  executable a software install placed under `--prefix`, never a name found on
+  `PATH`, points the product at `--target` through that variable, passes
+  anything after a bare `--` through verbatim, and replaces this process so the
+  caller's stdio and exit status become the product's.
+- `adopt`, a command someone types, for a target still carrying the stamp file
+  the frozen Python estate wrote. Nothing is deleted: the stamp moves into this
+  provider's control directory, and a backup is captured first. Every file it
+  claims is accounted for as intact, changed or missing before anything is
+  taken over.
+- A populated configuration home now runs through install, backup, restore and
+  remove in the test suite on all three systems, compared against a fingerprint
+  computed with `std::fs` and `sha2` rather than against the digest this
+  provider uses to decide a target is unchanged.
+- `--help` describes what each build actually does rather than what they once
+  all did.
+
+Linux, macOS and Windows; x86_64 and arm64.
+
 ## [0.0.2] - 2026-08-25
 
 Installs Pi Coding Agent itself, not only its configuration.
