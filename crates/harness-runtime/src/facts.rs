@@ -136,6 +136,24 @@ impl Harness {
         })
     }
 
+    /// Whether this build can put a program on disk from bytes it can verify.
+    ///
+    /// Not the same question as "does this harness have a `software` field".
+    /// Pi's is `Some`, and its delivery is a package manager -- the product is
+    /// installable, just not by fetching an artifact whose digest was fixed in
+    /// advance. Offering it `software` and `rollback` would be offering commands
+    /// that can only refuse.
+    #[must_use]
+    pub const fn installs_a_program(&self) -> bool {
+        matches!(
+            self.software,
+            Some(Software {
+                delivery: Delivery::Artifacts(_),
+                ..
+            })
+        )
+    }
+
     /// The projection this provider owns, which is what its identity is over.
     ///
     /// Exactly `native_namespaces`. It is a method rather than a field access so

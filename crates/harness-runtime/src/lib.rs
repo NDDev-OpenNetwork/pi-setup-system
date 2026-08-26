@@ -85,6 +85,26 @@ pub fn run(harness: &Harness, arguments: Vec<String>) -> ExitCode {
         };
     }
 
+    // `<command> --help` used to answer `--help has no value`, because the flag
+    // parser reads every `--flag` as taking one. A caller could not ask what a
+    // command takes, and each missing argument surfaced singly -- seven
+    // invocations to learn `plan-operation`, measured by a peer who already
+    // knew the shape.
+    //
+    // Read before parsing, and only outside a passthrough: everything after a
+    // bare `--` belongs to the product `launch` starts, where `--help` means
+    // something else entirely and is not ours to intercept.
+    if let Some(command) = provider_v3::vocabulary::Command::parse(first) {
+        let mine = arguments
+            .iter()
+            .take_while(|token| *token != "--")
+            .any(|token| token == "--help");
+        if mine {
+            print!("{}", provider_v3::argv::render_usage(command));
+            return ExitCode::SUCCESS;
+        }
+    }
+
     let invocation = match provider_v3::argv::parse(arguments) {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -182,7 +202,19 @@ fn print_help(harness: &Harness) {
     if !harness.predecessor_state_file.is_empty() {
         println!("  adopt     --target <dir>");
     }
+    if harness.installs_a_program() {
+        println!("  software  --prefix <dir>");
+        println!("  rollback  --to <version> --prefix <dir>");
+    }
     println!();
+    if harness.installs_a_program() {
+        println!("`software` reads the program directory and `rollback` points the");
+        println!("command back at a version already in it -- installing a new one leaves");
+        println!("the old tree in place and moves only the command. Both need no network,");
+        println!("which is why they are commands you type; install and update need bytes");
+        println!("fetched between planning and applying, so they stay on the wire above.");
+        println!();
+    }
     if !harness.predecessor_state_file.is_empty() {
         println!(
             "`adopt` takes over a target still carrying {},",
@@ -192,8 +224,11 @@ fn print_help(harness: &Harness) {
         println!("type, never something install does behind you, and it deletes nothing.");
         println!();
     }
-    println!("Every one takes an explicit --target. There is no default: a change");
-    println!("aimed at a guessed path is a change aimed at someone else's state.");
+    println!("Every one takes an explicit --target, and the two program commands an");
+    println!("explicit --prefix. There is no default: a change aimed at a guessed");
+    println!("path is a change aimed at someone else's state. `rollback` names its");
+    println!("version for the same reason -- there is no record of which was");
+    println!("previous, only what is on disk.");
     println!();
     println!("A backup is captured before every change, so `restore` always has");
     println!("something to return to. Over the wire, install and replace arrive as");
