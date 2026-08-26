@@ -479,6 +479,20 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     let profile = harness.projection_profile()?;
     let build_digest = harness.build_digest()?;
 
+    // Every operation that touches the target captures a backup first, so a
+    // path a capture could not take is a plan that cannot be applied. Saying so
+    // here means a caller learns before approving rather than halfway through
+    // the apply, which is where it used to arrive.
+    //
+    // The software operations are exempt because they capture nothing: they
+    // write under `--prefix` and leave the target's own namespaces alone.
+    if !matches!(
+        request.operation,
+        Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove
+    ) {
+        refuse_uncapturable(harness, &resolved)?;
+    }
+
     let mut software_artifacts = Vec::new();
     let (effects, backup_ref, restore_target_digest) = match request.operation {
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove => {
@@ -838,6 +852,12 @@ pub(crate) fn perform(
             }
             _ => (None, None),
         };
+    // Before the slot exists, not while it is being filled. A capture that met
+    // an entry it could not take used to stop halfway, leaving a partial
+    // operation and control artifacts for a target shape that was knowable for
+    // free -- reported from a Windows target whose owned `config/skills` held
+    // four Junctions.
+    refuse_uncapturable(harness, &resolved)?;
     let captured = pool.capture(resolved.root(), harness.native_namespaces, |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
@@ -897,13 +917,7 @@ pub(crate) fn perform(
     let after =
         resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     write_state(
-        harness,
-        &resolved,
-        &mutation.provenance,
-        &identity,
-        &after,
-        &captured,
-        &applied,
+        harness, &resolved, mutation, &identity, &after, &captured, &applied,
     )?;
     journal.promote_to_committed(&control)?;
     Journal::clear(&control)?;
@@ -1065,15 +1079,44 @@ fn remove_path(path: &Path) -> Result<()> {
     })
 }
 
+/// Refuse the exact owned paths a backup could not capture, before any of it.
+///
+/// Named rather than counted, and all of them rather than the first: a caller
+/// fixing them one refusal at a time is the same defect as an argv that
+/// surfaces one missing flag at a time.
+fn refuse_uncapturable(harness: &Harness, resolved: &Target) -> Result<()> {
+    let refused = setup_core::backup::uncapturable(resolved.root(), harness.native_namespaces)?;
+    if refused.is_empty() {
+        return Ok(());
+    }
+    Err(Error::refuse(
+        WireReason::UnsupportedNativeSurface,
+        format!(
+            "a backup captures content, and these owned paths are links rather than \
+             content: {}. Nothing has been changed. Replace them with what they point \
+             at, or move them out of the namespaces this provider owns.",
+            refused.join(", ")
+        ),
+    ))
+}
+
+/// Record what this operation leaves behind, as the contract asks it to.
+///
+/// Takes the whole [`Mutation`] rather than the two fields it needs from it.
+/// Passing them separately grew this past what the workspace allows a signature
+/// to carry, and the honest reading is that they were never two arguments: the
+/// plan's bytes and the digest taken over them are one authorization, and
+/// splitting them is what let them disagree in the first place.
 fn write_state(
     harness: &Harness,
     target: &Target,
-    artifact: &serde_json::Value,
+    mutation: &Mutation<'_>,
     before: &str,
     after: &str,
     captured: &SlotRecord,
     applied: &Applied,
 ) -> Result<()> {
+    let artifact = &mutation.provenance;
     let previous = match ProviderState::read(target.root(), harness.state_file)? {
         StateReading::Current(current) => Some(current.target_identity_digest),
         _ => None,
@@ -1108,10 +1151,20 @@ fn write_state(
         bundle_digest: applied.bundle_digest.clone(),
         artifact_digest: applied.artifact_digest.clone(),
         projection_profile_digest: Some(harness.projection_profile()?.digest),
-        provider_plan_digest: artifact
-            .get("plan_digest")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+        // The digest of the plan this operation was authorized by -- taken
+        // from the value the caller passed as `--plan-digest`, which is what
+        // was checked against the plan's bytes before anything ran.
+        //
+        // It used to be read out of the plan object itself, which never carries
+        // it: the digest is taken *over* the plan and travels beside it in the
+        // planner's envelope. So this was `None` after every operation, of
+        // every kind -- reported as an empty-setup defect and never about
+        // emptiness at all.
+        //
+        // Only visible once `status` started publishing what it persists. While
+        // the field was absent from the answer the consumer skipped it; a
+        // published null is a value it compares and refuses.
+        provider_plan_digest: Some(mutation.plan_digest.clone()),
         operation_id: string_field(artifact, "operation_id")?,
         target_precondition_digest: before.to_owned(),
         native_ownership: harness
@@ -1760,6 +1813,222 @@ mod tests {
         );
     }
 
+    /// `ai_stp#418`, measured rather than assumed: an explicit empty
+    /// `SetupVersion` is a real setup with a zero-file projection, and it must
+    /// record everything a populated one does.
+    ///
+    /// The report was against provider `0.0.1`, and the path it describes was
+    /// rewritten since. Writing a fix for a defect that closed two releases ago
+    /// is how a test that has never been red gets into a repository -- so this
+    /// asserts the current behaviour and either closes the issue with evidence
+    /// or names the field still missing.
+    #[test]
+    fn an_empty_setup_version_records_everything_a_populated_one_does() {
+        let target = seeded("empty-bundle");
+        let (bytes, bundle_digest, artifact) = bundle_bytes(&[]);
+        let artifact_path = target.parent().unwrap().join("empty.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        // The bundle is named to both phases: the plan authorizes an identity
+        // and the apply re-verifies the bytes behind it.
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01EMPTY".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", &target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+
+        let plan_path = target.join("..").join("empty-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", &target, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+
+        let status = run(args("status", &target, &[]));
+        assert_eq!(status["state"], "managed");
+        assert_eq!(status["drift_state"], "clean");
+
+        // The four the report named as null, and the two identities beside
+        // them. An empty projection changes none of these: they describe the
+        // operation and the bundle, not how many files it carried.
+        for field in [
+            "bundle_format",
+            "bundle_digest",
+            "artifact_digest",
+            "provider_plan_digest",
+            "setup_stable_id",
+            "setup_version",
+            "projection_profile_digest",
+            "operation_id",
+            "provider_build_digest",
+        ] {
+            assert!(
+                status[field].is_string(),
+                "an empty setup left {field} as {}",
+                status[field]
+            );
+        }
+        assert_eq!(status["bundle_digest"], bundle_digest);
+        assert_eq!(status["artifact_digest"], artifact);
+        assert_eq!(status["setup_version"], "3.1.0");
+
+        // The three the consumer compares against each other. `recorded_identity`
+        // is the nested spelling of what the record holds; flat, the same name
+        // carries what was observed just now, and their agreeing is the whole
+        // claim that this target is still the installation that was approved.
+        assert_eq!(status["target_digest"], status["target_identity_digest"]);
+        assert_eq!(
+            status["target_digest"],
+            status["provider_state"]["recorded_identity"]
+        );
+        assert!(status["backup_ref"].is_string());
+
+        // `component_refs` is empty because the bundle named none, which is the
+        // truthful answer for a zero-file projection rather than a missing one.
+        assert_eq!(status["component_refs"], serde_json::json!([]));
+    }
+
+    /// `ai_stp#422`: a restore must come back verified after the product has
+    /// written to its own runtime files.
+    ///
+    /// The report is against `0.0.4`, where a target's identity was the whole
+    /// directory, so a session log or a cache write moved it and a restore
+    /// could not match the digest the slot recorded. Since identity became the
+    /// owned projection that cause is gone -- this asserts it, because the
+    /// consumer is carrying a workaround that relaxes a fail-closed check for a
+    /// problem that may no longer exist.
+    #[test]
+    fn a_restore_is_exact_after_the_product_writes_its_own_runtime_files() {
+        let target = seeded("restore-overlay");
+        let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        plan_then_apply(&target, "backup", &[]);
+
+        // A change inside what this provider owns, so the restore has work.
+        fs::write(target.join("AGENTS.md"), "# edited\n").unwrap();
+        assert_ne!(
+            run(args("status", &target, &[]))["target_identity_digest"],
+            before
+        );
+
+        // And what a running product does to its own state between the two:
+        // sessions, logs, caches. None of it is ours and none of it is in the
+        // slot, so a restore cannot and must not put it back.
+        fs::create_dir_all(target.join("sessions/2026-08-26")).unwrap();
+        fs::write(target.join("sessions/2026-08-26/log.jsonl"), "{}\n").unwrap();
+        fs::create_dir_all(target.join("cache/blobs")).unwrap();
+        fs::write(target.join("cache/blobs/a"), vec![7_u8; 4096]).unwrap();
+        fs::write(target.join("unrelated.txt"), "the neighbour moved too").unwrap();
+
+        let restored = plan_then_apply(&target, "restore", &[]);
+        assert_eq!(restored["state"], "verified");
+
+        let after = run(args("status", &target, &[]));
+        assert_eq!(
+            after["target_identity_digest"], before,
+            "a restore did not reach the identity the slot recorded, because \
+             something outside the owned namespaces moved"
+        );
+        assert_eq!(after["drift_state"], "clean");
+
+        // The runtime files are still there: a restore returns what this
+        // provider owns and leaves everything else exactly as it found it.
+        assert!(target.join("sessions/2026-08-26/log.jsonl").is_file());
+        assert!(target.join("cache/blobs/a").is_file());
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "the neighbour moved too"
+        );
+    }
+
+    /// `ai_stp#419`: a link inside an owned namespace is refused before
+    /// anything moves, and every one of them is named at once.
+    ///
+    /// The capture always refused a link -- a slot is a statement about content
+    /// and a link is a pointer -- but it refused *while copying*: the slot was
+    /// created, files were written into it, and the walk then stopped. The
+    /// operation became partial and left control artifacts behind, for a shape
+    /// that was knowable for free. Reported from a real Windows target whose
+    /// owned `config/skills` held four Junctions; `is_symlink` reports a
+    /// Junction and a symbolic link alike, so one reading covers both systems.
+    #[test]
+    #[cfg(unix)]
+    fn links_inside_an_owned_namespace_are_refused_before_anything_moves() {
+        let target = seeded("junction-preflight");
+        let elsewhere = target.parent().unwrap().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("real.md"), "somewhere else").unwrap();
+
+        // Two of them, in the shape the report describes: entries inside a
+        // namespace this provider owns, pointing outside the target.
+        std::os::unix::fs::symlink(elsewhere.join("real.md"), target.join("skills/one.md"))
+            .unwrap();
+        std::os::unix::fs::symlink(&elsewhere, target.join("skills/two")).unwrap();
+
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01LINK",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedNativeSurface));
+        // Both, and by the path a caller can act on -- not a count, and not
+        // the first one alphabetically.
+        assert!(
+            error.detail().contains("skills/one.md"),
+            "{}",
+            error.detail()
+        );
+        assert!(error.detail().contains("skills/two"), "{}", error.detail());
+
+        // And it is a refusal to *start*: no slot, no journal, no control state
+        // that a recovery would have to resolve.
+        let control = target.join(TEST.control_directory);
+        let slots = fs::read_dir(control.join("backups")).map_or(0, Iterator::count);
+        assert_eq!(slots, 0, "a refused plan left a backup slot behind");
+        assert!(
+            !control.join("journal.json").exists(),
+            "a refused plan left a journal behind"
+        );
+        assert_eq!(run(args("status", &target, &[]))["state"], "unmanaged");
+
+        // A link outside every owned namespace is none of our business, and the
+        // same operation goes through.
+        fs::remove_file(target.join("skills/one.md")).unwrap();
+        fs::remove_file(target.join("skills/two")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("real.md"), target.join("their-link")).unwrap();
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
+    }
+
     #[test]
     fn two_status_calls_return_the_same_bytes() {
         // The consumer calls it twice and requires the answers to be identical,
@@ -2252,6 +2521,14 @@ mod tests {
         // Still null, and deliberately: the passport does not state its own
         // digest and the contract does not define how one is taken.
         assert!(state["setup_version_passport_digest"].is_null());
+        // The plan this was authorized by. Reported against empty setups and
+        // never about emptiness: it was null after every operation of every
+        // kind, because it was read out of the plan object, which never carries
+        // the digest taken over it.
+        assert_eq!(
+            state["provider_plan_digest"], planned["plan_digest"],
+            "the state does not name the plan it was authorized by"
+        );
     }
 
     #[test]
