@@ -142,6 +142,109 @@ pub fn of_tree(root: &Path) -> Result<String> {
     of_tree_excluding(root, &[])
 }
 
+/// Hash only the paths a provider declares it owns, and say when one is absent.
+///
+/// This is what a target's *identity* is, and for a long time it was not.
+/// Identity used to be [`of_tree_excluding`] over a short denylist — everything
+/// in the directory except this provider's bookkeeping and the product's
+/// credentials — while backup, restore, remove and materialization were all
+/// correctly scoped to the declared namespaces. One caller disagreeing with the
+/// declaration is one caller too many, and it disagreed in two ways:
+///
+/// - it read bytes the provider does not own. Antigravity is a guest inside
+///   `~/.gemini`; on a real Windows machine that is ~124,065 files and 20.2 GB,
+///   `status` did not return within 150 seconds against a 120-second boundary,
+///   and planning failed before an operation id existed;
+/// - it let a neighbour strand a plan. A change under a sibling that no effect
+///   of ours would ever have touched moved the identity, so a plan made against
+///   the target before it went stale for a reason that had nothing to do with
+///   the operation.
+///
+/// The second is the one that is wrong at any size, on any platform.
+///
+/// **An absent namespace contributes nothing, and that is deliberate.** The
+/// consumer's report asks for an explicit absence marker; this does not emit
+/// one, for two reasons found by writing it the other way first.
+///
+/// A marker is not needed to tell absence from emptiness — those already differ,
+/// because an empty directory emits a `dir` entry and a missing one emits
+/// nothing at all. And a marker breaks the strongest statement this design
+/// makes: *a target holding nothing but one setup is that setup, byte for
+/// byte*. A setup's definition digest is a whole-tree digest of its payload, and
+/// `setup_definition_digest` sits beside `target_identity_digest` in provider
+/// state precisely so the two can be compared. Markers for namespaces the setup
+/// does not fill would make them differ for every setup that does not use every
+/// namespace, which is most of them — a test caught exactly that.
+///
+/// It also means adding a namespace to a future declaration does not invalidate
+/// targets that never used it.
+///
+/// Namespaces are slash-separated and may be nested (`config/skills`), which is
+/// how a harness owns part of a directory another product also writes into.
+///
+/// # Errors
+///
+/// Returns [`ReasonCode::StateUnavailable`] if an owned path cannot be walked,
+/// and [`ReasonCode::InvalidTarget`] if `root` is not a directory or if two
+/// namespaces overlap — an overlap would hash the nested one twice and make the
+/// digest depend on the order they happen to be declared in.
+pub fn of_owned(root: &Path, namespaces: &[&str], excluded: &[&str]) -> Result<String> {
+    if !root.is_dir() {
+        return Err(Error::new(
+            ReasonCode::InvalidTarget,
+            format!("{} is not a directory", root.display()),
+        ));
+    }
+
+    let mut owned: Vec<&str> = namespaces
+        .iter()
+        .copied()
+        .filter(|name| !excluded.contains(name))
+        .collect();
+    owned.sort_unstable();
+    owned.dedup();
+
+    for pair in owned.windows(2) {
+        let (earlier, later) = (pair[0], pair[1]);
+        if later
+            .strip_prefix(earlier)
+            .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Err(Error::new(
+                ReasonCode::InvalidTarget,
+                format!("namespace {later:?} lies inside {earlier:?}, so it would be hashed twice"),
+            ));
+        }
+    }
+
+    let mut entries = Vec::new();
+    for namespace in owned {
+        let path = namespace
+            .split('/')
+            .fold(root.to_path_buf(), |at, part| at.join(part));
+        match fs::symlink_metadata(&path) {
+            // Nothing there is nothing to hash; see the note above on why this
+            // does not leave a marker behind.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("cannot stat {}", path.display()),
+                )
+                .with_source(source));
+            }
+            Ok(metadata) => {
+                describe(root, &path, &metadata, &mut entries)?;
+                if metadata.is_dir() {
+                    collect(root, &path, excluded, &mut entries)?;
+                }
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(fold(entries))
+}
+
 /// Hash a directory tree, skipping the named top-level entries.
 ///
 /// Provider-owned bookkeeping is excluded this way rather than deleted, so the
@@ -161,7 +264,15 @@ pub fn of_tree_excluding(root: &Path, excluded_top_level: &[&str]) -> Result<Str
     let mut entries = Vec::new();
     collect(root, root, excluded_top_level, &mut entries)?;
     entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(fold(entries))
+}
 
+/// Hash sorted entries into the digest both readings produce.
+///
+/// Shared so that a tree digest and an owned-projection digest of the same
+/// files agree byte for byte -- the two differ in *which* entries they collect
+/// and in nothing else.
+fn fold(entries: Vec<(String, String, String)>) -> String {
     let mut hasher = Sha256::new();
     for (relative, kind, payload) in entries {
         hasher.update(relative.as_bytes());
@@ -171,7 +282,38 @@ pub fn of_tree_excluding(root: &Path, excluded_top_level: &[&str]) -> Result<Str
         hasher.update(payload.as_bytes());
         hasher.update([0]);
     }
-    Ok(format!("{PREFIX}{}", hex(&hasher.finalize())))
+    format!("{PREFIX}{}", hex(&hasher.finalize()))
+}
+
+/// Describe one entry as the digest records it: path, kind, and content.
+fn describe(
+    root: &Path,
+    path: &Path,
+    metadata: &fs::Metadata,
+    out: &mut Vec<(String, String, String)>,
+) -> Result<()> {
+    let relative = relative_slash_path(root, path)?;
+    if metadata.is_symlink() {
+        let destination = fs::read_link(path).map_err(|source| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot read link {}", path.display()),
+            )
+            .with_source(source)
+        })?;
+        out.push((
+            relative,
+            "link".to_owned(),
+            destination.to_string_lossy().into_owned(),
+        ));
+    } else if metadata.is_dir() {
+        out.push((relative, "dir".to_owned(), String::new()));
+    } else {
+        let content = of_file(path)?;
+        let executable = if is_executable(metadata) { "x" } else { "-" };
+        out.push((relative, format!("file:{executable}"), content));
+    }
+    Ok(())
 }
 
 fn collect(
@@ -208,26 +350,9 @@ fn collect(
             .with_source(source)
         })?;
 
-        if metadata.is_symlink() {
-            let destination = fs::read_link(&path).map_err(|source| {
-                Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("cannot read link {}", path.display()),
-                )
-                .with_source(source)
-            })?;
-            out.push((
-                relative,
-                "link".to_owned(),
-                destination.to_string_lossy().into_owned(),
-            ));
-        } else if metadata.is_dir() {
-            out.push((relative, "dir".to_owned(), String::new()));
+        describe(root, &path, &metadata, out)?;
+        if metadata.is_dir() && !metadata.is_symlink() {
             collect(root, &path, excluded_top_level, out)?;
-        } else {
-            let content = of_file(&path)?;
-            let executable = if is_executable(&metadata) { "x" } else { "-" };
-            out.push((relative, format!("file:{executable}"), content));
         }
     }
     Ok(())

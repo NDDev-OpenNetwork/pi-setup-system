@@ -136,7 +136,19 @@ impl Harness {
         })
     }
 
-    /// Top-level entries that are not part of this target's identity.
+    /// The projection this provider owns, which is what its identity is over.
+    ///
+    /// Exactly `native_namespaces`. It is a method rather than a field access so
+    /// that every caller asking "what is this target's identity" goes through
+    /// one name — the defect behind `ai_stp#417` was that the one caller
+    /// answering that question answered it differently from the four that
+    /// mutate.
+    #[must_use]
+    pub const fn owned_projection(&self) -> &'static [&'static str] {
+        self.native_namespaces
+    }
+
+    /// Paths that are not part of this target's identity even so.
     ///
     /// The control directory and the state file are this provider's own
     /// bookkeeping; counting them would make an applied operation leave the
@@ -144,6 +156,12 @@ impl Harness {
     /// paths are the product's own — it rewrites credentials and session
     /// history constantly, and letting that traffic move the identity would
     /// strand a plan for a change no effect of ours would have overwritten.
+    ///
+    /// Since identity became the owned projection this is mostly belt and
+    /// braces: a never-touch path outside every namespace is already excluded by
+    /// not being owned. It still matters for one that is declared *and*
+    /// disclaimed, which a harness test forbids, and it costs nothing to keep
+    /// the two statements agreeing.
     #[must_use]
     pub fn not_our_identity(&self) -> Vec<&'static str> {
         let mut names = vec![self.state_file];

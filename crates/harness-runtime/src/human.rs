@@ -334,7 +334,8 @@ fn list(harness: &Harness) -> Result<()> {
 
 fn status(harness: &Harness, target: &Path) -> Result<()> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     println!("Target   {}", resolved.root().display());
     println!("Identity {}", short(&identity));
 
@@ -397,7 +398,8 @@ fn backups(harness: &Harness, target: &Path) -> Result<()> {
 
 fn diff(harness: &Harness, target: &Path) -> Result<()> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     let StateReading::Current(state) = ProviderState::read(resolved.root(), harness.state_file)?
     else {
         println!(
@@ -619,7 +621,8 @@ fn mutate(
     applied: wire::Applied,
 ) -> Result<serde_json::Value> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     let build_digest = harness.build_digest()?;
     let profile = harness.projection_profile()?;
     let operation_id = operation_id(harness, &identity);
@@ -1059,7 +1062,7 @@ mod tests {
 
         let resolved = Target::resolve(&target, harness().control_directory).unwrap();
         let identity = resolved
-            .identity_digest_excluding(&harness().not_our_identity())
+            .identity_of_owned(harness().owned_projection(), &harness().not_our_identity())
             .unwrap();
         assert_eq!(identity, setup.definition_digest);
     }

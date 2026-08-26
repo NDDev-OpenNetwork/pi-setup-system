@@ -144,6 +144,23 @@ impl Target {
         excluded.extend_from_slice(also_excluded);
         digest::of_tree_excluding(&self.root, &excluded)
     }
+
+    /// The identity of this target: the digest of what the provider owns.
+    ///
+    /// The declaration is the authority. Backup, restore, remove and
+    /// materialization were always scoped to `native_namespaces`; identity was
+    /// the one reading that was not, and it disagreed loudly enough to time out
+    /// a real Windows target and quietly enough to strand a plan on a
+    /// neighbour's file everywhere else. See [`digest::of_owned`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates the refusal from the owned-projection walk.
+    pub fn identity_of_owned(&self, namespaces: &[&str], excluded: &[&str]) -> Result<String> {
+        let mut not_ours = vec![self.control_directory_name.as_str()];
+        not_ours.extend_from_slice(excluded);
+        digest::of_owned(&self.root, namespaces, &not_ours)
+    }
 }
 
 /// Tighten a directory to owner-only access where the platform supports it.
