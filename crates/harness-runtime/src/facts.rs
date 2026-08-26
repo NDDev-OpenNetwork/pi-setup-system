@@ -79,6 +79,21 @@ pub struct Harness {
     pub max_bytes: u64,
     /// The exact provider-kit revision this build was compiled against.
     pub kit_identity: &'static str,
+    /// This harness's setup catalog, compiled in, as relative path and bytes.
+    ///
+    /// The release ships binaries and nothing else, so a catalog that only ever
+    /// existed on disk made `list` and `install` refuse for everyone who
+    /// installed the documented way. Carrying it here means the program is the
+    /// whole thing rather than a pointer at a checkout.
+    ///
+    /// It is the *floor*. `<PROVIDER>_SETUP_CATALOG` and the on-disk search
+    /// still win wherever they find something, because a caller's own setups
+    /// are as legitimate a source as these.
+    ///
+    /// Paths are relative and slash-separated, and the build script refuses to
+    /// put a symbolic link or an executable file in here — a setup's digest
+    /// records both, and bytes alone cannot carry either.
+    pub embedded_setups: &'static [(&'static str, &'static [u8])],
     /// How the product's own software is installed, when this build can do it.
     ///
     /// `None` means the software lifecycle is not offered at all. So does a
@@ -292,6 +307,7 @@ mod tests {
     pub(crate) const SAMPLE: Harness = Harness {
         software: None,
         predecessor_state_file: "",
+        embedded_setups: &[],
         harness_id: "sample",
         provider_id: "sample-setup-system",
         version: "0.1.0",

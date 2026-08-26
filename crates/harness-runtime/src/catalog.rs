@@ -21,6 +21,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 use setup_core::digest;
@@ -65,19 +67,126 @@ pub struct Setup {
     pub definition_digest: String,
     /// How many files the tree holds.
     pub file_count: u64,
+    /// Keeps a materialized catalog alive for as long as `payload` names it.
+    ///
+    /// A `Setup` outlives the `Catalog` it came from — `get` returns one and the
+    /// catalog is dropped — and for an embedded catalog the drop deletes the
+    /// directory `payload` points into. `list` did not notice, because it reads
+    /// everything before returning; `install` failed with *cannot list
+    /// …/baseline/home*, having been handed a path to bytes that no longer
+    /// existed.
+    lifeline: Lifeline,
+}
+
+/// A handle that keeps a materialized catalog on disk, and is never identity.
+///
+/// Two setups with the same bytes are the same setup — that is the whole claim
+/// `definition_digest` makes — so where those bytes were written cannot
+/// participate in equality. Comparing always-equal is not a shortcut here; it is
+/// the statement that provenance is not identity.
+#[derive(Debug, Clone, Default)]
+struct Lifeline(
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: this is the handle that keeps a materialized \
+                  catalog on disk, and dead-code analysis does not count a \
+                  destructor as a use"
+    )]
+    Option<Arc<Materialized>>,
+);
+
+impl PartialEq for Lifeline {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Lifeline {}
+
+/// A compiled-in catalog written to a directory this process owns.
+///
+/// Removed when the last handle goes. A failure to remove it is deliberately
+/// silent: the bytes are a copy of something already inside the binary, the
+/// directory is inside the system's temporary space, and refusing a command
+/// that has already succeeded because a cleanup did not would be the tail
+/// wagging the dog.
+#[derive(Debug)]
+struct Materialized {
+    root: PathBuf,
+}
+
+impl Materialized {
+    /// Write every embedded file under a fresh directory.
+    fn write(harness: &Harness) -> Option<Self> {
+        // Unique without a dependency: the process cannot collide with itself,
+        // and the counter separates two catalogs opened in one process — which
+        // the tests do, in threads.
+        //
+        // The name is kept short on purpose, and the reason is Windows. A
+        // classic `MAX_PATH` is 260, and the longest path here is
+        // `<temp>/<this directory>/<deepest file in any setup>`. Measured
+        // 2026-08-26: the deepest relative path any setup holds is 98 bytes
+        // (cursor's `nddev-builder/home/plugins/…/installation-lifecycle.md`)
+        // and a normal Windows temp root is around 42, which leaves this name
+        // as the only part anyone here controls. `<provider_id>-<pid>-<n>` is
+        // 46 for the longest provider id, for a worst case near 186 — enough
+        // headroom for a long user name, which `…-setups-…` was eating for a
+        // word that says nothing the provider id does not.
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "{}-{}-{}",
+            harness.provider_id,
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        // A leftover from a crashed run of the same pid must not be read as
+        // this one's catalog.
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).ok()?;
+
+        let held = Self { root };
+        for (relative, bytes) in harness.embedded_setups {
+            let path = held.root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).ok()?;
+            }
+            fs::write(&path, bytes).ok()?;
+        }
+        Some(held)
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for Materialized {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 /// The catalog this build ships.
 #[derive(Debug, Clone)]
 pub struct Catalog {
     root: PathBuf,
+    /// Kept alive so a materialized catalog outlives every reader of it.
+    ///
+    /// Shared rather than owned because `Catalog` is cloned, and two owners of
+    /// one temporary directory would delete it twice — the second time out from
+    /// under whoever still held the first. Handed to every [`Setup`] this
+    /// catalog produces, so the bytes outlive the catalog that found them.
+    lifeline: Lifeline,
 }
 
 impl Catalog {
     /// Open the catalog at an explicit root.
     #[must_use]
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            lifeline: Lifeline::default(),
+        }
     }
 
     /// Find the catalog this harness ships.
@@ -92,8 +201,24 @@ impl Catalog {
     /// ships one harness and uses the first shape; the workspace that authors
     /// them all uses the second, and a developer should not have to know which
     /// one they are standing in.
+    ///
+    /// That second shape was a claim rather than a fact until the embedded
+    /// catalog existed: it joins the *harness id*, and two harness ids are not
+    /// their tool names — `claude-code` against `setups/claude`, `grok-build`
+    /// against `setups/grok`. Two of the seven could not find their own catalog
+    /// from the workspace root, and the comment above said they could.
+    ///
+    /// When nothing is found on disk, the catalog compiled into this binary is
+    /// materialized and used. That is the case for every user who installed the
+    /// documented way, because the release ships binaries and no `setups/`.
     #[must_use]
     pub fn discover(harness: &Harness) -> Option<Self> {
+        Self::on_disk(harness).or_else(|| Self::embedded(harness))
+    }
+
+    /// The catalog someone put on a disk, if there is one.
+    #[must_use]
+    fn on_disk(harness: &Harness) -> Option<Self> {
         let variable = format!(
             "{}_SETUP_CATALOG",
             harness.provider_id.to_uppercase().replace('-', "_")
@@ -127,6 +252,32 @@ impl Catalog {
             })
             .find(|path| path.is_dir() && Self::holds_a_setup(path))
             .map(Self::at)
+    }
+
+    /// Write the compiled-in catalog somewhere real, and read it from there.
+    ///
+    /// Materializing rather than teaching every reader about a second kind of
+    /// catalog is the whole point. A setup's identity is the digest of its
+    /// tree, computed by walking a directory; a second in-memory implementation
+    /// of that walk would be a second chance to disagree, and the two would
+    /// disagree about exactly the thing that decides whether a target has
+    /// drifted. Writing the bytes down means `list`, `get`, the digest and the
+    /// copy are the same code they have always been, and the embedded catalog
+    /// is provably the same setup as the on-disk one because it *is* one.
+    ///
+    /// The directory belongs to this process and is removed when the last
+    /// handle to it goes.
+    #[must_use]
+    fn embedded(harness: &Harness) -> Option<Self> {
+        if harness.embedded_setups.is_empty() {
+            return None;
+        }
+        let root = Materialized::write(harness)?;
+        let path = root.path().to_path_buf();
+        Some(Self {
+            root: path,
+            lifeline: Lifeline(Some(Arc::new(root))),
+        })
     }
 
     /// Whether a directory holds at least one readable setup manifest.
@@ -177,7 +328,7 @@ impl Catalog {
             if !path.is_dir() {
                 continue;
             }
-            if let Ok(setup) = read_setup(&path) {
+            if let Ok(setup) = read_setup(&path, &self.lifeline) {
                 setups.push(setup);
             }
         }
@@ -218,7 +369,7 @@ impl Catalog {
 }
 
 /// Read one setup directory, or say why it is not one.
-fn read_setup(directory: &Path) -> Result<Setup> {
+fn read_setup(directory: &Path, lifeline: &Lifeline) -> Result<Setup> {
     let manifest_path = directory.join(SETUP_MANIFEST);
     let bytes = fs::read(&manifest_path).map_err(|source| {
         Error::refuse(
@@ -269,6 +420,7 @@ fn read_setup(directory: &Path) -> Result<Setup> {
         file_count: count_files(&payload)?,
         manifest,
         payload,
+        lifeline: lifeline.clone(),
     })
 }
 
@@ -500,5 +652,101 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(setup.file_count, 2);
+    }
+
+    /// The same two files a real setup holds, as the build script would embed
+    /// them: relative slash paths and bytes, nothing else.
+    const EMBEDDED: &[(&str, &[u8])] = &[
+        (
+            "baseline/setup.json",
+            br#"{"schema_version":1,"id":"baseline","description":"the baseline setup"}"#,
+        ),
+        ("baseline/home/AGENTS.md", b"# instructions\n"),
+        ("baseline/home/skills/a.md", b"a skill\n"),
+    ];
+
+    fn harness_carrying_the_embedded_catalog() -> Harness {
+        let mut harness = crate::wire::tests_support::TEST;
+        harness.embedded_setups = EMBEDDED;
+        harness
+    }
+
+    /// The defect this exists for: `get` returns a `Setup` and the `Catalog`
+    /// that produced it is dropped on the next line. For an embedded catalog
+    /// that drop deletes the directory `payload` points into, so the caller is
+    /// handed a path to bytes that no longer exist.
+    ///
+    /// `list` never noticed, because it reads everything before returning. The
+    /// first thing that did was a real `install` from a binary with no `setups/`
+    /// beside it, which refused with *cannot list …/baseline/home*.
+    #[test]
+    fn a_setup_outlives_the_embedded_catalog_it_came_from() {
+        let harness = harness_carrying_the_embedded_catalog();
+        let setup = Catalog::embedded(&harness)
+            .unwrap()
+            .get("baseline")
+            .unwrap();
+
+        // Everything that found the setup is gone; only the setup is held.
+        assert_eq!(
+            fs::read_to_string(setup.payload.join("AGENTS.md")).unwrap(),
+            "# instructions\n",
+            "the bytes were deleted while a caller still held the path to them"
+        );
+        assert_eq!(setup.file_count, 2);
+    }
+
+    /// A setup is its content, so the same bytes must have the same identity
+    /// whether they were shipped inside the binary or found on a disk. If these
+    /// two ever disagree, one target configured from the release and another
+    /// from a checkout would report different identities for the same setup, and
+    /// every drift, restore and `setup_definition_digest` downstream inherits
+    /// the disagreement.
+    #[test]
+    fn the_embedded_catalog_and_the_same_bytes_on_disk_are_one_setup() {
+        let root = scratch("embedded-equals-disk");
+        write_setup(
+            &root,
+            "baseline",
+            &[
+                ("AGENTS.md", "# instructions\n"),
+                ("skills/a.md", "a skill\n"),
+            ],
+        );
+        let on_disk = Catalog::at(&root).get("baseline").unwrap();
+
+        let harness = harness_carrying_the_embedded_catalog();
+        let embedded = Catalog::embedded(&harness)
+            .unwrap()
+            .get("baseline")
+            .unwrap();
+
+        assert_eq!(
+            embedded.definition_digest, on_disk.definition_digest,
+            "the binary and the tree disagree about what the baseline setup is"
+        );
+        assert_eq!(embedded.file_count, on_disk.file_count);
+    }
+
+    /// A harness that ships no catalog says so by finding nothing, rather than
+    /// by producing an empty directory that reads as a catalog with no setups.
+    /// The two are different answers: one is "this build has none", the other is
+    /// "this build has a catalog and it is empty".
+    #[test]
+    fn a_build_carrying_no_embedded_catalog_finds_none() {
+        assert!(Catalog::embedded(&crate::wire::tests_support::TEST).is_none());
+    }
+
+    /// The temporary directory belongs to the process, and two catalogs opened
+    /// in one process must not be handed the same one — the second would delete
+    /// the first's bytes when it cleared a stale directory before writing.
+    #[test]
+    fn two_embedded_catalogs_in_one_process_do_not_share_a_directory() {
+        let harness = harness_carrying_the_embedded_catalog();
+        let first = Catalog::embedded(&harness).unwrap();
+        let second = Catalog::embedded(&harness).unwrap();
+        assert_ne!(first.root(), second.root());
+        assert!(first.get("baseline").is_ok());
+        assert!(second.get("baseline").is_ok());
     }
 }
