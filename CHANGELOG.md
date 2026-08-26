@@ -11,6 +11,37 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-08-26
+
+The catalog now travels with the program, and a target's identity is
+what this provider owns.
+
+- **The published first command did not work.** The release ships binaries and
+  a `SHA256SUMS`, `install.sh` places one file, and `setups/` existed only in
+  the git tree -- so `list` and `install <setup> --target` refused for everyone
+  who installed the documented way, on all three operating systems, for four
+  releases. The catalog is compiled into the binary and materialized on use.
+  `<PROVIDER>_SETUP_CATALOG` and the on-disk search still win wherever they find
+  something: a caller's own setups are as legitimate a source as these.
+- **A target's identity was a denylist over its whole directory**, while backup,
+  restore, remove and materialization were scoped to the declared namespaces. A
+  neighbour writing to its own files moved the identity a plan was made against,
+  and on a shared configuration home it made `status` unanswerable -- measured
+  at 1.5 s against 12,602 unrelated files, and reported from a real Windows
+  target of 124,065 where it exceeded two minutes. Identity is now the owned
+  projection and costs nothing per unrelated file.
+
+  **This changes every existing target's identity.** A target recorded by an
+  earlier release now reports drift; `reinstall` or `restore` settles it. That
+  is the honest answer to a provider that has started measuring a different
+  thing, and a compatibility mode would have carried the defect forever to
+  avoid saying so.
+- **`status` returned six of the twenty-five provenance fields it persists.**
+  All of them are published now, so a consumer can bind the target in front of
+  it to the installation it approved. The nested `provider_state` is unchanged;
+  a drifted or unmanaged target publishes nothing flat, because its record
+  describes bytes that are no longer there.
+
 ## [0.0.4] - 2026-08-25
 
 Two operations that were one, and three provenance fields that were null.
