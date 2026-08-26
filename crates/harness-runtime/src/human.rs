@@ -54,6 +54,18 @@ pub enum Command {
         /// The setup to apply.
         setup: String,
     },
+    /// Report which versions of the product are installed, and which is exposed.
+    Software {
+        /// The program directory to read.
+        prefix: PathBuf,
+    },
+    /// Point the exposed command back at a version already on disk.
+    Rollback {
+        /// The program directory to change.
+        prefix: PathBuf,
+        /// The version to expose. Named, never inferred.
+        to: Option<String>,
+    },
     /// Re-apply whatever setup is already recorded, repairing drift.
     Reinstall {
         /// The directory to repair.
@@ -109,6 +121,8 @@ pub fn is_human_command(name: &str) -> bool {
             | "remove"
             | "adopt"
             | "diff"
+            | "software"
+            | "rollback"
     )
 }
 
@@ -135,6 +149,8 @@ where
 struct Arguments {
     target: Option<PathBuf>,
     backup: Option<String>,
+    prefix: Option<PathBuf>,
+    to: Option<String>,
     positional: Vec<String>,
 }
 
@@ -144,29 +160,46 @@ impl Arguments {
         let mut parsed = Self {
             target: None,
             backup: None,
+            prefix: None,
+            to: None,
             positional: Vec::new(),
         };
         let mut index = 0;
         while index < rest.len() {
             let Some(token) = rest.get(index) else { break };
             match token.as_str() {
-                "--target" | "--backup" => {
+                "--target" | "--backup" | "--prefix" | "--to" => {
                     let Some(value) = rest.get(index + 1) else {
                         return Err(local(format!("{token} has no value")));
                     };
                     if value.starts_with("--") {
                         return Err(local(format!("{token} has no value")));
                     }
-                    if token == "--target" {
-                        if parsed.target.is_some() {
-                            return Err(local("--target was given twice"));
+                    match token.as_str() {
+                        "--target" => {
+                            if parsed.target.is_some() {
+                                return Err(local("--target was given twice"));
+                            }
+                            parsed.target = Some(PathBuf::from(value));
                         }
-                        parsed.target = Some(PathBuf::from(value));
-                    } else {
-                        if parsed.backup.is_some() {
-                            return Err(local("--backup was given twice"));
+                        "--prefix" => {
+                            if parsed.prefix.is_some() {
+                                return Err(local("--prefix was given twice"));
+                            }
+                            parsed.prefix = Some(PathBuf::from(value));
                         }
-                        parsed.backup = Some(value.clone());
+                        "--to" => {
+                            if parsed.to.is_some() {
+                                return Err(local("--to was given twice"));
+                            }
+                            parsed.to = Some(value.clone());
+                        }
+                        _ => {
+                            if parsed.backup.is_some() {
+                                return Err(local("--backup was given twice"));
+                            }
+                            parsed.backup = Some(value.clone());
+                        }
                     }
                     index += 2;
                 }
@@ -186,6 +219,12 @@ impl Arguments {
         self.target
             .clone()
             .ok_or_else(|| local(format!("{name} requires --target <absolute-directory>")))
+    }
+
+    fn prefix(&self, name: &str) -> Result<PathBuf> {
+        self.prefix
+            .clone()
+            .ok_or_else(|| local(format!("{name} requires --prefix <absolute-directory>")))
     }
 
     fn setup(&self, name: &str) -> Result<String> {
@@ -210,10 +249,29 @@ impl Arguments {
         if self.backup.is_some() && name != "restore" {
             return Err(local(format!("--backup is not an argument of {name}")));
         }
+        if self.prefix.is_some() && !matches!(name, "software" | "rollback") {
+            return Err(local(format!("--prefix is not an argument of {name}")));
+        }
+        if self.to.is_some() && name != "rollback" {
+            return Err(local(format!("--to is not an argument of {name}")));
+        }
         match name {
             "list" => {
                 self.no_setup(name)?;
                 Ok(Command::List)
+            }
+            "software" => {
+                self.no_setup(name)?;
+                Ok(Command::Software {
+                    prefix: self.prefix(name)?,
+                })
+            }
+            "rollback" => {
+                self.no_setup(name)?;
+                Ok(Command::Rollback {
+                    prefix: self.prefix(name)?,
+                    to: self.to,
+                })
             }
             "status" => {
                 self.no_setup(name)?;
@@ -293,7 +351,133 @@ pub fn run(harness: &Harness, command: Command) -> Result<()> {
         Command::Restore { target, backup } => restore(harness, &target, backup),
         Command::Adopt { target } => adopt_target(harness, &target),
         Command::Remove { target } => remove(harness, &target),
+        Command::Software { prefix } => software(harness, &prefix),
+        Command::Rollback { prefix, to } => rollback(harness, &prefix, to.as_deref()),
     }
+}
+
+/// What the program directory holds, and which version answers to the command.
+///
+/// Install and update are not here, and their absence is the design rather than
+/// an omission: both need bytes fetched over a network this program never
+/// touches, so they are the three-phase exchange the wire already carries.
+/// Rollback and this reading need no network at all, which is exactly why they
+/// can be commands someone types.
+fn software(harness: &Harness, prefix: &Path) -> Result<()> {
+    let declared = declared_software(harness)?;
+    let present = setup_core::software::Present::under(prefix, declared.command);
+
+    if present.versions.is_empty() {
+        println!(
+            "No version of {} is installed under {}.",
+            declared.command,
+            prefix.display()
+        );
+        return Ok(());
+    }
+
+    println!("{} under {}:", declared.command, prefix.display());
+    println!();
+    for version in &present.versions {
+        let mark = if present.exposed.as_ref() == Some(version) {
+            "* "
+        } else {
+            "  "
+        };
+        println!("  {mark}{version}");
+    }
+    println!();
+    match &present.exposed {
+        Some(version) => println!(
+            "  {}/bin/{} runs {version}",
+            prefix.display(),
+            declared.command
+        ),
+        // Worth saying rather than leaving blank: the versions are on disk and
+        // nothing answers to the command, which is a different situation from
+        // having nothing installed.
+        None => println!(
+            "  Nothing is exposed: {}/bin/{} names no installed version.",
+            prefix.display(),
+            declared.command
+        ),
+    }
+    if present.versions.len() > 1 {
+        println!();
+        println!(
+            "  Change it with:  rollback --to <version> --prefix {}",
+            prefix.display()
+        );
+    }
+    Ok(())
+}
+
+/// Point the exposed command back at a version that is already on disk.
+fn rollback(harness: &Harness, prefix: &Path, to: Option<&str>) -> Result<()> {
+    let declared = declared_software(harness)?;
+    let present = setup_core::software::Present::under(prefix, declared.command);
+
+    // Named, never inferred. There is no record of what was previous -- only
+    // what is on disk -- and these version strings do not order reliably:
+    // cursor's `2026.08.11-e8db854` sorts by string, not by release. Choosing
+    // "the one before" would invent an ordering the vendor never promised.
+    let Some(version) = to else {
+        return Err(local(if present.versions.is_empty() {
+            format!(
+                "rollback requires --to <version>, and {} holds none",
+                prefix.display()
+            )
+        } else {
+            format!(
+                "rollback requires --to <version>; {} holds {}",
+                prefix.display(),
+                present.versions.join(", ")
+            )
+        }));
+    };
+
+    if present.exposed.as_deref() == Some(version) {
+        println!(
+            "{} already runs {version}; nothing to do.",
+            declared.command
+        );
+        return Ok(());
+    }
+
+    let rolled = setup_core::software::rollback(&declared, prefix, version)?;
+    println!(
+        "{} now runs {}.",
+        rolled.executable.display(),
+        rolled.version
+    );
+    if let Some(previous) = present.exposed {
+        println!("  it ran {previous} before this, and that tree is still here");
+    }
+    Ok(())
+}
+
+/// The software this build installs, or the reason it installs none.
+///
+/// Two different absences, and they are worth separating. A harness with no
+/// `software` at all does not offer the lifecycle. A harness whose delivery is a
+/// package manager does -- the product is installable, just not by fetching
+/// bytes whose digest was fixed in advance -- and answering "nothing is
+/// installed under this prefix" would suggest this build could put something
+/// there. It cannot, and pi is the one that would have been told so.
+fn declared_software(harness: &Harness) -> Result<setup_core::software::Software> {
+    let declared = harness.software.ok_or_else(|| {
+        local(format!(
+            "{} configures {} and does not install it",
+            harness.provider_id, harness.product
+        ))
+    })?;
+    if let setup_core::software::Delivery::Manager { tool, reason } = declared.delivery {
+        return Err(local(format!(
+            "{} is delivered by {tool}: {reason}",
+            declared.command
+        )));
+    }
+    Ok(declared)
 }
 
 fn local(detail: impl Into<String>) -> Error {
@@ -782,6 +966,102 @@ fn short(digest: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
+
+    /// `rollback` names its version and never infers one.
+    ///
+    /// There is no record of what was previous -- only what is on disk -- and
+    /// these version strings do not order reliably: cursor's
+    /// `2026.08.11-e8db854` sorts by string, not by release. Choosing "the one
+    /// before" would invent an ordering the vendor never promised, and pointing
+    /// a command at the wrong build is the class of mistake this program
+    /// refuses everywhere else.
+    #[test]
+    fn rollback_requires_the_version_it_is_going_to() {
+        let parsed = parse(["rollback", "--prefix", "/tmp/prefix"]).unwrap();
+        assert_eq!(
+            parsed,
+            Command::Rollback {
+                prefix: std::path::PathBuf::from("/tmp/prefix"),
+                to: None
+            }
+        );
+        let with = parse(["rollback", "--to", "1.2.2", "--prefix", "/tmp/prefix"]).unwrap();
+        assert_eq!(
+            with,
+            Command::Rollback {
+                prefix: std::path::PathBuf::from("/tmp/prefix"),
+                to: Some("1.2.2".to_owned())
+            }
+        );
+    }
+
+    /// The two new flags belong to the two new commands and nowhere else.
+    #[test]
+    fn prefix_and_to_are_refused_on_commands_that_do_not_take_them() {
+        for tokens in [
+            vec![
+                "install", "baseline", "--target", "/tmp/t", "--prefix", "/tmp/p",
+            ],
+            vec!["restore", "--target", "/tmp/t", "--to", "1.2.2"],
+            vec!["status", "--target", "/tmp/t", "--to", "1.2.2"],
+        ] {
+            let error = parse(tokens.clone()).unwrap_err();
+            assert!(
+                error.detail().contains("is not an argument of"),
+                "{tokens:?} was accepted: {}",
+                error.detail()
+            );
+        }
+    }
+
+    /// Two different absences, and the wrong one is misleading.
+    ///
+    /// Pi's `software` is `Some` and its delivery is npm, so before this was
+    /// separated `software --prefix` answered *no version of pi is installed
+    /// under /tmp/x* -- which reads as an invitation to install one. This build
+    /// cannot, and says so in the same words `plan-operation` uses.
+    #[test]
+    fn a_product_delivered_by_a_package_manager_says_so_rather_than_looking_empty() {
+        let mut managed = crate::wire::tests_support::TEST;
+        managed.software = Some(setup_core::software::Software {
+            version: "1.0.0",
+            command: "managed",
+            delivery: setup_core::software::Delivery::Manager {
+                tool: "npm",
+                reason: "its closure is resolved at install time",
+            },
+            unsupported: &[],
+        });
+        assert!(!managed.installs_a_program());
+
+        let error = declared_software(&managed).unwrap_err();
+        assert!(error.detail().contains("npm"), "{}", error.detail());
+        assert!(
+            !error.detail().contains("no version"),
+            "it read as an empty prefix: {}",
+            error.detail()
+        );
+
+        // And a build that installs nothing at all is a third answer again.
+        let mut none = crate::wire::tests_support::TEST;
+        none.software = None;
+        assert!(!none.installs_a_program());
+        assert!(
+            declared_software(&none)
+                .unwrap_err()
+                .detail()
+                .contains("does not install it")
+        );
+    }
+
+    /// Both new commands take a program directory, and neither guesses one.
+    #[test]
+    fn software_and_rollback_require_a_prefix() {
+        for name in ["software", "rollback"] {
+            let error = parse([name]).unwrap_err();
+            assert!(error.detail().contains("--prefix"), "{}", error.detail());
+        }
+    }
 
     use crate::wire::tests_support::TEST;
 

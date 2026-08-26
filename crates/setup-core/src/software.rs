@@ -173,6 +173,22 @@ pub struct Installed {
 }
 
 impl Software {
+    /// Where this build's own artifacts put the executable inside their tree.
+    ///
+    /// A *hint*, and named one deliberately: it is right for a version this
+    /// build installed and is only a first guess for a tree an older build
+    /// wrote. [`rollback`] tries it, then the flat shape, and refuses naming
+    /// both rather than pointing a command at a path it did not verify.
+    #[must_use]
+    pub fn member_hint(&self) -> &'static str {
+        match self.delivery {
+            Delivery::Artifacts(artifacts) => {
+                artifacts.first().map_or(self.command, |entry| entry.member)
+            }
+            Delivery::Manager { .. } => self.command,
+        }
+    }
+
     /// The artifact for one platform, or the reason there is not one.
     ///
     /// # Errors
@@ -395,6 +411,85 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Point the exposed command back at a version that is already on disk.
+///
+/// Installing 1.0.6 leaves 1.0.5 in its own directory and moves only the
+/// exposed command, so the bytes to go back to are already there. Until this
+/// existed nothing pointed at them: the owner named rollback in the same
+/// sentence as install, reinstall and select, and three of those four were
+/// reachable.
+///
+/// This is the one part of the software lifecycle that needs no network at all,
+/// which is why it can be a command someone types rather than the three-phase
+/// exchange install and update have to be.
+///
+/// **The version is named, never inferred.** There is no record of what was
+/// previous -- only what is on disk -- and these version strings do not order
+/// reliably: `2026.08.11-e8db854` sorts by string, not by release. Picking "the
+/// one before" would mean inventing an ordering the vendor never promised, and
+/// pointing a command at the wrong build is exactly the class of mistake this
+/// program refuses everywhere else. A caller who omits it is told what is here.
+///
+/// # Errors
+///
+/// Refuses a version that is not installed, naming the ones that are, and a
+/// version tree that holds no executable this build can find.
+pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed> {
+    let present = Present::under(root, software.command);
+    if !present.versions.iter().any(|found| found == to) {
+        return Err(Error::new(
+            ReasonCode::InvalidTarget,
+            if present.versions.is_empty() {
+                format!(
+                    "{} holds no installed version of {}",
+                    root.display(),
+                    software.command
+                )
+            } else {
+                format!(
+                    "{to} is not installed under {}; it holds {}",
+                    root.display(),
+                    present.versions.join(", ")
+                )
+            },
+        ));
+    }
+
+    let version_root = root.join(to);
+    // Looked for rather than assumed. This build pins one version and knows
+    // where *its* executable sits inside the archive; an older tree was written
+    // by an older build, whose artifact table this one does not carry. Both
+    // shapes it could have used are tried, and neither is guessed at: if the
+    // file is not there, the refusal says where it looked.
+    let candidates = [
+        version_root.join(software.member_hint()),
+        version_root.join(software.command),
+    ];
+    let Some(executable) = candidates.iter().find(|path| path.is_file()) else {
+        return Err(Error::new(
+            ReasonCode::StateUnavailable,
+            format!(
+                "the {to} tree holds no {} executable; looked at {}",
+                software.command,
+                candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        ));
+    };
+
+    let exposed = root.join("bin").join(software.command);
+    expose(executable, &exposed)?;
+    Ok(Installed {
+        version: to.to_owned(),
+        root: version_root,
+        executable: exposed,
+        files: 0,
+    })
+}
+
 /// Point one stable path at the executable inside a versioned tree.
 ///
 /// The member is left where the archive put it. Codex's binary needs the `rg`
@@ -469,6 +564,78 @@ mod tests {
             delivery: Delivery::Artifacts(ARTIFACTS),
             unsupported: &["windows/x86_64"],
         }
+    }
+
+    /// The bytes to go back to are already on disk: installing a new version
+    /// leaves the old tree in place and moves only the exposed command. Until
+    /// `rollback` existed nothing pointed back at them, and the owner named
+    /// rollback in the same sentence as install, reinstall and select.
+    #[test]
+    fn rollback_points_the_command_at_a_version_already_on_disk() {
+        let (at, artifact) = staged("rollback", b"#!/bin/sh\necho new\n", CODEX_MEMBER);
+        let root = at.join("prefix");
+        let installed = install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        assert_eq!(installed.version, "1.2.3");
+
+        // What an update leaves behind: the previous tree, untouched.
+        let older = root.join("1.2.2");
+        fs::create_dir_all(older.join("package/vendor/x86_64-unknown-linux-musl/bin")).unwrap();
+        fs::write(older.join(CODEX_MEMBER), b"#!/bin/sh\necho old\n").unwrap();
+
+        let rolled = rollback(&software(), &root, "1.2.2").unwrap();
+        assert_eq!(rolled.version, "1.2.2");
+
+        let present = Present::under(&root, "codex");
+        assert_eq!(present.exposed.as_deref(), Some("1.2.2"));
+        assert_eq!(present.versions, vec!["1.2.2", "1.2.3"]);
+
+        // And the version it came from is still there to go forward to.
+        assert!(root.join("1.2.3").join(CODEX_MEMBER).is_file());
+        assert_eq!(
+            rollback(&software(), &root, "1.2.3").unwrap().version,
+            "1.2.3"
+        );
+        assert_eq!(
+            Present::under(&root, "codex").exposed.as_deref(),
+            Some("1.2.3")
+        );
+    }
+
+    /// A version that is not there is refused, and the refusal says what is --
+    /// otherwise a caller's only way to find out is to guess again.
+    #[test]
+    fn rollback_to_a_version_that_is_not_installed_names_the_ones_that_are() {
+        let (at, artifact) = staged("rollback-missing", b"x", CODEX_MEMBER);
+        let root = at.join("prefix");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+
+        let error = rollback(&software(), &root, "9.9.9").unwrap_err();
+        assert!(error.detail().contains("9.9.9"), "{}", error.detail());
+        assert!(error.detail().contains("1.2.3"), "{}", error.detail());
+        // Nothing moved.
+        assert_eq!(
+            Present::under(&root, "codex").exposed.as_deref(),
+            Some("1.2.3")
+        );
+    }
+
+    /// A tree an older build wrote may not put the executable where this
+    /// build's artifacts do. Both shapes are tried and neither is guessed at:
+    /// if the file is not there, the refusal says where it looked.
+    #[test]
+    fn a_version_tree_with_no_executable_is_refused_naming_where_it_looked() {
+        let (at, artifact) = staged("rollback-empty", b"x", CODEX_MEMBER);
+        let root = at.join("prefix");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        fs::create_dir_all(root.join("1.2.2")).unwrap();
+
+        let error = rollback(&software(), &root, "1.2.2").unwrap_err();
+        assert!(error.detail().contains("1.2.2"), "{}", error.detail());
+        assert!(error.detail().contains("looked at"), "{}", error.detail());
+        assert_eq!(
+            Present::under(&root, "codex").exposed.as_deref(),
+            Some("1.2.3")
+        );
     }
 
     fn scratch(name: &str) -> PathBuf {

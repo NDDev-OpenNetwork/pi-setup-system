@@ -2415,9 +2415,14 @@ mod tests {
 
     #[test]
     fn launch_without_a_prefix_says_where_a_program_lives() {
+        // Refused at the argv layer now rather than in dispatch: `--prefix` is
+        // one of the three arguments `launch` is defined by, so the parser
+        // names it before a target is ever opened. `launch --help` lists the
+        // same three, from the same table.
         let target = seeded("launch-noprefix");
-        let error = refuse(args("launch", &target, &[]));
+        let error = argv::parse(args("launch", &target, &[])).unwrap_err();
         assert!(error.detail().contains("--prefix"), "{}", error.detail());
+        assert!(error.detail().contains("--help"), "{}", error.detail());
     }
 
     #[test]

@@ -50,6 +50,157 @@ const BUNDLE_FLAGS: &[&str] = &[
     "--bundle-size",
 ];
 
+/// What one command requires and what it accepts, stated once as data.
+///
+/// This table exists because of a measurement, not a preference. A peer
+/// building the consumer half spent five round-trips discovering that
+/// `plan-operation` takes seven required arguments — and they already knew the
+/// shape from their own conformance code. Each missing flag surfaced singly,
+/// and `--help` answered `--help has no value`, because it was parsed as a flag
+/// that takes one. The one question a caller could ask was met with a complaint
+/// about its grammar.
+///
+/// The refusals themselves were right, and they are unchanged. What was missing
+/// was any way to ask.
+///
+/// It is one table read by two callers — [`usage`] renders it and [`parse`]
+/// checks against it — because two lists of the same requirement eventually
+/// disagree. A test binds it to the parser by removing each named flag from a
+/// complete invocation and requiring the refusal to name it.
+pub struct Usage {
+    /// The command this describes.
+    pub command: Command,
+    /// Flags without which the command cannot run.
+    pub required: &'static [&'static str],
+    /// Flags the command accepts, each with why a caller would pass it.
+    pub optional: &'static [(&'static str, &'static str)],
+    /// One line on what the command does with them.
+    pub note: &'static str,
+}
+
+/// The arguments one command takes.
+#[must_use]
+pub const fn usage(command: Command) -> Usage {
+    match command {
+        Command::ProviderInfo => Usage {
+            command,
+            required: &[],
+            optional: &[],
+            note: "Report capabilities. Takes no arguments at all, not even --json.",
+        },
+        Command::Status => Usage {
+            command,
+            required: &["--target", "--json"],
+            optional: &[],
+            note: "Report the target's current state. Never changes it.",
+        },
+        Command::RecoverOperation => Usage {
+            command,
+            required: &["--target", "--json"],
+            optional: &[],
+            note: "Resolve an interrupted operation. Reads the journal to know what it is resolving.",
+        },
+        Command::ValidateBundle => Usage {
+            command,
+            required: &[
+                "--target",
+                "--json",
+                "--bundle",
+                "--bundle-format",
+                "--bundle-digest",
+                "--artifact-digest",
+                "--bundle-size",
+            ],
+            optional: &[],
+            note: "Check a bundle against the exact claim that named it. Touches nothing.",
+        },
+        Command::PlanOperation => Usage {
+            command,
+            required: &[
+                "--target",
+                "--json",
+                "--operation",
+                "--provider-release-digest",
+                "--operation-id",
+                "--expires-at",
+            ],
+            optional: &[
+                (
+                    "--prefix",
+                    "where a program lives; required by every software_* operation",
+                ),
+                ("--backup-ref", "which slot a restore returns to"),
+                ("--permission-profile", "a profile this build declares"),
+                (
+                    "--software-version",
+                    "exactly one pinned version, when not the current one",
+                ),
+                (
+                    "--bundle …",
+                    "the five bundle flags, for install and replace",
+                ),
+            ],
+            note: "Produce a plan. Always pure: reads the target and the local disk, opens no socket.",
+        },
+        Command::ApplyOperation => Usage {
+            command,
+            required: &[
+                "--target",
+                "--json",
+                "--plan",
+                "--plan-digest",
+                "--provider-release-digest",
+            ],
+            optional: &[
+                (
+                    "--prefix",
+                    "where a program lives; required by every software_* operation",
+                ),
+                (
+                    "--software-artifact",
+                    "one per software_artifacts entry, in the plan's order",
+                ),
+                (
+                    "--bundle …",
+                    "the five bundle flags, for install and replace",
+                ),
+            ],
+            note: "Apply one exact plan under the target lock. --plan is the plan object, \
+                   written canonically -- not the envelope the planner printed around it.",
+        },
+        Command::Launch => Usage {
+            command,
+            required: &["--target", "--json", "--prefix"],
+            optional: &[(
+                "-- <args>",
+                "everything after a bare -- goes to the product verbatim",
+            )],
+            note: "Start the exact executable a software install placed. Never a name found on PATH.",
+        },
+    }
+}
+
+/// Render one command's arguments for a caller who asked.
+#[must_use]
+pub fn render_usage(command: Command) -> String {
+    use std::fmt::Write as _;
+    let shape = usage(command);
+    let mut out = format!("{command}\n\n  {}\n", shape.note);
+    if !shape.required.is_empty() {
+        out.push_str("\nRequired:\n");
+        for flag in shape.required {
+            let _ = writeln!(out, "  {flag}");
+        }
+    }
+    if !shape.optional.is_empty() {
+        out.push_str("\nOptional:\n");
+        for (flag, why) in shape.optional {
+            let _ = writeln!(out, "  {flag:<22} {why}");
+        }
+    }
+    out
+}
+
 /// One parsed invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
@@ -226,6 +377,23 @@ where
     // leftovers the same way it always would.
     let (mine, passthrough) = Flags::split_passthrough(rest);
     let mut flags = Flags::parse(&mine)?;
+
+    // Every missing argument at once, rather than the first one alphabetically.
+    // Learning a command used to cost one invocation per argument, and the
+    // count is seven for two of these.
+    let missing: Vec<&str> = usage(command)
+        .required
+        .iter()
+        .copied()
+        .filter(|flag| !flags.holds(flag))
+        .collect();
+    if !missing.is_empty() {
+        return Err(local(format!(
+            "{command} is missing {}; run `{command} --help` for what it takes",
+            missing.join(", ")
+        )));
+    }
+
     let target = PathBuf::from(flags.take_required("--target")?);
     if !flags.take_switch("--json") {
         return Err(local(format!("{command} requires --json")));
@@ -359,6 +527,18 @@ impl Flags {
         Ok(Self { values, switches })
     }
 
+    /// Whether a flag was given, without consuming it.
+    ///
+    /// `--json` is a switch and lives in its own list; asking about it here
+    /// keeps the completeness check able to name it beside the others rather
+    /// than leaving one required argument to a separate refusal further down.
+    fn holds(&self, name: &str) -> bool {
+        if name == "--json" {
+            return self.switches.iter().any(|switch| switch == name);
+        }
+        self.values.contains_key(name)
+    }
+
     fn take_required(&mut self, name: &str) -> Result<String> {
         self.take_optional(name)
             .ok_or_else(|| local(format!("{name} is required")))
@@ -489,6 +669,117 @@ mod tests {
         ];
         tokens.extend(extra.iter().map(|s| (*s).to_owned()));
         tokens
+    }
+
+    /// A complete, well-formed invocation of one command.
+    fn complete(command: Command) -> Vec<String> {
+        let mut tokens = vec![command.as_str().to_owned()];
+        for flag in usage(command).required {
+            tokens.push((*flag).to_owned());
+            if *flag == "--json" {
+                continue;
+            }
+            tokens.push(
+                match *flag {
+                    "--target" => "/tmp/target",
+                    "--operation" => "install",
+                    "--bundle" | "--plan" => "/tmp/file",
+                    "--bundle-format" => "ai-stp-bundle/1",
+                    "--bundle-size" => "4096",
+                    "--operation-id" => "operation_00000000000000000000000",
+                    "--expires-at" => "2027-01-01T00:00:00.000Z",
+                    "--prefix" => "/tmp/prefix",
+                    _ => DIGEST,
+                }
+                .to_owned(),
+            );
+        }
+        // `install` arrives as a bundle, so a complete plan for it carries one.
+        if command == Command::PlanOperation {
+            tokens.extend(bundle_flags());
+        }
+        tokens
+    }
+
+    /// The table and the parser must demand the same set.
+    ///
+    /// [`usage`] is read by `--help` and by the completeness refusal, and it
+    /// would be worth nothing if it drifted from what `parse` actually enforces
+    /// -- a caller would be told the truth about a command that then refused
+    /// something else. So every flag the table calls required is removed from a
+    /// complete invocation, one at a time, and the refusal must name it.
+    #[test]
+    fn every_flag_the_table_calls_required_is_one_the_parser_demands() {
+        for command in Command::ALL.iter().copied().filter(|c| c.takes_target()) {
+            let whole = complete(command);
+            parse(whole.clone())
+                .unwrap_or_else(|e| panic!("{command}: a complete invocation was refused: {e}"));
+
+            for flag in usage(command).required {
+                let mut without = Vec::new();
+                let mut skip = false;
+                for token in &whole {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    if token == flag {
+                        skip = *flag != "--json";
+                        continue;
+                    }
+                    without.push(token.clone());
+                }
+                let error = parse(without)
+                    .err()
+                    .unwrap_or_else(|| panic!("{command} was accepted without {flag}"));
+                assert!(
+                    error.detail().contains(flag),
+                    "{command} without {flag} refused without naming it: {}",
+                    error.detail()
+                );
+            }
+        }
+    }
+
+    /// The count is the point: learning a command used to cost one invocation
+    /// per argument.
+    #[test]
+    fn one_refusal_names_every_missing_argument() {
+        let error = parse(["plan-operation", "--target", "/tmp/target"]).unwrap_err();
+        for flag in [
+            "--json",
+            "--operation",
+            "--provider-release-digest",
+            "--operation-id",
+            "--expires-at",
+        ] {
+            assert!(
+                error.detail().contains(flag),
+                "the refusal did not name {flag}: {}",
+                error.detail()
+            );
+        }
+        assert!(
+            error.detail().contains("--help"),
+            "it does not say how to ask"
+        );
+    }
+
+    /// Every command can be asked what it takes, and the answer names the same
+    /// flags the refusal would.
+    #[test]
+    fn every_command_can_be_asked_what_it_takes() {
+        for command in Command::ALL {
+            let rendered = render_usage(*command);
+            assert!(rendered.contains(command.as_str()));
+            assert!(!usage(*command).note.is_empty());
+            for flag in usage(*command).required {
+                assert!(
+                    rendered.contains(flag),
+                    "{command} help omits its own required {flag}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -634,9 +925,43 @@ mod tests {
     fn a_partial_bundle_is_refused_rather_than_completed() {
         let mut partial = bundle_flags();
         partial.truncate(partial.len() - 2); // drop --bundle-size and its value
-        let tokens = [with_target("validate-bundle", &[]), partial].concat();
-        let error = parse(tokens).unwrap_err();
-        assert!(error.detail().contains("all five"));
+
+        // On `validate-bundle` the bundle *is* the command, so the five flags
+        // are required and the completeness check names the missing one before
+        // the bundle reader is reached. Naming the exact flag is the better
+        // answer of the two, and it is the one a caller gets here.
+        let error =
+            parse([with_target("validate-bundle", &[]), partial.clone()].concat()).unwrap_err();
+        assert!(
+            error.detail().contains("--bundle-size"),
+            "{}",
+            error.detail()
+        );
+
+        // On `plan-operation` a bundle is optional, so the invariant that still
+        // has to be stated is all-five-or-none. This is the refusal that would
+        // otherwise have been lost when the completeness check went in.
+        let plan = parse(
+            [
+                with_target(
+                    "plan-operation",
+                    &[
+                        "--operation",
+                        "install",
+                        "--provider-release-digest",
+                        DIGEST,
+                        "--operation-id",
+                        "operation_00000000000000000000000",
+                        "--expires-at",
+                        "2027-01-01T00:00:00.000Z",
+                    ],
+                ),
+                partial,
+            ]
+            .concat(),
+        )
+        .unwrap_err();
+        assert!(plan.detail().contains("all five"), "{}", plan.detail());
     }
 
     #[test]
