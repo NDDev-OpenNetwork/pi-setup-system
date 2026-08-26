@@ -116,14 +116,21 @@ pub(crate) fn plan(
     let root = program_directory(prefix, operation)?;
     version_for(&declared, software_version)?;
 
-    let entry_point = format!("bin/{}", declared.command);
+    // Not always the command: pi's entry point is JavaScript, and Windows runs
+    // a file by its extension rather than by a shebang, so what is exposed
+    // there is `pi.cmd`. The plan states what a caller will actually be able to
+    // run, which is the whole point of naming it.
+    let entry_point = format!(
+        "bin/{}",
+        setup_core::software::exposed_name(declared.command, declared.member_hint())
+    );
     let exposed = root.join(&entry_point);
 
     // Planning may read the local disk and may not reach the network, so what
     // is already under the prefix belongs in the plan. Without it an install
     // and an update produced byte-identical effects -- two names for one act,
     // and neither said what was about to be replaced.
-    let present = software::Present::under(&root, declared.command);
+    let present = software::Present::under_named(&root, declared.command, declared.member_hint());
 
     if operation == Operation::SoftwareRemove {
         let mut effects = vec![
@@ -285,7 +292,7 @@ pub(crate) fn apply(
     // the prefix could have been emptied in between. The plan's digest binds
     // what was decided, not what the disk still holds.
     if operation == Operation::SoftwareUpdate
-        && software::Present::under(&root, declared.command)
+        && software::Present::under_named(&root, declared.command, declared.member_hint())
             .versions
             .is_empty()
     {
@@ -309,7 +316,10 @@ pub(crate) fn apply(
         "operation": operation.as_str(),
         "command": declared.command,
         "version": installed.version,
-        "entry_point": format!("bin/{}", declared.command),
+        "entry_point": format!(
+            "bin/{}",
+            setup_core::software::exposed_name(declared.command, declared.member_hint())
+        ),
         "executable": installed.executable.to_string_lossy(),
         "files": installed.files,
     }))
@@ -360,7 +370,13 @@ pub(crate) fn launch(
 
     let declared = declared(harness)?;
     let root = program_directory(prefix, Operation::Launch)?;
-    let executable = root.join("bin").join(declared.command);
+    // The same name the plan stated and the apply wrote. Three readings of one
+    // fact, and they have to be one expression or they will drift apart on the
+    // one platform where they differ.
+    let executable = root.join("bin").join(setup_core::software::exposed_name(
+        declared.command,
+        declared.member_hint(),
+    ));
 
     let found = executable.metadata().map_err(|error| {
         Error::refuse(

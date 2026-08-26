@@ -54,6 +54,22 @@ pub enum Command {
         /// The setup to apply.
         setup: String,
     },
+    /// Keep one backup until it is released, so retention cannot reclaim it.
+    Hold {
+        /// The target whose pool holds it.
+        target: PathBuf,
+        /// The slot to keep. Named, never inferred.
+        backup: Option<String>,
+        /// Why it is held, so whoever meets a full pool knows the cost.
+        reason: Option<String>,
+    },
+    /// Let retention have a held backup back.
+    Release {
+        /// The target whose pool holds it.
+        target: PathBuf,
+        /// The slot to let go.
+        backup: Option<String>,
+    },
     /// Report which versions of the product are installed, and which is exposed.
     Software {
         /// The program directory to read.
@@ -123,6 +139,8 @@ pub fn is_human_command(name: &str) -> bool {
             | "diff"
             | "software"
             | "rollback"
+            | "hold"
+            | "release"
     )
 }
 
@@ -151,6 +169,7 @@ struct Arguments {
     backup: Option<String>,
     prefix: Option<PathBuf>,
     to: Option<String>,
+    reason: Option<String>,
     positional: Vec<String>,
 }
 
@@ -162,13 +181,14 @@ impl Arguments {
             backup: None,
             prefix: None,
             to: None,
+            reason: None,
             positional: Vec::new(),
         };
         let mut index = 0;
         while index < rest.len() {
             let Some(token) = rest.get(index) else { break };
             match token.as_str() {
-                "--target" | "--backup" | "--prefix" | "--to" => {
+                "--target" | "--backup" | "--prefix" | "--to" | "--reason" => {
                     let Some(value) = rest.get(index + 1) else {
                         return Err(local(format!("{token} has no value")));
                     };
@@ -193,6 +213,12 @@ impl Arguments {
                                 return Err(local("--to was given twice"));
                             }
                             parsed.to = Some(value.clone());
+                        }
+                        "--reason" => {
+                            if parsed.reason.is_some() {
+                                return Err(local("--reason was given twice"));
+                            }
+                            parsed.reason = Some(value.clone());
                         }
                         _ => {
                             if parsed.backup.is_some() {
@@ -246,7 +272,7 @@ impl Arguments {
     }
 
     fn into_command(self, name: &str) -> Result<Command> {
-        if self.backup.is_some() && name != "restore" {
+        if self.backup.is_some() && !matches!(name, "restore" | "hold" | "release") {
             return Err(local(format!("--backup is not an argument of {name}")));
         }
         if self.prefix.is_some() && !matches!(name, "software" | "rollback") {
@@ -255,10 +281,28 @@ impl Arguments {
         if self.to.is_some() && name != "rollback" {
             return Err(local(format!("--to is not an argument of {name}")));
         }
+        if self.reason.is_some() && name != "hold" {
+            return Err(local(format!("--reason is not an argument of {name}")));
+        }
         match name {
             "list" => {
                 self.no_setup(name)?;
                 Ok(Command::List)
+            }
+            "hold" => {
+                self.no_setup(name)?;
+                Ok(Command::Hold {
+                    target: self.target(name)?,
+                    backup: self.backup,
+                    reason: self.reason,
+                })
+            }
+            "release" => {
+                self.no_setup(name)?;
+                Ok(Command::Release {
+                    target: self.target(name)?,
+                    backup: self.backup,
+                })
             }
             "software" => {
                 self.no_setup(name)?;
@@ -351,9 +395,104 @@ pub fn run(harness: &Harness, command: Command) -> Result<()> {
         Command::Restore { target, backup } => restore(harness, &target, backup),
         Command::Adopt { target } => adopt_target(harness, &target),
         Command::Remove { target } => remove(harness, &target),
+        Command::Hold {
+            target,
+            backup,
+            reason,
+        } => hold(harness, &target, backup.as_deref(), reason.as_deref()),
+        Command::Release { target, backup } => release(harness, &target, backup.as_deref()),
         Command::Software { prefix } => software(harness, &prefix),
         Command::Rollback { prefix, to } => rollback(harness, &prefix, to.as_deref()),
     }
+}
+
+/// Keep one backup until it is released.
+///
+/// The pool rolls: ten slots, oldest evicted. A long series of captures makes
+/// more than that, so a baseline someone means to return to at the end is gone
+/// by the time they get there. A hold is the smallest thing that stops it —
+/// one marker eviction has to read.
+fn hold(
+    harness: &Harness,
+    target: &Path,
+    backup: Option<&str>,
+    reason: Option<&str>,
+) -> Result<()> {
+    let (resolved, pool) = pool_of(harness, target)?;
+    let reference = named_slot(&pool, backup, "hold")?;
+    // A pool can be held by more than one run. Without a reason, whoever meets
+    // a full pool knows which slots to release and not what releasing one
+    // would cost.
+    let reason = reason.unwrap_or("no reason recorded");
+    if pool.hold(&reference, reason)? {
+        println!(
+            "{} is held ({reason}). Retention will not reclaim it until it is released.",
+            reference.as_str()
+        );
+    } else {
+        let why = pool
+            .held_reason(&reference)?
+            .unwrap_or_else(|| "no reason recorded".to_owned());
+        println!("{} was already held ({why}).", reference.as_str());
+    }
+    println!(
+        "  release it with:  release --backup {} --target {}",
+        reference.as_str(),
+        resolved.root().display()
+    );
+    Ok(())
+}
+
+/// Let retention have a held backup back.
+fn release(harness: &Harness, target: &Path, backup: Option<&str>) -> Result<()> {
+    let (_, pool) = pool_of(harness, target)?;
+    let reference = named_slot(&pool, backup, "release")?;
+    if pool.release(&reference)? {
+        println!(
+            "{} is released and will be reclaimed like any other slot.",
+            reference.as_str()
+        );
+    } else {
+        // Not a refusal: a run cleaning up after itself should not have to tell
+        // "nothing to do" apart from "something is wrong".
+        println!("{} was not held; nothing to release.", reference.as_str());
+    }
+    Ok(())
+}
+
+fn pool_of(harness: &Harness, target: &Path) -> Result<(Target, Pool)> {
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    let pool = Pool::observe(&resolved.control_directory(), facts::BACKUP_SLOTS)?;
+    Ok((resolved, pool))
+}
+
+/// The slot a caller named, or the list of the ones they could have named.
+///
+/// Never inferred. `restore` may default to the newest because that is the one
+/// thing a caller wanting "undo" can mean; keeping a slot is a decision about a
+/// specific capture, and guessing which would be guessing what a run is for.
+fn named_slot(
+    pool: &Pool,
+    backup: Option<&str>,
+    verb: &str,
+) -> Result<setup_core::backup::BackupRef> {
+    let available = pool.list()?;
+    let Some(text) = backup else {
+        return Err(local(if available.is_empty() {
+            format!("{verb} requires --backup <ref>, and this target has no backups")
+        } else {
+            format!(
+                "{verb} requires --backup <ref>; this target holds {}",
+                available
+                    .iter()
+                    .map(|record| record.backup_ref.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }));
+    };
+    setup_core::backup::BackupRef::parse(text)
+        .map_err(|error| local(format!("{text:?} is not a backup reference: {error}")))
 }
 
 /// What the program directory holds, and which version answers to the command.
@@ -562,12 +701,16 @@ fn backups(harness: &Harness, target: &Path) -> Result<()> {
     }
     println!("Backups of {}, newest first:", resolved.root().display());
     println!();
+    let pool = Pool::observe(&resolved.control_directory(), facts::BACKUP_SLOTS)?;
     for (position, record) in records.iter().enumerate() {
-        let marker = if position == 0 {
-            "  (restored by default)"
-        } else {
-            ""
-        };
+        let mut marker = String::new();
+        if position == 0 {
+            marker.push_str("  (restored by default)");
+        }
+        if let Some(why) = pool.held_reason(&record.backup_ref)? {
+            use std::fmt::Write as _;
+            let _ = write!(marker, "  (held: {why})");
+        }
         println!("  {}{marker}", record.backup_ref.as_str());
         println!(
             "      before {}, setup {}",

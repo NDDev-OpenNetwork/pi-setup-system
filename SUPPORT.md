@@ -20,14 +20,15 @@ slot holds whatever the target held when it was captured.
 
 ## What this build does, and what it does not
 
-The software lifecycle — installing, updating or removing the product
-itself — is not declared here. This product is delivered by a package
-manager that resolves a dependency closure at install time, so there is no
-single artifact whose digest a plan could name in advance.
+The software lifecycle — installing, updating and removing the product
+itself — is declared and does work. `plan` names the exact bytes offline,
+whoever holds the network fetches them, and `apply` verifies and installs
+with the network gone.
 
-`launch` is not declared here.
-This build installs no software, and starting a name found on `PATH`
-would run whatever else answers to it.
+`launch` is declared. It starts the exact executable a software install
+placed under `--prefix`, never a name found on `PATH`, and points the
+product at `--target` through the environment variable its own
+documentation names.
 
 A provider that advertised an operation it cannot perform would let a caller ask
 for something that cannot be honoured, which is worse than not offering it.

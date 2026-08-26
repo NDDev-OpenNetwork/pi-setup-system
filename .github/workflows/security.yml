@@ -8,6 +8,9 @@ on:
   schedule:
     # Weekly, so an advisory published after the last push is still seen.
     - cron: '17 4 * * 1'
+  # Same reason as `ci`: an advisory worth re-checking now, or a scheduled run
+  # that never started, should not require a commit to ask about.
+  workflow_dispatch:
 
 permissions:
   contents: read
