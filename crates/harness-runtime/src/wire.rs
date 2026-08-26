@@ -1148,6 +1148,7 @@ pub(crate) mod tests_support {
     pub(crate) const TEST: Harness = Harness {
         software: Some(TEST_SOFTWARE),
         predecessor_state_file: "NDDEV-TEST-SETUP.json",
+        embedded_setups: &[],
         harness_id: "test",
         provider_id: "test-setup-system",
         version: "0.1.0",
