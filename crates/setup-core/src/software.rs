@@ -129,6 +129,16 @@ impl Present {
     /// plan for a prefix that does not exist yet is exactly the ordinary case.
     #[must_use]
     pub fn under(root: &Path, command: &str) -> Self {
+        Self::under_named(root, command, "")
+    }
+
+    /// The same reading, told which member the exposed thing was made from.
+    ///
+    /// Windows exposes a JavaScript entry point as `<command>.cmd`, so a
+    /// reading that only ever looked for `<command>` would report nothing
+    /// exposed on exactly the harness that needed the launcher.
+    #[must_use]
+    pub fn under_named(root: &Path, command: &str, member: &str) -> Self {
         let mut versions: Vec<String> = fs::read_dir(root)
             .into_iter()
             .flatten()
@@ -170,7 +180,8 @@ impl Present {
         // remembers what `expose` last pointed at, and someone can break that
         // by hand afterwards. `metadata` follows links, so this is false for a
         // dangling one and true for both a real file and a live link.
-        let usable = fs::metadata(root.join("bin").join(command)).is_ok();
+        let exposed_as = exposed_name(command, member);
+        let usable = fs::metadata(root.join("bin").join(&exposed_as)).is_ok();
         let marker = Self::marker(root, command);
         let exposed = fs::read_to_string(&marker)
             .ok()
@@ -183,7 +194,7 @@ impl Present {
                 // Nothing recorded: a prefix written before this existed, or one
                 // someone arranged themselves. Where a real link is what is
                 // there, reading it is still the truth.
-                fs::canonicalize(root.join("bin").join(command))
+                fs::canonicalize(root.join("bin").join(&exposed_as))
                     .ok()
                     .zip(fs::canonicalize(root).ok())
                     .and_then(|(to, base)| {
@@ -408,7 +419,9 @@ pub fn install(
         }
     };
 
-    let exposed = root.join("bin").join(software.command);
+    let exposed = root
+        .join("bin")
+        .join(exposed_name(software.command, artifact.member));
     expose(&executable, &exposed, software.version, software.command)?;
 
     Ok(Installed {
@@ -439,7 +452,9 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
         )
         .with_source(error)
     })?;
-    let exposed = root.join("bin").join(software.command);
+    let exposed = root
+        .join("bin")
+        .join(exposed_name(software.command, software.member_hint()));
     if exposed.symlink_metadata().is_ok() {
         fs::remove_file(&exposed).map_err(|error| {
             Error::new(
@@ -479,7 +494,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
 /// Refuses a version that is not installed, naming the ones that are, and a
 /// version tree that holds no executable this build can find.
 pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed> {
-    let present = Present::under(root, software.command);
+    let present = Present::under_named(root, software.command, software.member_hint());
     if !present.versions.iter().any(|found| found == to) {
         return Err(Error::new(
             ReasonCode::InvalidTarget,
@@ -524,7 +539,9 @@ pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed>
         ));
     };
 
-    let exposed = root.join("bin").join(software.command);
+    let exposed = root
+        .join("bin")
+        .join(exposed_name(software.command, software.member_hint()));
     expose(executable, &exposed, to, software.command)?;
     Ok(Installed {
         version: to.to_owned(),
@@ -532,6 +549,49 @@ pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed>
         executable: exposed,
         files: 0,
     })
+}
+
+/// The name the exposed command answers to, which is not always the command.
+///
+/// Six of the seven products ship a native executable, and a link named after
+/// the command is the whole story. Pi ships JavaScript — `dist/bundle/cli.js`,
+/// with a `#!/usr/bin/env node` line and mode 755 — and the two systems part
+/// company there.
+///
+/// On Unix the shebang does the work and a symlink named `pi` runs. Windows has
+/// no shebang: it decides how to run a file from its extension, and a copy
+/// named `pi` with JavaScript inside it is not a program. So there the exposed
+/// thing is `pi.cmd`, a launcher that names the interpreter.
+///
+/// Said in one place because three callers need the same answer: the plan that
+/// states `entry_point`, the apply that writes it, and `launch` that starts it.
+/// They disagreed once already about where a program lives, and once was
+/// enough.
+#[must_use]
+pub fn exposed_name(command: &str, member: &str) -> String {
+    exposed_name_on(command, member, cfg!(windows))
+}
+
+/// The same rule, with the platform as an argument rather than as a `cfg`.
+///
+/// Written this way so it can be *asserted* from either system rather than
+/// demonstrated on one. A `cfg!` here would make the Windows branch provable
+/// only on Windows, and a mutation that deleted it would leave every Linux run
+/// green — which is exactly what happened to the first version of this, and is
+/// the reason it is a parameter now.
+#[must_use]
+pub fn exposed_name_on(command: &str, member: &str, windows: bool) -> String {
+    // Through the extension rather than the spelling: Windows treats `.JS` and
+    // `.js` as one extension, and a rule that missed the first would expose an
+    // unrunnable file on the only platform this branch exists for.
+    let javascript = Path::new(member)
+        .extension()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("js"));
+    if windows && javascript {
+        format!("{command}.cmd")
+    } else {
+        command.to_owned()
+    }
 }
 
 /// Point one stable path at the executable inside a versioned tree.
@@ -562,12 +622,26 @@ fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Re
     }
     #[cfg(not(unix))]
     {
-        // Windows reserves symlink creation for privileged or developer-mode
-        // processes, so a hard link is what actually works; a copy is the last
-        // resort and costs a second copy of a large binary.
-        fs::hard_link(executable, exposed)
-            .or_else(|_| fs::copy(executable, exposed).map(|_| ()))
+        if exposed.extension().is_some_and(|kind| kind == "cmd") {
+            // A launcher rather than a link. Windows runs a file by its
+            // extension, so neither a hard link nor a copy of a `.js` is a
+            // program -- and the interpreter has to be named. `%*` forwards
+            // every argument, and the quotes survive a prefix with spaces,
+            // which `%LOCALAPPDATA%\Programs` is one bad default away from.
+            fs::write(
+                exposed,
+                format!("@node \"{}\" %*\r\n", executable.display()),
+            )
             .map_err(fail)?;
+        } else {
+            // Windows reserves symlink creation for privileged or
+            // developer-mode processes, so a hard link is what actually works;
+            // a copy is the last resort and costs a second copy of a large
+            // binary.
+            fs::hard_link(executable, exposed)
+                .or_else(|_| fs::copy(executable, exposed).map(|_| ()))
+                .map_err(fail)?;
+        }
     }
 
     // Which version this now runs, recorded rather than left to be inferred
@@ -651,6 +725,88 @@ mod tests {
         assert_eq!(
             Present::under(&root, "codex").exposed.as_deref(),
             Some("1.2.3")
+        );
+    }
+
+    /// A JavaScript entry point is exposed as something the platform can run.
+    ///
+    /// Six of the seven products ship a native executable and a link named
+    /// after the command is the whole story. Pi ships `dist/bundle/cli.js`, and
+    /// the two systems part company: Unix has the shebang, Windows decides how
+    /// to run a file from its extension, so a copy named `pi` with JavaScript
+    /// inside it is not a program there.
+    ///
+    /// The rule is asserted for both systems from either, because it is the
+    /// answer three callers need to agree on -- the plan that states
+    /// `entry_point`, the apply that writes it, and `launch` that starts it.
+    #[test]
+    fn a_javascript_entry_point_is_exposed_as_something_the_platform_can_run() {
+        // A native member is the command, on every system.
+        assert_eq!(exposed_name("codex", CODEX_MEMBER), "codex");
+        assert_eq!(exposed_name("grok", ""), "grok");
+
+        // A JavaScript member, asserted for both systems from whichever one is
+        // running: Windows cannot run a file named `pi` holding JavaScript, and
+        // on Unix the shebang does the work so a launcher would be noise.
+        let js = "package/dist/bundle/cli.js";
+        assert_eq!(exposed_name_on("pi", js, true), "pi.cmd");
+        assert_eq!(exposed_name_on("pi", js, false), "pi");
+
+        // A native member is unaffected by the platform, which is what makes
+        // this a rule about the artifact rather than about Windows.
+        assert_eq!(exposed_name_on("codex", CODEX_MEMBER, true), "codex");
+        assert_eq!(exposed_name_on("codex", CODEX_MEMBER, false), "codex");
+
+        // And the shipped entry point agrees with the rule for this system.
+        assert_eq!(
+            exposed_name("pi", js),
+            exposed_name_on("pi", js, cfg!(windows))
+        );
+    }
+
+    /// Pi installs from one tarball and the thing that lands runs.
+    ///
+    /// The declaration this replaces said pi could not be installed because
+    /// "its dependency closure is resolved at install time, so there is no
+    /// single artifact whose digest can be decided in advance". The published
+    /// package ships `npm-shrinkwrap.json`, so the closure is fixed -- and it
+    /// does not matter, because the bundle imports only Node built-ins and runs
+    /// with no `node_modules` at all.
+    #[test]
+    #[cfg(unix)]
+    fn a_javascript_program_installs_from_one_archive_and_runs() {
+        let member = "package/dist/bundle/cli.js";
+        let (at, artifact) = staged(
+            "js-entry",
+            b"#!/usr/bin/env sh\necho 'js-stand-in 9.9.9'\n",
+            member,
+        );
+        let software = Software {
+            version: "9.9.9",
+            command: "jsprog",
+            delivery: Delivery::Artifacts(&[]),
+            unsupported: &[],
+        };
+        let root = at.join("prefix");
+        let installed = install(&software, &artifact, &at.join("artifact.tgz"), &root).unwrap();
+
+        // Exposed under the name the rule gives, pointing into the archive's
+        // own layout rather than a copy lifted out of it.
+        assert_eq!(
+            installed.executable,
+            root.join("bin").join(exposed_name("jsprog", member))
+        );
+        assert_eq!(
+            fs::canonicalize(&installed.executable).unwrap(),
+            fs::canonicalize(root.join("9.9.9").join(member)).unwrap()
+        );
+
+        // And the reading of what is exposed agrees with what was written.
+        assert_eq!(
+            Present::under_named(&root, "jsprog", member)
+                .exposed
+                .as_deref(),
+            Some("9.9.9")
         );
     }
 

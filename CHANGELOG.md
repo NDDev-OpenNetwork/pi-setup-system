@@ -11,6 +11,46 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-08-27
+
+Two defects a consumer found, one this build could not see, and the
+last product that was an exception.
+
+- **`provider_plan_digest` was null after every operation of every kind.** It
+  was read out of the plan *object*, which never carries it: the digest is
+  taken over the plan and travels beside it in the planner's envelope. Reported
+  as an empty-setup defect and never about emptiness at all. It stayed
+  invisible for four releases because `status` did not publish the field, and a
+  consumer skips what is absent -- publishing what is persisted is what made it
+  a value that could be compared and refused.
+- **A backup refused a link while copying rather than before.** The slot was
+  created, files were written into it, and the walk then stopped -- a partial
+  operation and control artifacts for a shape that was knowable for free. Owned
+  paths are read before planning and again before any capture now, every
+  unsupported entry is named at once, and nothing is followed.
+- **On Windows nothing was ever exposed, so no update was ever an update.**
+  Reading which version a prefix exposes resolved the command's path, and
+  Windows writes a hard link or a copy there rather than a link -- so the answer
+  was always "nothing is exposed" and every `software_update` refused as an
+  update of nothing. Shipped in 0.0.4 and 0.0.5. The version is recorded beside
+  the command and read back now; a dangling link still exposes nothing.
+- **Pi installs like the other six.** It declared no software lifecycle on the
+  stated ground that npm resolves its closure at install time. The vendor ships
+  `npm-shrinkwrap.json`, so the closure is fixed -- and it does not matter,
+  because the published bundle imports only Node built-ins and runs with no
+  `node_modules` at all. All seven now declare the same four optional
+  operations. Its entry point is JavaScript, so Windows exposes `pi.cmd`
+  rather than a copy no platform would run.
+- **A backup can be held.** The pool rolls at ten slots, so a long series of
+  captures evicted the baseline it meant to return to. A held slot is not
+  reclaimed and is not counted against the bound, the reason is recorded beside
+  it so a full pool says who would lose what, and the last reclaimable slot
+  cannot be held -- a target that can never be backed up again is worse than
+  the eviction.
+
+Vendor versions advanced where they moved: claude 2.1.246, cursor
+2026.08.25-3e8eec8, antigravity 1.1.21.
+
 ## [0.0.5] - 2026-08-26
 
 The catalog now travels with the program, and a target's identity is

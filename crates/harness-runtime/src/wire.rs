@@ -2029,6 +2029,241 @@ mod tests {
         assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
     }
 
+    /// A configuration operation is bound to the target it planned against; a
+    /// software operation is not, and that difference is load-bearing.
+    ///
+    /// `perform` re-checks `expected_target_digest` under the lock and refuses
+    /// `Stale` when the target moved. Software operations do not go through it
+    /// at all, so a configuration edit between plan and apply does **not**
+    /// strand a program install — which is correct: a program lives under
+    /// `--prefix` and has nothing to do with the configuration in the target,
+    /// and binding them would let someone editing their own instructions
+    /// invalidate a download of a hundred and sixty megabytes.
+    ///
+    /// It was correct, deliberate, undocumented and held by nothing. The
+    /// consumer has been told they may rely on it, so it is asserted from both
+    /// sides here: routing software through `perform` "for uniformity" is a
+    /// reasonable-looking cleanup that would break them silently, with every
+    /// existing test still green.
+    #[test]
+    fn a_configuration_edit_strands_a_configuration_plan_and_not_a_program_one() {
+        // The software side: plan, edit the target, apply, and it still lands.
+        let target = seeded("precondition-software");
+        let file = downloaded(&target, TEST_PAYLOAD);
+        let planned = software_plan(&target, "software_install");
+        let plan_path = target.join("..").join("precondition-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+
+        fs::write(
+            target.join("AGENTS.md"),
+            "# edited between plan and apply\n",
+        )
+        .unwrap();
+
+        let prefix = target.join("..").join("precondition-prefix");
+        let applied = run(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                &plan_path.to_string_lossy(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+                "--prefix",
+                &prefix.to_string_lossy(),
+                "--software-artifact",
+                &file.to_string_lossy(),
+            ],
+        ));
+        assert_eq!(
+            applied["state"], "verified",
+            "a configuration edit stranded a program install"
+        );
+
+        // The configuration side, same edit, and it must refuse: a plan that
+        // authorized one target state cannot be applied to another.
+        let other = seeded("precondition-configuration");
+        let config_plan = run(args(
+            "plan-operation",
+            &other,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01PRECOND",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        let config_path = other.join("..").join("precondition-config-plan.json");
+        fs::write(
+            &config_path,
+            setup_core::canonical::to_canonical_bytes(&config_plan["plan"]).unwrap(),
+        )
+        .unwrap();
+
+        fs::write(other.join("AGENTS.md"), "# edited between plan and apply\n").unwrap();
+
+        let error = refuse(args(
+            "apply-operation",
+            &other,
+            &[
+                "--plan",
+                &config_path.to_string_lossy(),
+                "--plan-digest",
+                config_plan["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ));
+        assert_eq!(
+            error.reason(),
+            Some(WireReason::Stale),
+            "a configuration plan survived the target changing under it: {}",
+            error.detail()
+        );
+    }
+
+    /// Holds a file unreadable for as long as it lives, and puts it back.
+    ///
+    /// Two mechanisms, one condition. On Windows a file another process holds
+    /// open with no sharing cannot be opened at all; on Unix the same effect
+    /// comes from permissions. A guard rather than a bare call so the condition
+    /// cannot outlive the test that wanted it.
+    struct Unreadable {
+        #[cfg(windows)]
+        _handle: fs::File,
+        #[cfg(unix)]
+        path: PathBuf,
+    }
+
+    impl Unreadable {
+        /// `None` when this process can still read the file afterwards, which
+        /// is what running as root looks like. A test that cannot create its
+        /// condition must say so rather than pass.
+        fn of(path: &Path) -> Option<Self> {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // Deny every kind of sharing: what a running product does to a
+                // database or a log it owns.
+                let handle = fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(path)
+                    .ok()?;
+                fs::File::open(path)
+                    .is_err()
+                    .then_some(Self { _handle: handle })
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o000)).ok()?;
+                if fs::File::open(path).is_ok() {
+                    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o644));
+                    return None;
+                }
+                Some(Self {
+                    path: path.to_path_buf(),
+                })
+            }
+        }
+    }
+
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o644));
+            }
+        }
+    }
+
+    /// A file inside an owned namespace that cannot be read stops the operation
+    /// before it starts, names the file, and leaves nothing behind.
+    ///
+    /// `G12` left this open and `run_once_it_is_not_busy` was never it: that is
+    /// a Linux `ETXTBSY` fork race the test harness creates by writing and
+    /// exec'ing in one multi-threaded process, and its own comment says so.
+    ///
+    /// The real condition is a product holding its own file open — a database,
+    /// a log — inside a namespace this provider owns. It is reachable on both
+    /// systems and it is the same condition: on Windows through a share mode
+    /// that denies everything, on Unix through permissions.
+    ///
+    /// What must be true is not that the operation succeeds. A slot that
+    /// silently skipped a file it could not read would not restore the target,
+    /// which is worse than refusing. What must be true is that the refusal
+    /// **names the file** and that nothing partial survives it: identity is
+    /// computed before any capture, so a target that cannot be read is a target
+    /// nothing has been done to.
+    #[test]
+    fn a_file_this_process_cannot_read_stops_the_operation_and_leaves_nothing() {
+        let target = seeded("unreadable");
+        plan_then_apply(&target, "backup", &[]);
+        let control = target.join(TEST.control_directory);
+        let before = fs::read_dir(control.join("backups")).map_or(0, Iterator::count);
+
+        let locked = target.join("skills").join("held-open.md");
+        fs::write(&locked, "a product owns this").unwrap();
+        let Some(held) = Unreadable::of(&locked) else {
+            // Cannot create the condition here — running as root, or the
+            // platform declined. Saying so beats a green that proves nothing.
+            panic!(
+                "this process can still read a file it made unreadable, so this test \
+                 would prove nothing; it needs to run as a user permissions apply to"
+            );
+        };
+
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01LOCKED",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert!(
+            error.detail().contains("held-open.md"),
+            "the refusal does not name the file it could not read: {}",
+            error.detail()
+        );
+
+        // Nothing started. No new slot, no journal, no transaction to recover.
+        assert_eq!(
+            fs::read_dir(control.join("backups")).map_or(0, Iterator::count),
+            before,
+            "a refused operation left a backup slot behind"
+        );
+        assert!(!control.join("journal.json").exists());
+        assert!(!control.join("transaction").exists());
+
+        // And it recovers by itself once the file is readable again: nothing
+        // was recorded that has to be undone.
+        drop(held);
+        assert_eq!(
+            plan_then_apply(&target, "backup", &[])["state"],
+            "verified",
+            "the target did not become usable again once the file could be read"
+        );
+    }
+
     #[test]
     fn two_status_calls_return_the_same_bytes() {
         // The consumer calls it twice and requires the answers to be identical,

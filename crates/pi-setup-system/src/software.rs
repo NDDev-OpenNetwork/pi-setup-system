@@ -10,21 +10,65 @@
 //! field by field, so an edit here fails rather than silently installing bytes
 //! nobody measured.
 
-use harness_runtime::{Delivery, Software};
+use harness_runtime::{Artifact, Delivery, Shape, Software};
 
-/// Pi Coding Agent is delivered by npm, which this provider does not run.
-///
-/// Recorded rather than attempted. Running a package manager means
-/// executing whatever a registry resolves to at install time, which is a
-/// different question from fetching bytes whose digest was fixed in
-/// advance, and the provider declares no software operation because of it.
+/// The artifacts pi is published as.
+pub(crate) const ARTIFACTS: &[Artifact] = &[
+    Artifact {
+        platform: "linux/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "linux/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "macos/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "macos/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "windows/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "windows/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        bytes: 6_866_230,
+        sha256: "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+];
+
+/// Pi Coding Agent's program, and where its bytes come from.
 pub(crate) const SOFTWARE: Software = Software {
     version: "0.84.3",
     command: "pi",
-    delivery: Delivery::Manager {
-        tool: "npm",
-        reason: "its dependency closure is resolved at install time, so there is no single artifact whose digest can be decided in advance",
-    },
+    delivery: Delivery::Artifacts(ARTIFACTS),
     unsupported: &[],
 };
 

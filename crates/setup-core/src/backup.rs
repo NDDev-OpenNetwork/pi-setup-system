@@ -30,6 +30,20 @@ pub const SLOT_MARKER_NAME: &str = "slot.json";
 /// The subdirectory holding the captured tree.
 pub const SLOT_PAYLOAD_NAME: &str = "payload";
 
+/// The marker naming a slot that retention may not reclaim.
+///
+/// Beside the record rather than inside it, on purpose. The record states what
+/// was *captured*; a hold states whether retention may take it back. Those are
+/// two different facts about one slot, and writing the second into the first
+/// would mean editing a completed capture every time someone changed their mind
+/// about keeping it.
+///
+/// The file holds the reason the hold was placed. A pool can be held by more
+/// than one run at a time, and a refusal that says only *which* slots are held
+/// leaves the next caller releasing one blind — possibly one another run is
+/// still depending on.
+pub const SLOT_HELD_NAME: &str = "HELD";
+
 /// The schema this kernel writes and is willing to read.
 pub const SLOT_SCHEMA: u32 = 1;
 
@@ -329,6 +343,148 @@ impl Pool {
         Ok(record)
     }
 
+    /// Keep one slot until it is explicitly released.
+    ///
+    /// The pool rolls: ten slots, oldest evicted. A long evidence series makes
+    /// more captures than that, so the baseline it means to return to at the
+    /// end is gone by the time it gets there — reported after a run of fifty
+    /// captures could not restore the state it started from.
+    ///
+    /// A hold is the smallest thing that fixes it: one marker that eviction has
+    /// to read. Against an export/import format, which is a second format to
+    /// keep correct, and against a separate baseline store, which is a second
+    /// place state lives. With a hold, *retention never silently changes what a
+    /// `BackupRef` names* becomes a checkable statement rather than an
+    /// intention.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a reference this pool does not hold, and refuses a hold that
+    /// would leave the pool no slot to rotate — ten held slots is a target that
+    /// can never be backed up again, which is a worse failure than the eviction
+    /// it was protecting against. The refusal names what is already held so a
+    /// caller knows what to release.
+    pub fn hold(&self, backup_ref: &BackupRef, reason: &str) -> Result<bool> {
+        let slot = self.root.join(backup_ref.as_str());
+        if read_record(&slot)?.is_none() {
+            return Err(Error::new(
+                ReasonCode::InvalidTarget,
+                format!(
+                    "{} is not a completed slot in this pool",
+                    backup_ref.as_str()
+                ),
+            ));
+        }
+        let already = self.held()?;
+        if already.iter().any(|(held, _)| held == backup_ref) {
+            return Ok(false);
+        }
+        // One slot must stay reclaimable, or the next capture has nothing to
+        // evict and the pool grows past the bound it was opened with.
+        if already.len() + 1 >= self.capacity {
+            return Err(Error::new(
+                ReasonCode::InvalidTarget,
+                format!(
+                    "holding {} would leave this pool of {} no slot to rotate; release one of \
+                     these first, and the reason each names is who would lose it: {}",
+                    backup_ref.as_str(),
+                    self.capacity,
+                    already
+                        .iter()
+                        .map(|(held, why)| format!("{} ({why})", held.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+        // The reason travels with the hold. Without it a caller reading a full
+        // pool knows what to release and not what releasing it would cost.
+        fs::write(slot.join(SLOT_HELD_NAME), reason.as_bytes()).map_err(|source| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot hold {}", slot.display()),
+            )
+            .with_source(source)
+        })?;
+        Ok(true)
+    }
+
+    /// Let retention have a slot back.
+    ///
+    /// Answers `false` for a slot that was not held rather than refusing: a run
+    /// cleaning up after itself should not have to tell "nothing to do" apart
+    /// from "something is wrong", which is the same reason `remove` answers
+    /// `removed: false` on a prefix it never wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReasonCode::StateUnavailable`] if the marker cannot be removed.
+    pub fn release(&self, backup_ref: &BackupRef) -> Result<bool> {
+        let marker = self.root.join(backup_ref.as_str()).join(SLOT_HELD_NAME);
+        match fs::remove_file(&marker) {
+            Ok(()) => Ok(true),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot release {}", marker.display()),
+            )
+            .with_source(source)),
+        }
+    }
+
+    /// Every slot retention may not reclaim, newest first, with why.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the refusal from [`Pool::list`].
+    pub fn held(&self) -> Result<Vec<(BackupRef, String)>> {
+        let mut out = Vec::new();
+        for record in self.list()? {
+            let marker = self
+                .root
+                .join(record.backup_ref.as_str())
+                .join(SLOT_HELD_NAME);
+            if let Ok(reason) = fs::read_to_string(&marker) {
+                let reason = reason.trim().to_owned();
+                let reason = if reason.is_empty() {
+                    // A hold placed before reasons were carried, or one whose
+                    // caller gave none. Saying so beats an empty parenthesis.
+                    "no reason recorded".to_owned()
+                } else {
+                    reason
+                };
+                out.push((record.backup_ref, reason));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Why one slot is held, when it is.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the refusal from [`Pool::list`].
+    pub fn held_reason(&self, backup_ref: &BackupRef) -> Result<Option<String>> {
+        Ok(self
+            .held()?
+            .into_iter()
+            .find(|(held, _)| held == backup_ref)
+            .map(|(_, reason)| reason))
+    }
+
+    /// Whether one slot is held.
+    ///
+    /// # Errors
+    ///
+    /// Never; the signature matches its neighbours so a caller reads them alike.
+    pub fn is_held(&self, backup_ref: &BackupRef) -> Result<bool> {
+        Ok(self
+            .root
+            .join(backup_ref.as_str())
+            .join(SLOT_HELD_NAME)
+            .is_file())
+    }
+
     /// Drop the oldest completed slots beyond the pool capacity.
     ///
     /// Incomplete slots are never pruned: they are evidence recovery needs, and
@@ -338,7 +494,15 @@ impl Pool {
     ///
     /// Returns [`ReasonCode::StateUnavailable`] if a slot cannot be removed.
     pub fn prune(&self) -> Result<()> {
-        let records = self.list()?;
+        // Held slots are not counted against the bound and are never reclaimed.
+        // Counting them would make a hold quietly shorten the rolling window
+        // instead of protecting one capture, and the caller asked for the
+        // second thing.
+        let records: Vec<SlotRecord> = self
+            .list()?
+            .into_iter()
+            .filter(|record| !self.is_held(&record.backup_ref).unwrap_or(false))
+            .collect();
         for record in records.into_iter().skip(self.capacity) {
             let slot = self.root.join(record.backup_ref.as_str());
             fs::remove_dir_all(&slot).map_err(|source| {
@@ -680,6 +844,111 @@ mod tests {
         let control = scratch("zero");
         let error = Pool::open(&control, 0).unwrap_err();
         assert_eq!(error.reason(), ReasonCode::IntegrityMismatch);
+    }
+
+    /// The claim `#428` asks for: a held baseline survives a run longer than
+    /// the pool.
+    ///
+    /// The pool rolls at ten. A series that captures fifty times loses the
+    /// state it started from long before it gets back to it — reported after
+    /// exactly that, where the final restore had nothing to restore to.
+    #[test]
+    fn a_held_slot_outlives_far_more_captures_than_the_pool_holds() {
+        let base = scratch("held-baseline");
+        let target = base.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("a.txt"), "the baseline").unwrap();
+
+        let pool = Pool::open(&base.join("control"), 10).unwrap();
+        let baseline = pool.capture(&target, &["a.txt"], record_for).unwrap();
+        assert!(
+            pool.hold(&baseline.backup_ref, "E00 baseline for the evidence series")
+                .unwrap()
+        );
+
+        // Fifty more, which is five times the pool.
+        for round in 0..50 {
+            fs::write(target.join("a.txt"), format!("round {round}")).unwrap();
+            pool.capture(&target, &["a.txt"], record_for).unwrap();
+            pool.prune().unwrap();
+        }
+
+        let held = pool.held().unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].0, baseline.backup_ref);
+        assert_eq!(held[0].1, "E00 baseline for the evidence series");
+        assert!(
+            pool.payload_of(&baseline.backup_ref).is_ok(),
+            "the held baseline was reclaimed by retention"
+        );
+        assert_eq!(
+            fs::read_to_string(pool.payload_of(&baseline.backup_ref).unwrap().join("a.txt"))
+                .unwrap(),
+            "the baseline",
+            "the held slot survived but no longer names what it named"
+        );
+
+        // And the hold did not quietly shorten the rolling window: ten
+        // unheld slots are still there beside it.
+        let unheld: Vec<_> = pool
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|r| !pool.is_held(&r.backup_ref).unwrap())
+            .collect();
+        assert_eq!(unheld.len(), 10);
+
+        // Released, it becomes ordinary and the next prune reclaims it.
+        assert!(pool.release(&baseline.backup_ref).unwrap());
+        assert!(!pool.release(&baseline.backup_ref).unwrap());
+        pool.prune().unwrap();
+        assert!(pool.payload_of(&baseline.backup_ref).is_err());
+    }
+
+    /// A pool that is entirely held is a target that can never be backed up
+    /// again, which is a worse failure than the eviction a hold prevents.
+    #[test]
+    fn a_hold_that_would_leave_nothing_to_rotate_is_refused_naming_what_to_release() {
+        let base = scratch("held-full");
+        let target = base.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("a.txt"), "x").unwrap();
+
+        let pool = Pool::open(&base.join("control"), 3).unwrap();
+        let first = pool.capture(&target, &["a.txt"], record_for).unwrap();
+        let second = pool.capture(&target, &["a.txt"], record_for).unwrap();
+        let third = pool.capture(&target, &["a.txt"], record_for).unwrap();
+
+        assert!(pool.hold(&first.backup_ref, "series A baseline").unwrap());
+        assert!(pool.hold(&second.backup_ref, "series B baseline").unwrap());
+        // Holding a third of three would leave nothing to evict.
+        let error = pool.hold(&third.backup_ref, "series C").unwrap_err();
+        assert!(error.to_string().contains("no slot to rotate"), "{error}");
+        assert!(
+            error.to_string().contains(first.backup_ref.as_str()),
+            "the refusal does not say what to release: {error}"
+        );
+        // And what releasing it would cost, so nobody releases blind.
+        assert!(
+            error.to_string().contains("series A baseline"),
+            "the refusal does not say who holds it: {error}"
+        );
+
+        // Holding one that is already held is not an error and not a second
+        // hold: a run that re-runs its own setup should not have to check.
+        assert!(!pool.hold(&first.backup_ref, "series A again").unwrap());
+    }
+
+    /// A reference this pool never minted is refused rather than marked.
+    #[test]
+    fn holding_a_slot_that_is_not_here_is_refused() {
+        let base = scratch("held-absent");
+        let pool = Pool::open(&base.join("control"), 3).unwrap();
+        let absent = BackupRef::parse("slot-000000000009").unwrap();
+        let error = pool.hold(&absent, "nothing").unwrap_err();
+        assert!(error.to_string().contains("slot-000000000009"), "{error}");
+        // And releasing one that is not here is still not an error.
+        assert!(!pool.release(&absent).unwrap());
     }
 
     #[test]

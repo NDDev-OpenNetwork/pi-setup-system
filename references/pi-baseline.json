@@ -187,16 +187,49 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-25T13:05:56+00:00",
+  "verified_at": "2026-08-26T22:59:43+00:00",
   "software_artifacts": {
     "command": "pi",
-    "shape": "manager",
-    "platforms": {},
-    "version": "0.84.3",
-    "manager": {
-      "tool": "npm",
-      "reason": "its dependency closure is resolved at install time, so there is no single artifact whose digest can be decided in advance"
+    "shape": "gzip-tar",
+    "platforms": {
+      "linux/arm64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      },
+      "linux/x86_64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      },
+      "macos/arm64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      },
+      "macos/x86_64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      },
+      "windows/arm64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      },
+      "windows/x86_64": {
+        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+        "bytes": 6866230,
+        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
+        "member": "package/dist/bundle/cli.js"
+      }
     },
-    "verified_at": "2026-08-25T13:05:56+00:00"
+    "version": "0.84.3",
+    "verified_at": "2026-08-26T22:59:43+00:00"
   }
 }

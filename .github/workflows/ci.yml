@@ -5,6 +5,18 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # There was no way to ask this repository for a run, and on 2026-08-26 that
+  # mattered: GitHub dropped push events for about two hours, and six of the
+  # seven trees were left with no completed `ci` on the `main` they had just
+  # merged. The code was proven -- the same contexts were green on the pull
+  # request minutes earlier -- but nothing on `main` said so, and the only way
+  # to ask again was to push a commit that changed nothing.
+  #
+  # A repository whose proof can only be requested by changing it is a
+  # repository that invites empty commits. The monorepo has carried this
+  # trigger since its gate was built; the rendered trees did not, for no reason
+  # anyone chose.
+  workflow_dispatch:
 
 permissions:
   contents: read

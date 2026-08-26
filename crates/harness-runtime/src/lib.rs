@@ -198,6 +198,8 @@ fn print_help(harness: &Harness) {
     println!("  diff      --target <dir>");
     println!("  backups   --target <dir>");
     println!("  restore   [--backup <ref>] --target <dir>");
+    println!("  hold      --backup <ref> [--reason <why>] --target <dir>");
+    println!("  release   --backup <ref> --target <dir>");
     println!("  remove    --target <dir>");
     if !harness.predecessor_state_file.is_empty() {
         println!("  adopt     --target <dir>");
@@ -231,6 +233,111 @@ fn print_help(harness: &Harness) {
     println!("previous, only what is on disk.");
     println!();
     println!("A backup is captured before every change, so `restore` always has");
-    println!("something to return to. Over the wire, install and replace arrive as");
-    println!("a bundle and refuse -- this build reads setups from its own catalog.");
+    println!("something to return to. The pool rolls, so a long series of changes");
+    println!("eventually evicts the oldest: `hold` keeps one until `release` lets");
+    println!("it go, which is how a baseline survives more captures than the pool.");
+    println!("Over the wire, install and replace arrive as a bundle and refuse --");
+    println!("this build reads setups from its own catalog.");
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    /// The entry point uses the toolchain this tree pins, even where a
+    /// different one comes first on `PATH`.
+    ///
+    /// This was closed once by *running* it: with `~/.local/bin` first,
+    /// `cargo test --doc` failed with `E0514` and `scripts/gate.sh` reported
+    /// the pinned version anyway. A run is not a test. The next
+    /// `rust-toolchain.toml` bump is when a silently wrong entry point costs
+    /// something, and until now nothing would have been watching.
+    ///
+    /// The shim is the shadow the trap describes: a real executable named
+    /// `cargo`, earlier on `PATH`, reporting a different release. The test
+    /// proves it *would* have won, and then that the entry point selects past
+    /// it — otherwise a passing assertion could mean the shim was never
+    /// consulted at all.
+    #[test]
+    #[cfg(unix)]
+    fn the_entry_point_selects_the_pinned_toolchain_past_a_shadow() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // This crate is vendored into seven published trees, and the entry
+        // point it tests belongs to exactly one repository: the workspace where
+        // the code is written and the render is proved. A published tree ships
+        // no `scripts/` at all, because contributing there means something
+        // else -- so the test travelled somewhere its subject does not exist,
+        // and failed on ubuntu and macos in all seven at once.
+        //
+        // Absence is asserted rather than skipped. A rendered tree is
+        // identifiable: it carries no renderer either. If both are gone this is
+        // a published tree and there is nothing here to test; if the script is
+        // gone and the renderer is not, someone deleted the entry point in the
+        // workspace and that is a failure, not a skip.
+        if !root.join("scripts/gate.sh").is_file() {
+            assert!(
+                !root.join("tools/render_public_trees.py").is_file(),
+                "the toolchain entry point is missing from a workspace that still \
+                 renders the public trees; scripts/gate.sh was deleted rather than \
+                 never present"
+            );
+            return;
+        }
+
+        let pinned = std::fs::read_to_string(root.join("rust-toolchain.toml"))
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("channel = \"")
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .map(str::to_owned)
+            })
+            .expect("rust-toolchain.toml pins a channel");
+
+        let shadow = std::env::temp_dir().join(format!("gate-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&shadow);
+        std::fs::create_dir_all(&shadow).unwrap();
+        let shim = shadow.join("cargo");
+        std::fs::write(&shim, "#!/bin/sh\necho 'cargo 1.0.0 (shadow)'\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let shadowed = format!(
+            "{}:{}",
+            shadow.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+
+        // The shim would have won. Without this the assertion below could pass
+        // because nothing ever put it in the way.
+        let shadowing = Command::new("sh")
+            .arg("-c")
+            .arg("cargo --version")
+            .env("PATH", &shadowed)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&shadowing.stdout).contains("1.0.0 (shadow)"),
+            "the shim did not shadow cargo, so this test proves nothing"
+        );
+
+        let asked = Command::new("bash")
+            .arg("scripts/gate.sh")
+            .arg("--toolchain")
+            .current_dir(&root)
+            .env("PATH", &shadowed)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&asked.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&shadow);
+
+        assert!(asked.status.success(), "the entry point failed: {said}");
+        assert!(
+            said.contains(&format!("cargo reports {pinned}")),
+            "the entry point used the shadow rather than the pinned {pinned}: {said}"
+        );
+    }
 }
