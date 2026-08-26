@@ -265,6 +265,29 @@ mod tests {
         use std::process::Command;
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // This crate is vendored into seven published trees, and the entry
+        // point it tests belongs to exactly one repository: the workspace where
+        // the code is written and the render is proved. A published tree ships
+        // no `scripts/` at all, because contributing there means something
+        // else -- so the test travelled somewhere its subject does not exist,
+        // and failed on ubuntu and macos in all seven at once.
+        //
+        // Absence is asserted rather than skipped. A rendered tree is
+        // identifiable: it carries no renderer either. If both are gone this is
+        // a published tree and there is nothing here to test; if the script is
+        // gone and the renderer is not, someone deleted the entry point in the
+        // workspace and that is a failure, not a skip.
+        if !root.join("scripts/gate.sh").is_file() {
+            assert!(
+                !root.join("tools/render_public_trees.py").is_file(),
+                "the toolchain entry point is missing from a workspace that still \
+                 renders the public trees; scripts/gate.sh was deleted rather than \
+                 never present"
+            );
+            return;
+        }
+
         let pinned = std::fs::read_to_string(root.join("rust-toolchain.toml"))
             .unwrap()
             .lines()
