@@ -672,27 +672,39 @@ mod tests {
     }
 
     /// A complete, well-formed invocation of one command.
+    ///
+    /// Paths come from `std::env::temp_dir()` rather than `/tmp`, because **on
+    /// Windows a rooted path is not an absolute path**: `Path::new("/tmp")`
+    /// answers `is_absolute() == false` there, since absolute means a drive or
+    /// a UNC prefix. This project has met that once before -- a fixture passing
+    /// `/tmp` made a test prove the right thing on two systems and nothing at
+    /// all on the third -- and this test found it again on the first Windows run
+    /// after it was written, with `--prefix "/tmp/prefix" is not an absolute
+    /// path`. The product code was right both times.
     fn complete(command: Command) -> Vec<String> {
+        let temporary = |name: &str| {
+            std::env::temp_dir()
+                .join(name)
+                .to_string_lossy()
+                .into_owned()
+        };
         let mut tokens = vec![command.as_str().to_owned()];
         for flag in usage(command).required {
             tokens.push((*flag).to_owned());
             if *flag == "--json" {
                 continue;
             }
-            tokens.push(
-                match *flag {
-                    "--target" => "/tmp/target",
-                    "--operation" => "install",
-                    "--bundle" | "--plan" => "/tmp/file",
-                    "--bundle-format" => "ai-stp-bundle/1",
-                    "--bundle-size" => "4096",
-                    "--operation-id" => "operation_00000000000000000000000",
-                    "--expires-at" => "2027-01-01T00:00:00.000Z",
-                    "--prefix" => "/tmp/prefix",
-                    _ => DIGEST,
-                }
-                .to_owned(),
-            );
+            tokens.push(match *flag {
+                "--target" => temporary("target"),
+                "--operation" => "install".to_owned(),
+                "--bundle" | "--plan" => temporary("file"),
+                "--bundle-format" => "ai-stp-bundle/1".to_owned(),
+                "--bundle-size" => "4096".to_owned(),
+                "--operation-id" => "operation_00000000000000000000000".to_owned(),
+                "--expires-at" => "2027-01-01T00:00:00.000Z".to_owned(),
+                "--prefix" => temporary("prefix"),
+                _ => DIGEST.to_owned(),
+            });
         }
         // `install` arrives as a bundle, so a complete plan for it carries one.
         if command == Command::PlanOperation {
