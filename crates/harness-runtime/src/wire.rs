@@ -189,7 +189,8 @@ fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathB
 /// no counter, no ordering that depends on a directory walk.
 fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let (resolved, control, pool) = observe(harness, target)?;
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
 
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
@@ -209,6 +210,18 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
         _ => "unmanaged",
     };
 
+    // What state records about this target, and what the consumer reads back to
+    // decide the installation it approved is the one that is here.
+    //
+    // Both shapes, deliberately. The nested object is what every existing
+    // reader parses and it does not change. The flat fields are what
+    // `require_verified_status` looks at first, and publishing them is the
+    // whole of `antigravity-setup-system#22`: every one of these twenty-five
+    // fields was already written to disk after an apply, and `status` returned
+    // six of them. Nothing here is computed -- this is a projection that was
+    // never written, and without it the consumer refuses to record a successful
+    // installation it just performed.
+    let mut flat = serde_json::Map::new();
     let provider_state = match reading {
         StateReading::Absent => serde_json::json!({ "present": false }),
         StateReading::ForeignSchema { found_schema } => serde_json::json!({
@@ -223,6 +236,15 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             } else {
                 DriftState::LocalDrift
             };
+            // Only for a target that still is what state says it is. A drifted
+            // target's recorded provenance describes bytes that are no longer
+            // there, and publishing it flat -- where it reads as a statement
+            // about the target rather than about a record -- would invite a
+            // caller to treat a changed target as the approved one. It stays in
+            // the nested object, beside the drift that qualifies it.
+            if drift == DriftState::Clean {
+                flat = provenance_of(&current, drift);
+            }
             serde_json::json!({
                 "present": true,
                 "readable": true,
@@ -236,26 +258,80 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
         }
     };
 
-    Ok(serde_json::json!({
-        "state": state,
-        "target_digest": identity,
-        "protocol_version": provider_v3::PROTOCOL_VERSION,
-        "provider_id": harness.provider_id,
-        "harness_id": harness.harness_id,
-        "canonical_target": resolved.root().to_string_lossy(),
-        "target_identity_digest": identity,
-        "provider_state": provider_state,
-        "journal": journal.map(|entry| serde_json::json!({
-            "phase": entry.phase.as_str(),
-            "operation": entry.operation,
-            "operation_id": entry.operation_id,
-        })),
-        "backups": pool.list()?.iter().map(|record| serde_json::json!({
-            "backup_ref": record.backup_ref.as_str(),
-            "operation": record.operation,
-            "setup_id": record.setup_id,
-        })).collect::<Vec<_>>(),
-    }))
+    // One builder, not two. The flat provenance goes in first so that the
+    // fields below always win: `state`, the identities and the digest are what
+    // this build observes right now, while everything in `flat` is what a file
+    // in the target claims. A record that disagreed about the provider it
+    // belongs to would be describing someone else, and echoing it would launder
+    // that disagreement into an answer the consumer trusts.
+    let mut answer = serde_json::Map::new();
+    answer.extend(flat);
+    for (key, value) in [
+        ("state", serde_json::json!(state)),
+        ("target_digest", serde_json::json!(identity)),
+        (
+            "protocol_version",
+            serde_json::json!(provider_v3::PROTOCOL_VERSION),
+        ),
+        ("provider_id", serde_json::json!(harness.provider_id)),
+        ("harness_id", serde_json::json!(harness.harness_id)),
+        (
+            "canonical_target",
+            serde_json::json!(resolved.root().to_string_lossy()),
+        ),
+        ("target_identity_digest", serde_json::json!(identity)),
+        ("provider_state", provider_state),
+        (
+            "journal",
+            match journal {
+                Some(entry) => serde_json::json!({
+                    "phase": entry.phase.as_str(),
+                    "operation": entry.operation,
+                    "operation_id": entry.operation_id,
+                }),
+                None => serde_json::Value::Null,
+            },
+        ),
+        (
+            "backups",
+            serde_json::json!(
+                pool.list()?
+                    .iter()
+                    .map(|record| serde_json::json!({
+                        "backup_ref": record.backup_ref.as_str(),
+                        "operation": record.operation,
+                        "setup_id": record.setup_id,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        ),
+    ] {
+        answer.insert(key.to_owned(), value);
+    }
+    Ok(serde_json::Value::Object(answer))
+}
+
+/// Everything a clean managed target's own state says about how it got here.
+///
+/// Serialized from the record rather than listed again here. The contract's
+/// `PROVENANCE_FIELDS` is already bound to the vendored kit by a test, and the
+/// record already carries exactly those fields, so taking whatever it holds
+/// means a field added to the state cannot be silently dropped by this
+/// function. Naming them a second time would be the defect this project already
+/// has a rule about: a value written twice eventually disagrees with itself.
+fn provenance_of(
+    current: &setup_core::stamp::ProviderState,
+    drift: DriftState,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut flat = match serde_json::to_value(current) {
+        Ok(serde_json::Value::Object(map)) => map,
+        // A record that will not serialize is not a reason to fail a read that
+        // has already succeeded. The nested object still carries the identity
+        // and the drift, which is what decides what a caller may do next.
+        _ => serde_json::Map::new(),
+    };
+    flat.insert("drift_state".to_owned(), serde_json::json!(drift));
+    flat
 }
 
 /// Check a bundle against the exact claim that named it.
@@ -398,7 +474,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
 
     honourable(harness, request)?;
 
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     let profile = harness.projection_profile()?;
     let build_digest = harness.build_digest()?;
 
@@ -738,7 +815,8 @@ pub(crate) fn perform(
     ))?;
 
     // Re-check after the lock: everything observed before it could have moved.
-    let identity = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let identity =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     if identity != mutation.expected_target_digest {
         return Err(Error::refuse(
             WireReason::Stale,
@@ -816,7 +894,8 @@ pub(crate) fn perform(
     // interruption legible: recovery restores the captured pre-operation target.
     outcome?;
 
-    let after = resolved.identity_digest_excluding(&harness.not_our_identity())?;
+    let after =
+        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
     write_state(
         harness,
         &resolved,
@@ -871,7 +950,7 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                 "recovered": true,
                 "phase": Phase::Prepared.as_str(),
                 "restored_from": reference,
-                "target_identity_digest": resolved.identity_digest_excluding(&harness.not_our_identity())?,
+                "target_identity_digest": resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?,
             }))
         }
         Phase::Committed => {
@@ -881,7 +960,7 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Committed.as_str(),
-                "target_identity_digest": resolved.identity_digest_excluding(&harness.not_our_identity())?,
+                "target_identity_digest": resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?,
             }))
         }
     }
@@ -1509,6 +1588,176 @@ mod tests {
 
         plan_then_apply(&seeded_target, "backup", &[]);
         assert_eq!(run(args("status", &seeded_target, &[]))["state"], "managed");
+    }
+
+    /// `antigravity-setup-system#22`: the consumer refuses to record an
+    /// installation it just performed, because `status` returned six of the
+    /// twenty-five provenance fields it had already written to disk.
+    ///
+    /// Every name checked here comes from the contract's `PROVENANCE_FIELDS`,
+    /// which is bound to the vendored kit by its own test. This asserts they
+    /// reach the *answer*, which is the step that was missing.
+    #[test]
+    fn a_clean_managed_target_publishes_the_provenance_it_persisted() {
+        let target = seeded("status-provenance");
+        plan_then_apply(&target, "backup", &[]);
+        let status = run(args("status", &target, &[]));
+
+        for field in setup_core::stamp::PROVENANCE_FIELDS {
+            assert!(
+                status.get(*field).is_some(),
+                "status omits {field}, which state records and the consumer reads"
+            );
+        }
+
+        // The ones the consumer compares against what it approved, rather than
+        // merely reads. A null here is the same defect as an absence.
+        for field in [
+            "provider_version",
+            "provider_build_digest",
+            "projection_profile_digest",
+            "operation_id",
+            "target_identity_digest",
+        ] {
+            assert!(
+                !status[field].is_null(),
+                "status publishes {field} as null on a target it calls managed"
+            );
+        }
+        assert_eq!(status["drift_state"], "clean");
+        assert_eq!(status["provider_id"], "test-setup-system");
+    }
+
+    /// Fail-closed, and this is the half worth having.
+    ///
+    /// A drifted target's recorded provenance describes bytes that are no
+    /// longer there. Flat, those fields read as statements about the target;
+    /// nested, they read as what a record claims. Publishing them flat on a
+    /// changed target would invite a consumer to treat it as the approved
+    /// installation, which is exactly the confusion `#22` exists to end.
+    #[test]
+    fn a_drifted_target_publishes_no_flat_provenance() {
+        let target = seeded("status-drifted");
+        plan_then_apply(&target, "backup", &[]);
+        assert!(run(args("status", &target, &[]))["provider_build_digest"].is_string());
+
+        fs::write(target.join("AGENTS.md"), "someone edited this\n").unwrap();
+        let status = run(args("status", &target, &[]));
+
+        assert_eq!(status["state"], "managed");
+        assert_eq!(status["provider_state"]["drift_state"], "local_drift");
+        for field in [
+            "provider_build_digest",
+            "provider_plan_digest",
+            "setup_definition_digest",
+            "operation_id",
+            "drift_state",
+        ] {
+            assert!(
+                status.get(field).is_none(),
+                "{field} is published flat for a target that no longer matches it"
+            );
+        }
+        // The record is still readable, and still says what it said. Nothing is
+        // hidden -- it is qualified by the drift beside it.
+        assert!(status["provider_state"]["recorded_identity"].is_string());
+    }
+
+    /// A target this provider does not manage has no provenance to publish, and
+    /// must not borrow the shape of one.
+    #[test]
+    fn an_unmanaged_target_publishes_no_flat_provenance() {
+        let target = seeded("status-unmanaged-flat");
+        let status = run(args("status", &target, &[]));
+        assert_eq!(status["state"], "unmanaged");
+        assert!(status.get("provider_build_digest").is_none());
+        assert!(status.get("operation_id").is_none());
+        assert_eq!(status["provider_state"]["present"], false);
+    }
+
+    /// `ai_stp#417`, and the half that is wrong at any size.
+    ///
+    /// Antigravity is a guest inside `~/.gemini` and the report came from a
+    /// Windows target of ~124,065 files where `status` could not answer inside
+    /// the consumer's 120-second boundary. But the timeout is the symptom. The
+    /// defect is that a file this provider would never touch moved the identity
+    /// a plan was made against, so an operation went stale because a *different
+    /// product* wrote to its own directory.
+    #[test]
+    fn a_neighbours_file_is_not_part_of_this_targets_identity() {
+        let target = seeded("identity-overlay");
+        let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
+
+        // Three things that are emphatically not ours: a sibling file, a whole
+        // sibling tree, and the product's own credentials.
+        fs::write(target.join("unrelated.txt"), "the neighbour edited this").unwrap();
+        fs::create_dir_all(target.join("browser-profile/Default/Cache")).unwrap();
+        fs::write(
+            target.join("browser-profile/Default/Cache/blob"),
+            "20 GB, morally",
+        )
+        .unwrap();
+        fs::write(target.join(".credentials.json"), "ROTATED").unwrap();
+
+        let after = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_eq!(
+            before, after,
+            "a change outside every declared namespace moved this target's identity"
+        );
+    }
+
+    /// The other direction, which is what stops the fix above from being a way
+    /// to stop noticing things.
+    #[test]
+    fn a_change_inside_an_owned_namespace_moves_the_identity() {
+        let target = seeded("identity-owned");
+        let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
+
+        fs::write(target.join("skills").join("a.md"), "edited").unwrap();
+        let edited = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_ne!(
+            before, edited,
+            "an edit inside skills left the identity alone"
+        );
+
+        fs::remove_dir_all(target.join("skills")).unwrap();
+        let removed = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_ne!(edited, removed, "deleting skills left the identity alone");
+
+        // Absence and emptiness are different states, and stay different
+        // without an explicit marker: an empty directory is an entry, a missing
+        // one is not.
+        fs::create_dir_all(target.join("skills")).unwrap();
+        let empty = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_ne!(
+            removed, empty,
+            "a deleted namespace and an empty one hash the same"
+        );
+    }
+
+    /// Drift is still drift. The narrower reading must not turn a real change
+    /// into a clean target.
+    #[test]
+    fn drift_inside_an_owned_namespace_is_still_reported() {
+        let target = seeded("identity-drift");
+        plan_then_apply(&target, "backup", &[]);
+        assert_eq!(
+            run(args("status", &target, &[]))["provider_state"]["drift_state"],
+            "clean"
+        );
+
+        fs::write(target.join("unrelated.txt"), "neighbour").unwrap();
+        assert_eq!(
+            run(args("status", &target, &[]))["provider_state"]["drift_state"],
+            "clean",
+            "a neighbour's write was reported as this provider's drift"
+        );
+
+        fs::write(target.join("AGENTS.md"), "# edited\n").unwrap();
+        assert_eq!(
+            run(args("status", &target, &[]))["provider_state"]["drift_state"],
+            "local_drift"
+        );
     }
 
     #[test]
