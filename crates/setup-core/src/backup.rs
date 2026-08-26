@@ -436,6 +436,91 @@ pub fn copy_tree(source: &Path, destination: &Path, excluded_top_level: &[&str])
     copy_inner(source, destination, excluded_top_level, true)
 }
 
+/// Every owned path a capture would meet and be unable to take.
+///
+/// A backup slot is a statement about *content*. A link is a pointer, and one
+/// captured into a slot would restore as a link whose target may have moved,
+/// been deleted, or been replaced -- so `copy_file` refuses it. That refusal is
+/// right and stays; what was wrong is *when* it happened.
+///
+/// The refusal used to arrive mid-copy: the slot was created, files were
+/// written into it, and then the walk met a link and stopped. The operation
+/// became `partial` and left recovery and control artifacts behind, for a shape
+/// that could have been recognised before anything moved. Reported from a real
+/// Windows target where four Antigravity skills under `config/skills` were
+/// Junctions.
+///
+/// This is that recognition, and it is a reading rather than a write: it walks
+/// only what the provider owns, follows nothing, and names every relative path
+/// it cannot take so a caller learns all of them at once instead of one per
+/// attempt.
+///
+/// Windows Junctions and Unix symbolic links are both reparse-style entries and
+/// `symlink_metadata` reports both through `is_symlink`, which is the same
+/// question `copy_file` asks. One check, both systems, and no second opinion
+/// about what is capturable.
+///
+/// # Errors
+///
+/// Returns [`ReasonCode::StateUnavailable`] if an owned path cannot be walked.
+pub fn uncapturable(source: &Path, included: &[&str]) -> Result<Vec<String>> {
+    let mut refused = Vec::new();
+    for relative in included {
+        let from = relative
+            .split('/')
+            .fold(source.to_path_buf(), |at, part| at.join(part));
+        collect_uncapturable(&from, relative, &mut refused)?;
+    }
+    refused.sort();
+    Ok(refused)
+}
+
+fn collect_uncapturable(path: &Path, relative: &str, out: &mut Vec<String>) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        // Absent is not unsupported: a namespace that is not there is simply
+        // nothing to capture, which `capture` already skips.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot stat {}", path.display()),
+            )
+            .with_source(error));
+        }
+    };
+
+    if metadata.is_symlink() {
+        out.push(relative.to_owned());
+        // Never descend through it. Following a link out of the target is how a
+        // reading of what we own becomes a reading of someone else's disk.
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(path).map_err(|error| {
+        Error::new(
+            ReasonCode::StateUnavailable,
+            format!("cannot list {}", path.display()),
+        )
+        .with_source(error)
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot read an entry of {}", path.display()),
+            )
+            .with_source(error)
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        collect_uncapturable(&entry.path(), &format!("{relative}/{name}"), out)?;
+    }
+    Ok(())
+}
+
 /// Copy one regular file, refusing a symlink for the same reason a tree does.
 ///
 /// A symlink captured into a backup slot is a pointer, not the bytes it points
