@@ -25,9 +25,14 @@ divergence is found only after someone has implemented the prose.
 ```text
 setups/
   <setup-id>/
-    setup.json    identity and description
+    setup.json    identity, description, and the pages its format came from
     home/         copied verbatim into the target
 ```
+
+A setup that writes a configuration file names its `sources`: the vendor pages
+that decided the keys inside it. Owning the right path and then writing a key
+the product does not read produces a target that looks configured and is not,
+so a setup writing anything other than documents is refused without them.
 
 A setup's identity is its content: two setups with the same bytes have the same
 definition digest whatever they are called. A setup that would write outside the

@@ -24,13 +24,14 @@ agents, commands, hooks, MCP entries and settings together, in one step.
 
 ```bash
 pi-setup-system list
-pi-setup-system install baseline --target ~/.tool-config
+pi-setup-system install baseline    --target ~/.tool-config
 pi-setup-system status              --target ~/.tool-config
-pi-setup-system select minimal      --target ~/.tool-config
+pi-setup-system select full-auto    --target ~/.tool-config
 pi-setup-system diff                --target ~/.tool-config
 pi-setup-system reinstall           --target ~/.tool-config
 pi-setup-system backups             --target ~/.tool-config
-pi-setup-system restore --backup slot-000000000002 --target ~/.tool-config
+pi-setup-system hold --backup slot-000000000001 --reason "before the experiment" --target ~/.tool-config
+pi-setup-system restore --backup slot-000000000001 --target ~/.tool-config
 pi-setup-system remove              --target ~/.tool-config
 ```
 
@@ -38,6 +39,21 @@ Every command takes an explicit `--target`. There is no default and no fallback
 to a configuration home: a change aimed at a guessed path is a change aimed at
 someone else's state. The documented home is printed by `--help` so it can be
 copied, not resolved.
+
+## Three postures
+
+`list` names every setup this build carries. Three of them mean the same thing
+on all seven setup systems, so what you learn here you know there:
+
+| | |
+| --- | --- |
+| `baseline` | a working floor: instructions plus a conservative configuration |
+| `minimal` | the product's own defaults, and the state a restore proves it can reach |
+| `full-auto` | nothing asked and nothing sandboxed, in this product's own keys |
+
+`full-auto` is a **setup posture** — keys in a configuration file this product
+reads. It is not an execution profile and it grants no environment: what it
+changes is what the product asks *you*.
 
 **A backup is captured before every change**, so `restore` always has something
 to return to. `restore` with no reference means the most recent backup that
@@ -74,9 +90,7 @@ where the capability is declared. The vocabulary is owned by
 `provider-kit/v3/manifest.json`, vendored here and verified against its
 `SHA256SUMS`.
 
-**Human.** `list`, `status`, `install`, `reinstall`, `select`, `backups`,
-`restore [--backup <ref>]`, `remove`, `diff`, and `adopt` where a target may
-still carry a stamp from the estate that came before this one.
+**Human.** `list`, `status`, `install`, `select`, `reinstall`, `diff`, `backups`, `restore [--backup <ref>]`, `hold`, `release`, `remove`, `adopt` where a target may still carry a stamp from the estate that came before this one, and `software` and `rollback`, which read and re-point a program directory without a network.
 
 Both go through `crates/setup-core`. A human command that reached the target
 directly would bypass the guarantees the wire surface owes its consumer, so it
@@ -163,7 +177,7 @@ release is a convenience, not the authorised copy.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.6 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.7 \
   status --target /config/<dir> --json
 ```
 

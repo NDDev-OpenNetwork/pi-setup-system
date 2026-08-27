@@ -30,14 +30,16 @@ pub mod catalog;
 pub mod expiry;
 pub mod facts;
 pub mod human;
+pub mod probe;
 pub(crate) mod software;
+pub mod surfaces;
 pub mod wire;
 
 pub use catalog::{Catalog, Setup};
 // The software types belong to the kernel, but a setup system declares its
 // artifact table and depends only on this crate. Re-exported so that stays
 // true rather than widening seven dependency lists to reach past it.
-pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Foreign, Harness};
+pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Foreign, Harness, Scoped};
 pub use setup_core::software::{Artifact, Delivery, Shape, Software};
 pub use wire::dispatch;
 

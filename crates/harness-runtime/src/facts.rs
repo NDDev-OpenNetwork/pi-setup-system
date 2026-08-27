@@ -12,7 +12,8 @@
 //! baseline.
 
 use provider_v3::{
-    Command, ComponentKind, Declaration, Operation, ProjectionKind, ProjectionProfile, ProviderInfo,
+    Command, ComponentKind, Declaration, Operation, ProjectionKind, ProjectionProfile,
+    ProviderInfo, TargetScope,
 };
 use setup_core::digest;
 use setup_core::software::{Delivery, Software};
@@ -90,6 +91,12 @@ pub struct Harness {
     pub component_kinds: &'static [ComponentKind],
     /// The projection kinds this provider performs.
     pub projection_kinds: &'static [ProjectionKind],
+    /// Second targets this provider owns, if any.
+    ///
+    /// Empty for six of the seven. Antigravity is the exception because the
+    /// product genuinely keeps a workspace copy of five of its surfaces, and
+    /// `ai_stp#424`/`#425` are the consumer asking for exactly that route.
+    pub scoped_projections: &'static [Scoped],
     /// The largest file count a bundle may carry.
     pub max_files: u64,
     /// The largest byte count a bundle may carry.
@@ -118,6 +125,32 @@ pub struct Harness {
     /// installable, but not by fetching bytes whose digest was fixed in advance
     /// -- and the refusal says which.
     pub software: Option<Software>,
+}
+
+/// A second set of ownings, for a target that is not the product's own home.
+///
+/// A provider invoked against a workspace owns different paths than one invoked
+/// against the configuration home: `config/skills` means nothing in a project
+/// and `.agents/skills` means nothing in the global home. One declaration
+/// cannot honestly describe both, and *the declaration is the authority* is the
+/// property backup, restore, remove and target identity all read.
+///
+/// So a harness that owns a second target says so here, and `provider-info`
+/// publishes a profile per scope with its own digest. `projection_profile` is
+/// untouched by this — byte for byte what it was — so every bundle compiled
+/// against a declaration published before this field stays valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scoped {
+    /// Which target this profile owns.
+    pub target_scope: TargetScope,
+    /// The profile identity a compiler builds against for that target.
+    pub profile_id: &'static str,
+    /// The component kinds this provider projects there.
+    pub component_kinds: &'static [ComponentKind],
+    /// The projection kinds this provider performs there.
+    pub projection_kinds: &'static [ProjectionKind],
+    /// The top-level entries this provider owns inside such a target.
+    pub native_namespaces: &'static [&'static str],
 }
 
 /// One sign that a target is a different product's configuration home.
@@ -357,6 +390,22 @@ impl Harness {
             supported_arch: &["x86_64", "arm64"],
             permission_profiles: self.permission_profiles,
             projection_profile: self.projection_profile()?,
+            scoped_projection_profiles: self
+                .scoped_projections
+                .iter()
+                .map(|scoped| {
+                    ProjectionProfile::scoped(
+                        scoped.profile_id,
+                        scoped.component_kinds,
+                        scoped.projection_kinds,
+                        scoped.native_namespaces,
+                        &[BUNDLE_FORMAT],
+                        self.max_files,
+                        self.max_bytes,
+                        scoped.target_scope,
+                    )
+                })
+                .collect::<provider_v3::Result<Vec<_>>>()?,
         })
     }
 }
@@ -389,6 +438,7 @@ mod tests {
         permission_profiles: &["default"],
         component_kinds: &[ComponentKind::Instruction, ComponentKind::Skill],
         projection_kinds: &[ProjectionKind::NativeFiles],
+        scoped_projections: &[],
         max_files: 4096,
         max_bytes: 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,

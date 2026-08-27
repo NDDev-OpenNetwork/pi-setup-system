@@ -51,6 +51,136 @@ pub struct SetupManifest {
     pub id: String,
     /// One line on what this setup is for.
     pub description: String,
+    /// The vendor pages that decided the format of what this setup writes.
+    ///
+    /// A setup's payload is *content in the product's own language*: a TOML
+    /// table the product reads, a JSON key it looks for. Getting the surface
+    /// right and then writing the wrong key into it produces a target that
+    /// looks configured and is not — the same failure as owning a path nothing
+    /// reads, one level down.
+    ///
+    /// Measured 2026-08-27, two of the seven were exactly that. opencode's
+    /// `permission` took a bare string where the product documents an object,
+    /// and antigravity's file set `toolPermissions` where the product reads
+    /// `toolPermission` with a closed set of four values that does not include
+    /// the one we wrote. Both were valid JSON, both installed cleanly, and
+    /// neither changed anything about the product.
+    ///
+    /// Empty for a setup that writes only documents — a `CLAUDE.md` has no
+    /// schema to get wrong. [`unsourced`] holds the rest.
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+/// The setups every harness offers, whatever else it also offers.
+///
+/// Three postures, and a caller who learns them on one product knows them on
+/// all seven. That symmetry is the point of the set being named rather than
+/// per-harness: `minimal` means the same thing to someone moving from codex to
+/// pi as it did before they moved.
+///
+/// A harness may carry more -- cursor and antigravity each ship a builder
+/// toolkit -- but never fewer.
+pub const UNIVERSAL_SETUPS: &[&str] = &["baseline", "full-auto", "minimal"];
+
+/// Every universal setup this catalog does not offer, and every one that is
+/// indistinguishable from another.
+///
+/// The second half matters as much as the first. `full-auto` that installs
+/// what `baseline` installs is a posture in name only, and it would read as
+/// offered.
+#[must_use]
+pub fn asymmetric(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for required in UNIVERSAL_SETUPS {
+        if !setups.iter().any(|setup| setup.manifest.id == *required) {
+            found.push(format!("this harness offers no {required} setup"));
+        }
+    }
+    for (index, setup) in setups.iter().enumerate() {
+        for other in &setups[index + 1..] {
+            if setup.definition_digest == other.definition_digest {
+                found.push(format!(
+                    "{} and {} are the same bytes, so one of them is a posture in name only",
+                    setup.manifest.id, other.manifest.id
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// Every regular file under a payload, as slash-separated relative paths.
+fn files_under(root: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                found.push(
+                    relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
+            }
+        }
+    }
+    found
+}
+
+/// Every setup that writes a configuration file and does not say where its
+/// format came from, by setup id.
+///
+/// A document is exempt: prose has no keys to spell wrong. Anything else is a
+/// claim about a product's schema, and a claim with no source is the thing this
+/// project spent a release removing from its declarations.
+#[must_use]
+pub fn unsourced(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        // A document has no schema to get wrong. Asked through `extension`
+        // rather than by comparing the tail of the name, because a file called
+        // `NOTES.MD` is a document on every system this ships to and a string
+        // comparison would have said otherwise on two of them.
+        let document = |name: &String| {
+            std::path::Path::new(name)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("mdc")
+                })
+        };
+        let writes_configuration = files_under(&setup.payload)
+            .iter()
+            .any(|name| !document(name));
+        if !writes_configuration {
+            continue;
+        }
+        if setup.manifest.sources.is_empty() {
+            found.push(format!(
+                "{} writes a configuration file and names no source for its format",
+                setup.manifest.id
+            ));
+            continue;
+        }
+        for source in &setup.manifest.sources {
+            if !source.starts_with("https://") {
+                found.push(format!(
+                    "{} cites {source:?}, which is not a page anyone can open",
+                    setup.manifest.id
+                ));
+            }
+        }
+    }
+    found
 }
 
 /// One setup in the catalog, with the digest that identifies its content.
@@ -542,6 +672,7 @@ mod tests {
                 schema_version: SETUP_SCHEMA,
                 id: id.to_owned(),
                 description: format!("the {id} setup"),
+                sources: Vec::new(),
             })
             .unwrap(),
         )

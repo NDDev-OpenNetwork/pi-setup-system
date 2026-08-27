@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "full-auto",
+  "description": "Full auto: a project's own settings, resources and extensions are trusted without asking. This product documents no sandbox to turn off. This is a setup posture -- keys in this product's own configuration file. It is not an execution profile and it grants no environment: what it changes is what the product asks you, not what anyone is permitted to run.",
+  "sources": [
+    "https://pi.dev/docs/latest/settings"
+  ]
+}

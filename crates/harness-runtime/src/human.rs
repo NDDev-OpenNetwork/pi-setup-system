@@ -633,6 +633,41 @@ fn catalog(harness: &Harness) -> Result<Catalog> {
     })
 }
 
+/// Break a description into lines a terminal can hold, at word boundaries.
+///
+/// `list` printed each description as one `println!`, which was fine while
+/// every description was a sentence. The `full-auto` postures say what they
+/// turn off *and* which axis they are, and the longest reached 330 characters
+/// on one line -- unreadable in exactly the moment someone is choosing what to
+/// install.
+///
+/// Fixed width rather than the terminal's: asking the terminal makes the
+/// output depend on where it ran, and two runs of `list` that disagree are
+/// worse than a line that is occasionally short. A word longer than the width
+/// is emitted whole rather than cut, because a broken URL helps nobody.
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.chars().count() + 1 + word.chars().count() <= width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line.push_str(word);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The width a description is wrapped to, indent excluded.
+const DESCRIPTION_WIDTH: usize = 72;
+
 fn list(harness: &Harness) -> Result<()> {
     let setups = catalog(harness)?.list()?;
     if setups.is_empty() {
@@ -643,7 +678,9 @@ fn list(harness: &Harness) -> Result<()> {
     println!();
     for setup in &setups {
         println!("  {}", setup.manifest.id);
-        println!("      {}", setup.manifest.description);
+        for line in wrapped(&setup.manifest.description, DESCRIPTION_WIDTH) {
+            println!("      {line}");
+        }
         println!(
             "      {} files, definition {}",
             setup.file_count,
@@ -671,10 +708,19 @@ fn status(harness: &Harness, target: &Path) -> Result<()> {
             println!("         reported as found; nothing was migrated");
         }
         StateReading::Current(state) => {
-            println!(
-                "Setup    {}",
-                state.setup_stable_id.as_deref().unwrap_or("(unnamed)")
-            );
+            // One condition, one sentence. A target restored to a slot captured
+            // before any setup existed holds exactly what an untouched target
+            // holds, and used to read `(unnamed)` there while the same emptiness
+            // one command earlier read `none applied`. Two sentences for one
+            // state, and the reader has to know which path got them here to tell
+            // that they mean the same thing.
+            //
+            // So both now open with `none`, and the clause after it says why
+            // this one has a state file at all.
+            match state.setup_stable_id.as_deref() {
+                Some(id) => println!("Setup    {id}"),
+                None => println!("Setup    none — the last operation named no setup"),
+            }
             println!("Applied  operation {}", state.operation_id);
             if identity == state.target_identity_digest {
                 println!("Drift    none");
@@ -1385,6 +1431,7 @@ mod tests {
                 schema_version: SETUP_SCHEMA,
                 id: id.to_owned(),
                 description: format!("the {id} setup"),
+                sources: Vec::new(),
             })
             .unwrap(),
         )
@@ -2154,5 +2201,53 @@ mod tests {
         assert!(!stubborn.exists(), "a read-only file blocked the install");
 
         let _ = fs::remove_dir_all(target.parent().unwrap());
+    }
+    /// A description a terminal can hold, broken where words end.
+    #[test]
+    fn a_long_description_is_wrapped_at_word_boundaries() {
+        let text = "Full auto: nothing is asked and nothing is sandboxed. This is a \
+                    setup posture -- keys in this product's own configuration file.";
+        let lines = wrapped(text, 40);
+        assert!(lines.len() > 1, "{lines:?}");
+        for line in &lines {
+            assert!(line.chars().count() <= 40, "{line:?}");
+            assert!(!line.starts_with(' ') && !line.ends_with(' '), "{line:?}");
+        }
+        assert_eq!(
+            lines.join(" "),
+            text.split_whitespace().collect::<Vec<_>>().join(" "),
+            "wrapping must not lose or invent a word"
+        );
+    }
+
+    /// A word longer than the width is emitted whole.
+    ///
+    /// Cutting it would produce a broken URL, and a description that cites a
+    /// vendor page is exactly where a long word appears.
+    #[test]
+    fn a_word_longer_than_the_width_is_not_cut() {
+        let long = "https://learn.chatgpt.com/docs/config-file/config-reference";
+        // Both positions, because they take different branches: a long word
+        // that *starts* a line is pushed into an empty buffer, and one that
+        // follows a word is pushed after the buffer is flushed. An earlier
+        // version of this test asserted only the second, and a mutation that
+        // truncated the first left it green.
+        for text in [
+            format!("see {long} for this"),
+            format!("{long} is the page"),
+        ] {
+            let lines = wrapped(&text, 20);
+            assert!(
+                lines.iter().any(|line| line == long),
+                "{text:?} became {lines:?}"
+            );
+        }
+    }
+
+    /// Nothing in, nothing out -- rather than one empty line.
+    #[test]
+    fn an_empty_description_wraps_to_nothing() {
+        assert!(wrapped("", 40).is_empty());
+        assert!(wrapped("   ", 40).is_empty());
     }
 }
