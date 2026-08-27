@@ -1,0 +1,60 @@
+name: evidence
+
+# The only check here that leaves this repository. It downloads the exact
+# artifact a plan names, from the vendor that publishes it, and installs the
+# real product from those bytes.
+#
+# Not a required context and not on pull requests: a gate that depends on a
+# registry reports that registry's bad day as this commit's failure.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, at a minute derived from the harness name so the seven do not
+    # all reach the same registries in the same second. Derived from the bytes
+    # of the name rather than `hash()`, which Python randomises per process and
+    # would make this render differ from itself.
+    - cron: '37 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          toolchain: '1.98.0'
+
+      - run: cargo build --locked --release
+
+      - name: The whole software lifecycle, against the vendor's own bytes
+        run: |
+          set -euo pipefail
+          # `python3` is not on PATH on the Windows image; `python` is.
+          py=python3
+          [ "$RUNNER_OS" = "Windows" ] && py=python
+          suffix=""
+          [ "$RUNNER_OS" = "Windows" ] && suffix=".exe"
+          exe="target/release/pi-setup-system$suffix"
+          "$py" scripts/evidence.py --binary "$exe" --harness pi

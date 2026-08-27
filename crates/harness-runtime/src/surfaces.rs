@@ -278,6 +278,54 @@ fn declined_rows_in(
     }
 }
 
+/// Every path a provider evaluates is relative to `--target`, so a record of
+/// one cannot be written relative to anything else.
+///
+/// This exists because a `$HOME`-relative entry hid a real gap for a release.
+/// `references/claude-baseline.json` listed `~/.claude.json` under
+/// `never_touch`, and the harness test that binds that list to the declaration
+/// skipped it with a stated reason: *sits outside the target and cannot be a
+/// top-level entry of it*. That reasoning is true of a person running the
+/// product with its default home and false of this provider, which points
+/// `CLAUDE_CONFIG_DIR` at a target -- and then the product writes
+/// `<target>/.claude.json`. Measured by running it, which is the only way this
+/// one could be found: a vendor page says what a product reads, and only a run
+/// says what it writes.
+///
+/// So the skip is gone and the shape that made it look reasonable is refused
+/// here. A `~` or a leading `/` in any recorded path is the same defect that has
+/// now appeared eight times -- a path is only a path together with what it is
+/// relative to.
+fn rooted_elsewhere(baseline: &Value, found: &mut Vec<String>) {
+    let mut check = |path: &str, whose: &str| {
+        if path.starts_with('~') || path.starts_with('/') {
+            found.push(format!(
+                "{whose} records {path:?}, which is relative to a root this \
+                 provider never evaluates against; every recorded path \
+                 is relative to the target"
+            ));
+        }
+    };
+    if let Some(names) = baseline.get("never_touch").and_then(Value::as_array) {
+        for name in names.iter().filter_map(Value::as_str) {
+            check(name, "never_touch");
+        }
+    }
+    let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
+        return;
+    };
+    for list in ["surfaces", "declined"] {
+        let Some(rows) = block.get(list).and_then(Value::as_array) else {
+            continue;
+        };
+        for row in rows {
+            if let Some(path) = row.get("path").and_then(Value::as_str) {
+                check(path, &format!("{BLOCK}.{list}"));
+            }
+        }
+    }
+}
+
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
 /// Empty is the only passing answer. Each string names one disagreement and is
@@ -286,6 +334,7 @@ fn declined_rows_in(
 #[must_use]
 pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     let mut found = Vec::new();
+    rooted_elsewhere(baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
         found.push(format!(
@@ -467,6 +516,47 @@ mod tests {
                 .any(|line| line.contains("is not declared in native_namespaces")),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn a_path_recorded_against_another_root_is_refused() {
+        // Three places record paths and all three are read relative to the
+        // target. A `~` entry is the shape that hid a real gap for a release:
+        // it reads as a fact about the product's default home, and the harness
+        // test that binds `never_touch` to the declaration skipped it for
+        // exactly that reason -- while this provider was redirecting the home
+        // and the product was writing the file inside the target.
+        for (field, mutate) in [
+            (
+                "never_touch",
+                Box::new(|b: &mut Value| b["never_touch"] = json!(["~/.thing.json"]))
+                    as Box<dyn Fn(&mut Value)>,
+            ),
+            (
+                "surfaces",
+                Box::new(|b: &mut Value| b[BLOCK]["surfaces"][0]["path"] = json!("/etc/thing")),
+            ),
+            (
+                "declined",
+                Box::new(|b: &mut Value| {
+                    b[BLOCK]["declined"] = json!([{
+                        "path": "~/thing",
+                        "reason": "measured, and recorded against the wrong root",
+                        "source": "https://example.invalid/docs",
+                    }]);
+                }),
+            ),
+        ] {
+            let mut baseline = agreeing();
+            mutate(&mut baseline);
+            let problems = disagreements(&TEST, &baseline);
+            assert!(
+                problems
+                    .iter()
+                    .any(|line| line.contains("relative to a root this provider never")),
+                "{field}: {problems:?}"
+            );
+        }
     }
 
     #[test]
