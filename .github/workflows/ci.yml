@@ -141,17 +141,13 @@ jobs:
           net=$(undefined "$bin" | grep -xE 'socket|socketpair|connect|bind|listen|accept|accept4|sendto|sendmsg|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyname2|res_query|res_search' || true)
           echo "network imports: ${net:-(none)}"
 
-          # Measured on Linux 2026-08-27: none, on all seven. Enforced there.
+          # Enforced on both. Reported without failing on macOS for one
+          # release, because what this proves is that *our* code never reaches
+          # for a socket while what it reads is whatever the linker left after
+          # resolving that platform's std -- not the same claim, and no local
+          # measurement could say whether they coincide there.
           #
-          # macOS reports and does not fail, for the same reason the next step
-          # gives: what this proves is that *our* code never reaches for a
-          # socket, and what it reads is what the linker left after resolving
-          # a different platform's std. Those are not the same claim, and only
-          # a run here can say whether they coincide on this one.
-          if [ "$RUNNER_OS" != "Linux" ]; then
-            echo "observed, not enforced, on $RUNNER_OS"
-            exit 0
-          fi
+          # `0.0.8`'s run said it: none, on all seven, on macOS as on Linux.
           if [ -n "$net" ]; then
             echo "this build imports network symbols:" >&2
             echo "$net" >&2
@@ -184,21 +180,19 @@ jobs:
           # which is the stronger form of it: it survives the lint being wrong,
           # bypassed, or read by someone with no reason to trust it.
           #
-          # Measured on Linux 2026-08-27 across all seven binaries: the six that
-          # declare `launch` import exactly `execvp`, and the one that declares
-          # none imports no spawn symbol at all -- so the linker does drop what
-          # nothing calls, and the absence is real rather than incidental.
+          # Measured on Linux across all seven binaries, then on macOS by
+          # `0.0.8`'s own run, and the two agree exactly: the six that declare
+          # `launch` import `execvp` and nothing else; antigravity, which
+          # declares none, imports no spawn symbol at all, on either platform.
+          # So the linker drops what nothing calls and the absence is real
+          # rather than incidental -- which is what had to be true before this
+          # could be enforced anywhere.
           #
-          # Enforced where that was measured. On macOS it reports and does not
-          # fail, until a run says what that platform's std leaves in the table.
-          # Asserting a property of a system nobody has measured is the habit
-          # this repository keeps taking out of its own documents -- and the
-          # first draft of this job enforced the network step on macOS while
-          # writing that sentence one step below it.
-          if [ "$RUNNER_OS" != "Linux" ]; then
-            echo "observed, not enforced, on $RUNNER_OS"
-            exit 0
-          fi
+          # It shipped reporting-only on macOS for exactly one release. That
+          # was not caution for its own sake: asserting a property of a system
+          # nobody has measured is the habit this repository keeps taking out
+          # of its own documents, and the first draft of this job enforced the
+          # network step on macOS while writing that sentence one step below.
           if [ "$declared" = "no" ] && [ -n "$spawn" ]; then
             echo "no launch is declared and yet this build can spawn" >&2
             exit 1
