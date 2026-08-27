@@ -37,6 +37,41 @@ All five core operations do work: `backup`, `restore`, `remove`, `install` and
 `replace`, both from the local setup catalog and from an `ai-stp-bundle/1`
 arriving over the wire.
 
+## Using this against a home you already have
+
+**An owned namespace is removed whole.** The table below says what this build
+owns; `remove` deletes each of those paths entirely, and a backup slot holds
+what was there first. That includes content this build never wrote -- if the
+product itself put a key in a configuration file this provider owns, `remove`
+takes the file, not the keys this provider added to it.
+
+Measured, with the real product: launching Codex through `launch` and running
+`mcp add` writes `~/.codex/config.toml` with an `[mcp_servers.*]` entry; a
+later `install` captures that file into a slot and replaces it; a later
+`remove` deletes it. The entry is not lost -- `backups` lists the slot as
+*before install, setup none*, and restoring it returns the file byte for byte
+-- but it is not in the target either.
+
+So: point `--target` at a home you are willing to have managed. `backups
+--target <dir>` names every earlier state and which setup each preceded, and
+`restore --backup <ref>` returns any of them exactly.
+
+## When conformance says this provider is malformed
+
+`ai-stp provider conformance --protocol-version 3` reports each case by name.
+If the one that fails is `provider_info_v3_closed`, with a detail about fields
+differing from the closed schema, **check the version of the checker before
+suspecting this build**.
+
+The v3 capability schema is compared as an exact field set, so a provider that
+declares a field the checker predates is reported as malformed rather than as
+newer. `scoped_projection_profiles` (`ADR-0125`) is the field this applies to
+today: it is omitted entirely when empty, so most of these builds satisfy an
+older checker by accident, and the one that genuinely declares a project scope
+does not. Measured against `ai-stp-cli` 0.0.3, six of the seven pass and
+Antigravity reports `conforms=false`; against a checker that carries the field,
+all seven pass every case.
+
 ## What `status` reports, and what it does not
 
 `state` answers **who manages this target**, and never *whether a setup is
