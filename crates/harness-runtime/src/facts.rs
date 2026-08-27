@@ -67,6 +67,23 @@ pub struct Harness {
     /// Excluded from backups so a slot never holds credentials, and excluded
     /// from target identity so the product's own traffic cannot strand a plan.
     pub never_touch: &'static [&'static str],
+    /// What a *neighbour's* configuration home looks like from inside a target.
+    ///
+    /// Every command here takes an explicit `--target` because a change aimed at
+    /// a guessed path is a change aimed at someone else's state. That rule stops
+    /// this program guessing; it does nothing about a caller who names the wrong
+    /// place confidently.
+    ///
+    /// Pi is where that bites. Oh My Pi is a separate product descended from the
+    /// same code, and the two are near-identical in shape: `~/.pi/agent` against
+    /// `~/.omp/agent`, one directory name apart. But Pi reads `settings.json`
+    /// and Oh My Pi reads `config.yml`, so a setup written into the wrong one is
+    /// not a broken installation — it is an **ignored** one, and the target
+    /// looks configured.
+    ///
+    /// Empty for the six that have no near neighbour. A marker is only listed
+    /// where it was measured; guessing one would refuse a legitimate target.
+    pub foreign_homes: &'static [Foreign],
     /// The permission profiles this provider can apply.
     pub permission_profiles: &'static [&'static str],
     /// The component kinds this provider projects.
@@ -101,6 +118,18 @@ pub struct Harness {
     /// installable, but not by fetching bytes whose digest was fixed in advance
     /// -- and the refusal says which.
     pub software: Option<Software>,
+}
+
+/// One sign that a target is a different product's configuration home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Foreign {
+    /// A path, relative to the target, whose presence indicates the other one.
+    pub marker: &'static str,
+    /// The product it indicates, named as its own documentation names it.
+    pub product: &'static str,
+    /// Where that product's configuration actually lives, so the refusal is
+    /// something a caller can act on rather than only a stop.
+    pub home: &'static str,
 }
 
 /// How many backup slots a target keeps.
@@ -356,6 +385,7 @@ mod tests {
         profile_id: "sample/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         never_touch: &[".credentials.json", "sessions"],
+        foreign_homes: &[],
         permission_profiles: &["default"],
         component_kinds: &[ComponentKind::Instruction, ComponentKind::Skill],
         projection_kinds: &[ProjectionKind::NativeFiles],

@@ -33,7 +33,7 @@ use setup_core::{digest, lock};
 
 use crate::catalog::Setup;
 use crate::expiry;
-use crate::facts::{self, Harness};
+use crate::facts::{self, Foreign, Harness};
 use crate::software;
 
 /// Answer one parsed invocation.
@@ -490,6 +490,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         request.operation,
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove
     ) {
+        refuse_a_neighbours_home(harness, &resolved)?;
         refuse_uncapturable(harness, &resolved)?;
     }
 
@@ -857,6 +858,7 @@ pub(crate) fn perform(
     // operation and control artifacts for a target shape that was knowable for
     // free -- reported from a Windows target whose owned `config/skills` held
     // four Junctions.
+    refuse_a_neighbours_home(harness, &resolved)?;
     refuse_uncapturable(harness, &resolved)?;
     let captured = pool.capture(resolved.root(), harness.native_namespaces, |backup_ref| {
         SlotRecord {
@@ -1079,6 +1081,79 @@ fn remove_path(path: &Path) -> Result<()> {
     })
 }
 
+/// Refuse a target that is a different product's configuration home.
+///
+/// Every command takes an explicit `--target` so this program never guesses a
+/// path. That rule binds this program; it does nothing about a caller who names
+/// the wrong place confidently, and Pi and Oh My Pi are one word apart --
+/// `~/.pi/agent` against `~/.omp/agent`, the same shape, descended from the
+/// same code.
+///
+/// The reason it must be a refusal rather than a note: Pi reads `settings.json`
+/// and Oh My Pi reads `config.yml`. A Pi setup written into an Oh My Pi home is
+/// not rejected by anything downstream -- it is **ignored**, and the directory
+/// looks configured. A failure that leaves everything looking right is the one
+/// worth stopping before it happens.
+///
+/// Three conditions, and all of them must hold, because the cost of a wrong
+/// refusal is a caller who cannot configure their own target:
+///
+/// - the neighbour's marker is there;
+/// - **none** of this provider's own namespaces are -- a home holding
+///   `settings.json` is Pi's whatever else is beside it;
+/// - the target is not already managed by this provider, which settles it
+///   outright.
+fn refuse_a_neighbours_home(harness: &Harness, resolved: &Target) -> Result<()> {
+    if harness.foreign_homes.is_empty() {
+        return Ok(());
+    }
+    // Already ours: nothing to mistake.
+    if matches!(
+        ProviderState::read(resolved.root(), harness.state_file)?,
+        StateReading::Current(_)
+    ) {
+        return Ok(());
+    }
+    // Ours by content, even without our state -- an adopted or hand-made home.
+    if harness
+        .native_namespaces
+        .iter()
+        .any(|name| resolved.root().join(name).exists())
+    {
+        return Ok(());
+    }
+
+    let found: Vec<&Foreign> = harness
+        .foreign_homes
+        .iter()
+        .filter(|foreign| resolved.root().join(foreign.marker).exists())
+        .collect();
+    let Some(first) = found.first() else {
+        return Ok(());
+    };
+
+    Err(Error::refuse(
+        WireReason::UnsupportedNativeSurface,
+        format!(
+            "{} holds {} and none of {}'s own files, which is what {}'s configuration \
+             home looks like. {} keeps its configuration in {}; this program configures \
+             {} in {}. Nothing has been changed. Name the target you meant.",
+            resolved.root().display(),
+            found
+                .iter()
+                .map(|foreign| foreign.marker)
+                .collect::<Vec<_>>()
+                .join(" and "),
+            harness.product,
+            first.product,
+            first.product,
+            first.home,
+            harness.product,
+            harness.documented_config_home,
+        ),
+    ))
+}
+
 /// Refuse the exact owned paths a backup could not capture, before any of it.
 ///
 /// Named rather than counted, and all of them rather than the first: a caller
@@ -1293,6 +1368,7 @@ pub(crate) mod tests_support {
         profile_id: "test/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         never_touch: &[".credentials.json", "sessions"],
+        foreign_homes: &[],
         permission_profiles: &["default"],
         component_kinds: &[
             ComponentKind::Instruction,
@@ -2262,6 +2338,139 @@ mod tests {
             "verified",
             "the target did not become usable again once the file could be read"
         );
+    }
+
+    /// A harness with a near neighbour, for the tests below.
+    fn with_a_neighbour() -> Harness {
+        let mut harness = TEST;
+        harness.foreign_homes = &[
+            crate::facts::Foreign {
+                marker: "config.yml",
+                product: "Oh My Pi",
+                home: "~/.omp/agent",
+            },
+            crate::facts::Foreign {
+                marker: "models.yml",
+                product: "Oh My Pi",
+                home: "~/.omp/agent",
+            },
+        ];
+        harness
+    }
+
+    fn refuse_for(harness: &Harness, tokens: Vec<String>) -> provider_v3::Error {
+        dispatch(harness, argv::parse(tokens).unwrap()).unwrap_err()
+    }
+
+    fn run_for(harness: &Harness, tokens: Vec<String>) -> serde_json::Value {
+        dispatch(harness, argv::parse(tokens).unwrap()).unwrap()
+    }
+
+    fn backup_plan(target: &Path) -> Vec<String> {
+        args(
+            "plan-operation",
+            target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01NEIGHBOUR",
+                "--expires-at",
+                far_future(),
+            ],
+        )
+    }
+
+    /// A target that is a neighbouring product's home is refused before
+    /// anything moves, and the refusal says where each product actually lives.
+    ///
+    /// Pi and Oh My Pi are one word apart -- `~/.pi/agent` against
+    /// `~/.omp/agent` -- the same shape, descended from the same code. What
+    /// makes the confusion worth stopping is that it is **silent**: Pi reads
+    /// `settings.json` and Oh My Pi reads `config.yml`, so a Pi setup written
+    /// into an Oh My Pi home is not rejected by anything. It is ignored, and
+    /// the directory looks configured.
+    #[test]
+    fn a_target_that_is_a_neighbours_home_is_refused_and_says_whose() {
+        let harness = with_a_neighbour();
+        let target = scratch("neighbour-home").join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("config.yml"), "memory:\n  backend: off\n").unwrap();
+
+        let error = refuse_for(&harness, backup_plan(&target));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedNativeSurface));
+        for expected in [
+            "config.yml",
+            "Oh My Pi",
+            "~/.omp/agent",
+            "Nothing has been changed",
+        ] {
+            assert!(
+                error.detail().contains(expected),
+                "the refusal does not say {expected:?}: {}",
+                error.detail()
+            );
+        }
+
+        // A refusal to start: no slot, no journal, nothing to recover.
+        let control = target.join(harness.control_directory);
+        assert_eq!(
+            fs::read_dir(control.join("backups")).map_or(0, Iterator::count),
+            0
+        );
+        assert!(!control.join("journal.json").exists());
+    }
+
+    /// The three ways a target earns the benefit of the doubt.
+    ///
+    /// The cost of a wrong refusal is a caller who cannot configure their own
+    /// target, so each of these is asserted rather than assumed.
+    #[test]
+    fn a_target_that_is_ours_is_not_mistaken_for_a_neighbours() {
+        let harness = with_a_neighbour();
+
+        // One: it holds our own files, whatever else is beside them. A home
+        // with both is Pi's -- Oh My Pi would not have written `settings.json`.
+        let both = scratch("neighbour-both").join("target");
+        fs::create_dir_all(&both).unwrap();
+        fs::write(both.join("config.yml"), "x").unwrap();
+        fs::write(both.join("settings.json"), "{}").unwrap();
+        assert_eq!(
+            run_for(&harness, backup_plan(&both))["state"],
+            "planned",
+            "a target holding our own file was refused as a neighbour's"
+        );
+
+        // Two: it is already managed by us, which settles it outright.
+        let managed = seeded("neighbour-managed");
+        plan_then_apply(&managed, "backup", &[]);
+        fs::write(managed.join("config.yml"), "arrived later").unwrap();
+        assert_eq!(
+            run_for(&harness, backup_plan(&managed))["state"],
+            "planned",
+            "a target we already manage was refused as a neighbour's"
+        );
+
+        // Three: no marker at all. An empty target is the ordinary case and
+        // must never be refused.
+        let empty = scratch("neighbour-empty").join("target");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(run_for(&harness, backup_plan(&empty))["state"], "planned");
+    }
+
+    /// A harness with no measured neighbour never refuses on this ground.
+    ///
+    /// Six of the seven declare none. A marker listed without evidence is a
+    /// refusal waiting to happen, so the empty case is the one most of the
+    /// estate runs and it is asserted too.
+    #[test]
+    fn a_harness_with_no_neighbour_refuses_nothing_on_this_ground() {
+        let target = scratch("neighbour-none").join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("config.yml"), "someone else's file").unwrap();
+        assert_eq!(run_for(&TEST, backup_plan(&target))["state"], "planned");
     }
 
     #[test]

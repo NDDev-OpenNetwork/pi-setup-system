@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 mod software;
 
-use harness_runtime::Harness;
+use harness_runtime::{Foreign, Harness};
 use provider_v3::{ComponentKind, ProjectionKind};
 
 /// Everything specific to Pi Coding Agent, verified against `pi-baseline.json`.
@@ -42,6 +42,30 @@ pub const PI: Harness = Harness {
     // The product's own: credentials, session history and runtime caches. Never
     // read, never written, and never copied into a backup slot.
     never_touch: &["trust.json", "sessions"],
+    // Oh My Pi is a separate product descended from the same code: package
+    // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its
+    // shape is Pi's -- both keep their configuration one directory down under
+    // `agent` -- and the two homes are one word apart.
+    //
+    // What makes the confusion silent rather than loud is the file. Pi reads
+    // `settings.json`; Oh My Pi reads `config.yml` and `models.yml`. A Pi setup
+    // written into an Oh My Pi home is not rejected by anything: it is ignored,
+    // and the directory looks configured.
+    //
+    // Measured 2026-08-27 from the published package and the project's own
+    // documentation, not inferred from the name.
+    foreign_homes: &[
+        Foreign {
+            marker: "config.yml",
+            product: "Oh My Pi",
+            home: "~/.omp/agent",
+        },
+        Foreign {
+            marker: "models.yml",
+            product: "Oh My Pi",
+            home: "~/.omp/agent",
+        },
+    ],
     permission_profiles: &["default"],
     // Exactly what the canonical compiler routes for Pi. It answers `None` for
     // mcp, hook, command and agent, so declaring any of those would promise a
