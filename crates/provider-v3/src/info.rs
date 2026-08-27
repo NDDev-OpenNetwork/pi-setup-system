@@ -18,6 +18,7 @@ use setup_core::digest;
 use crate::error::{Error, Result};
 use crate::vocabulary::{
     Command, ComponentKind, Operation, PROJECTION_DOMAIN, PROTOCOL_VERSION, ProjectionKind,
+    TargetScope,
 };
 
 /// What a provider accepts, and the digest that binds the declaration.
@@ -39,6 +40,15 @@ pub struct ProjectionProfile {
     pub max_files: u64,
     /// The largest byte count a bundle may carry.
     pub max_bytes: u64,
+    /// The target this profile owns, when it is not the product's own home.
+    ///
+    /// Absent on the global profile and **serialized as absent**, so every
+    /// declaration published before a provider owned a second scope stays byte
+    /// for byte what it was and its digest does not move. A field added inside
+    /// `projection_profile` would have given `projection_profile_mismatch` to
+    /// every bundle compiled against the old one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_scope: Option<String>,
 }
 
 impl ProjectionProfile {
@@ -56,6 +66,61 @@ impl ProjectionProfile {
         bundle_formats: &[&str],
         max_files: u64,
         max_bytes: u64,
+    ) -> Result<Self> {
+        Self::build(
+            profile_id,
+            component_kinds,
+            projection_kinds,
+            native_namespaces,
+            bundle_formats,
+            max_files,
+            max_bytes,
+            None,
+        )
+    }
+
+    /// Build a profile that owns a target other than the product's own home.
+    ///
+    /// The scope is folded into the digest input, so two profiles differing
+    /// only in which target they own cannot share an identity — the property
+    /// that lets a plan record which profile it was made against.
+    ///
+    /// # Errors
+    ///
+    /// As [`ProjectionProfile::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn scoped(
+        profile_id: impl Into<String>,
+        component_kinds: &[ComponentKind],
+        projection_kinds: &[ProjectionKind],
+        native_namespaces: &[&str],
+        bundle_formats: &[&str],
+        max_files: u64,
+        max_bytes: u64,
+        target_scope: TargetScope,
+    ) -> Result<Self> {
+        Self::build(
+            profile_id,
+            component_kinds,
+            projection_kinds,
+            native_namespaces,
+            bundle_formats,
+            max_files,
+            max_bytes,
+            Some(target_scope),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        profile_id: impl Into<String>,
+        component_kinds: &[ComponentKind],
+        projection_kinds: &[ProjectionKind],
+        native_namespaces: &[&str],
+        bundle_formats: &[&str],
+        max_files: u64,
+        max_bytes: u64,
+        target_scope: Option<TargetScope>,
     ) -> Result<Self> {
         let profile_id = profile_id.into();
         let components: Vec<String> = component_kinds
@@ -100,7 +165,7 @@ impl ProjectionProfile {
 
         // The digest input excludes `digest` itself: a value cannot bind a
         // declaration it is part of.
-        let input = serde_json::json!({
+        let mut input = serde_json::json!({
             "profile_id": profile_id,
             "component_kinds": components,
             "projection_kinds": projections,
@@ -109,6 +174,12 @@ impl ProjectionProfile {
             "max_files": max_files,
             "max_bytes": max_bytes,
         });
+        if let Some(scope) = target_scope {
+            // Only when there is one. A global profile whose input gained a
+            // null would hash differently from every declaration already
+            // published, which is the one thing this field must not do.
+            input["target_scope"] = serde_json::Value::String(scope.as_str().to_owned());
+        }
         let digest = digest::of_domain_canonical_json(PROJECTION_DOMAIN, &input)
             .map_err(|source| Error::declaration(source.detail()))?;
 
@@ -121,6 +192,7 @@ impl ProjectionProfile {
             bundle_formats: formats,
             max_files,
             max_bytes,
+            target_scope: target_scope.map(|scope| scope.as_str().to_owned()),
         })
     }
 }
@@ -150,6 +222,12 @@ pub struct ProviderInfo {
     pub permission_profiles: Vec<String>,
     /// What this provider accepts, and the digest binding it.
     pub projection_profile: ProjectionProfile,
+    /// What it accepts for targets that are not the product's own home.
+    ///
+    /// Omitted entirely when empty, so a build owning one scope publishes
+    /// exactly what it published before this field existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scoped_projection_profiles: Vec<ProjectionProfile>,
 }
 
 /// What a build declares about itself, by name rather than by position.
@@ -179,6 +257,8 @@ pub struct Declaration<'a> {
     pub permission_profiles: &'a [&'a str],
     /// What this provider accepts, and the digest binding it.
     pub projection_profile: ProjectionProfile,
+    /// What it accepts for targets that are not the product's own home.
+    pub scoped_projection_profiles: Vec<ProjectionProfile>,
 }
 
 impl ProviderInfo {
@@ -209,6 +289,27 @@ impl ProviderInfo {
             return Err(Error::declaration(
                 "provider-info must name at least one operating system and architecture",
             ));
+        }
+
+        // A scope may be claimed once. Two entries owning one target would make
+        // "which profile was this plan made against" unanswerable, and the
+        // consumer refuses the whole declaration for it -- which takes `fetch`,
+        // `plan`, `apply` and `status` down with `provider-info`, so the mistake
+        // is worth catching in the build that made it.
+        let mut claimed: Vec<&str> = Vec::new();
+        for profile in &declaration.scoped_projection_profiles {
+            let Some(scope) = profile.target_scope.as_deref() else {
+                return Err(Error::declaration(
+                    "a scoped projection profile must name the target it owns; the \
+                     global scope is declared by projection_profile",
+                ));
+            };
+            if claimed.contains(&scope) {
+                return Err(Error::declaration(format!(
+                    "two projection profiles claim the {scope} scope"
+                )));
+            }
+            claimed.push(scope);
         }
 
         Ok(Self {
@@ -243,6 +344,7 @@ impl ProviderInfo {
                 .map(|s| (*s).to_owned())
                 .collect(),
             projection_profile: declaration.projection_profile,
+            scoped_projection_profiles: declaration.scoped_projection_profiles,
         })
     }
 
@@ -305,6 +407,7 @@ mod tests {
             supported_arch: &["x86_64", "arm64"],
             permission_profiles: &["default"],
             projection_profile: profile(),
+            scoped_projection_profiles: Vec::new(),
         }
     }
 
@@ -492,6 +595,83 @@ mod tests {
             info(Command::CORE, Operation::CORE)
                 .unwrap()
                 .supports_this_host()
+        );
+    }
+    /// The scope is part of what the digest binds.
+    ///
+    /// Two profiles identical in every other field must not share an identity:
+    /// a plan records which profile it was made against, and if a workspace
+    /// profile and a home profile hashed alike, a plan made for one would
+    /// verify against the other.
+    #[test]
+    fn a_scope_changes_the_identity_of_an_otherwise_identical_profile() {
+        let fields = || {
+            (
+                &[ComponentKind::Skill][..],
+                &[ProjectionKind::NativeFiles][..],
+                &["skills"][..],
+                &["ai-stp-bundle/1"][..],
+            )
+        };
+        let (kinds, projections, namespaces, formats) = fields();
+        let global =
+            ProjectionProfile::new("same/1", kinds, projections, namespaces, formats, 8, 8)
+                .unwrap();
+        let scoped = ProjectionProfile::scoped(
+            "same/1",
+            kinds,
+            projections,
+            namespaces,
+            formats,
+            8,
+            8,
+            TargetScope::Project,
+        )
+        .unwrap();
+        assert_ne!(global.digest, scoped.digest);
+        assert_eq!(scoped.target_scope.as_deref(), Some("project"));
+        assert_eq!(global.target_scope, None);
+    }
+
+    /// A declaration with no second scope is byte for byte what it always was.
+    ///
+    /// This is the property that lets a provider add the field without moving
+    /// `projection_profile`'s digest, and therefore without giving
+    /// `projection_profile_mismatch` to every bundle compiled against the old
+    /// declaration. Worth a test rather than a serde attribute nobody reads
+    /// twice.
+    #[test]
+    fn a_single_scope_declaration_publishes_no_trace_of_the_field() {
+        let rendered =
+            serde_json::to_string(&info(Command::ALL, Operation::CORE).unwrap()).unwrap();
+        assert!(!rendered.contains("target_scope"), "{rendered}");
+        assert!(
+            !rendered.contains("scoped_projection_profiles"),
+            "{rendered}"
+        );
+    }
+
+    /// One target, one owner.
+    #[test]
+    fn two_profiles_cannot_claim_the_same_scope() {
+        let scoped = |id: &str| {
+            ProjectionProfile::scoped(
+                id,
+                &[ComponentKind::Skill],
+                &[ProjectionKind::NativeFiles],
+                &["skills"],
+                &["ai-stp-bundle/1"],
+                8,
+                8,
+                TargetScope::Project,
+            )
+            .unwrap()
+        };
+        let mut both = declaration(Command::ALL, Operation::CORE, &["linux"]);
+        both.scoped_projection_profiles = vec![scoped("a/1"), scoped("b/1")];
+        assert!(
+            ProviderInfo::declare(both).is_err(),
+            "two owners of one scope were accepted"
         );
     }
 }

@@ -671,10 +671,19 @@ fn status(harness: &Harness, target: &Path) -> Result<()> {
             println!("         reported as found; nothing was migrated");
         }
         StateReading::Current(state) => {
-            println!(
-                "Setup    {}",
-                state.setup_stable_id.as_deref().unwrap_or("(unnamed)")
-            );
+            // One condition, one sentence. A target restored to a slot captured
+            // before any setup existed holds exactly what an untouched target
+            // holds, and used to read `(unnamed)` there while the same emptiness
+            // one command earlier read `none applied`. Two sentences for one
+            // state, and the reader has to know which path got them here to tell
+            // that they mean the same thing.
+            //
+            // So both now open with `none`, and the clause after it says why
+            // this one has a state file at all.
+            match state.setup_stable_id.as_deref() {
+                Some(id) => println!("Setup    {id}"),
+                None => println!("Setup    none — the last operation named no setup"),
+            }
             println!("Applied  operation {}", state.operation_id);
             if identity == state.target_identity_digest {
                 println!("Drift    none");
@@ -1385,6 +1394,7 @@ mod tests {
                 schema_version: SETUP_SCHEMA,
                 id: id.to_owned(),
                 description: format!("the {id} setup"),
+                sources: Vec::new(),
             })
             .unwrap(),
         )

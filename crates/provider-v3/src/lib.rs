@@ -53,5 +53,5 @@ pub use plan::{BundleBinding, PlanArtifact, PlanInputs, SoftwareArtifact};
 pub use reason::WireReason;
 pub use vocabulary::{
     Command, ComponentKind, Operation, PLAN_DOMAIN, PLAN_FORMAT, PROJECTION_DOMAIN,
-    PROTOCOL_VERSION, ProjectionKind,
+    PROTOCOL_VERSION, ProjectionKind, TargetScope,
 };

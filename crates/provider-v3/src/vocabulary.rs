@@ -314,6 +314,46 @@ impl ProjectionKind {
     }
 }
 
+/// A target a projection profile owns, other than the product's own home.
+///
+/// The kit's schema enumerates exactly one value today, and the global scope is
+/// deliberately not among them: the global profile is declared by
+/// `projection_profile` itself, and two statements about one fact are a defect
+/// even while they agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TargetScope {
+    /// A workspace rather than the product's configuration home.
+    Project,
+}
+
+impl TargetScope {
+    /// Every scope a profile may name.
+    pub const ALL: &'static [Self] = &[Self::Project];
+
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+        }
+    }
+
+    /// Parse a wire spelling.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|scope| scope.as_str() == text)
+    }
+}
+
+impl fmt::Display for TargetScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod kit {
     //! The vendored conformance kit, read by tests only.
@@ -346,6 +386,27 @@ mod tests {
 
     use super::*;
     use kit::{json, strings};
+
+    /// The scopes this build knows are the scopes the kit's schema enumerates.
+    ///
+    /// Unlike every other closed set here, this one lives in
+    /// `provider-info.schema.json` rather than in `manifest.json` -- it is a
+    /// property of a declaration rather than a vocabulary of its own. Bound
+    /// anyway, because a scope this build could name and the consumer would
+    /// refuse is a `provider-info` that does not parse, and a `provider-info`
+    /// that does not parse takes `fetch`, `plan`, `apply` and `status` with it.
+    #[test]
+    fn the_target_scopes_are_the_schema_s() {
+        let schema = json("provider-info.schema.json");
+        let published = strings(
+            &schema["properties"]["scoped_projection_profiles"]["items"]["properties"]["target_scope"],
+            "enum",
+        );
+        assert_eq!(
+            sorted(published),
+            sorted(spellings(TargetScope::ALL, TargetScope::as_str)),
+        );
+    }
 
     fn sorted(mut values: Vec<String>) -> Vec<String> {
         values.sort();

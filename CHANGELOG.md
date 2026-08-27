@@ -11,6 +11,67 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-08-27
+
+The release where the declaration became true, and a round trip
+started proving it on the systems that had only ever compiled.
+
+- **Every surface a provider owns now cites the document that decided it.**
+  `native_namespaces` and `component_kinds` had been assembled from a
+  consumer's routing table rather than from the products. Measured against the
+  vendors: cursor owned six paths its CLI does not read and declared five kinds
+  it could not install; claude-code owned a `.mcp.json` that does not exist,
+  because user-scope MCP lives in `~/.claude.json`; codex owned `.agents/skills`,
+  which is a *sibling* of `~/.codex` and resolved to a directory nothing reads;
+  grok owned a `commands` directory the product does not have, because its slash
+  commands are its skills. In the other direction, pi was missing `prompts` and
+  `themes`, grok was missing `workflows`, and opencode was missing `tui.json`.
+  Each baseline now carries a `native_surfaces` block -- one row per surface with
+  the URL that decided it, and every path considered and not owned with its
+  reason -- and a test binds the declaration to it in both directions.
+- **A round trip against the built binary, on whichever system runs it.** The
+  three-OS matrix proved the code compiled and its unit tests passed on macOS
+  and Windows. It never proved a *target* survived install, select, backup,
+  hold, restore, restore-to-a-named-slot, release and remove there. It does now,
+  in every tree, with a file the provider does not own present throughout and
+  compared byte for byte after every command.
+- **A file deleted in the source survived in the published tree forever.** The
+  render merged and never removed. Measured: this repository had been publishing
+  1053 lines of source nothing compiles since `0.0.1`.
+- **Antigravity owns a second target.** Five workspace surfaces under `.agents/`,
+  each read from a vendor page. `command` and `instruction`, which the consumer
+  asked for, are *not* declared: no page names either path, and a declared kind
+  is a promise of a rollback. `projection_profile` is unmoved -- measured by
+  building the previous release and this one and comparing the digest.
+- **`status` says which backup slots retention cannot take, and whose they
+  are.** Held slots shipped in `0.0.6` and there was no way to ask, so a
+  consumer planning a long series could only learn its baseline was unprotected
+  by watching it evicted -- the failure a hold exists to prevent, discovered the
+  same way. Every entry of `backups[]` now carries `held` and `hold_reason`. A
+  field rather than a wire command, because what a consumer needs is not to
+  *hold* but to *know*, and retention is this pool's policy.
+- **Three postures on every one of the seven, and `full-auto` is the new one.**
+  `baseline` is a working floor, `minimal` is the product's own defaults, and
+  `full-auto` asks nothing and sandboxes nothing -- in each product's own keys:
+  `permissions.defaultMode` and `sandbox.enabled` here, `approval_policy` and
+  `sandbox_mode` for codex, `[ui] permission_mode` and `[sandbox] profile` for
+  grok, `approvalMode` and `sandbox.mode` for cursor, the documented `"*"`
+  catch-all for opencode, `toolPermission` and `enableTerminalSandbox` for
+  antigravity, and project trust for pi, which documents no sandbox to turn off.
+  A caller who learns the three on one product knows them on all seven, and a
+  test refuses a harness that offers fewer -- or two setups with the same bytes,
+  which would be a posture in name only.
+- **Two setups wrote configuration their product does not read.** opencode's
+  `permission` took a bare string where the product documents an object, and
+  antigravity's set `toolPermissions` where the product reads `toolPermission`
+  with four values, none of them the one written. Both were valid JSON at the
+  right path, both installed and restored cleanly, and neither changed anything
+  about the product. Every key in every setup now cites the page it came from,
+  and a test refuses a setup that writes configuration and names no source.
+- **One condition, one sentence.** A target restored to a state that predates
+  any setup reads the same as one nothing has touched.
+- The provider kit moves to `0.2.3`, and nine vendor pins advance.
+
 ## [0.0.6] - 2026-08-27
 
 Two defects a consumer found, one this build could not see, and the

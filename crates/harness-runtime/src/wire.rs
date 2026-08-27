@@ -292,19 +292,38 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                 None => serde_json::Value::Null,
             },
         ),
-        (
-            "backups",
-            serde_json::json!(
-                pool.list()?
-                    .iter()
-                    .map(|record| serde_json::json!({
+        ("backups", {
+            // A hold is the difference between a reference a plan can rely
+            // on and one retention may take out from under it. The pool has
+            // known which slots are held since 0.0.6; `status` did not say,
+            // so a consumer could only find out by watching a baseline
+            // disappear after fifty captures -- which is the failure the
+            // hold exists to prevent, discovered the same way.
+            //
+            // Read here rather than in the map below because `held` walks
+            // the pool once; asking per slot would be one walk per slot.
+            let held = pool.held()?;
+            pool.list()?
+                .iter()
+                .map(|record| {
+                    let holder = held
+                        .iter()
+                        .find(|(reference, _)| *reference == record.backup_ref);
+                    serde_json::json!({
                         "backup_ref": record.backup_ref.as_str(),
                         "operation": record.operation,
                         "setup_id": record.setup_id,
-                    }))
-                    .collect::<Vec<_>>()
-            ),
-        ),
+                        "held": holder.is_some(),
+                        // The reason, not only the fact. A caller deciding
+                        // whether it may release one needs to know whose
+                        // baseline it would be taking, which is exactly what
+                        // the refusal on `hold` already says.
+                        "hold_reason": holder.map(|(_, reason)| reason.clone()),
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into()
+        }),
     ] {
         answer.insert(key.to_owned(), value);
     }
@@ -1376,6 +1395,7 @@ pub(crate) mod tests_support {
             ComponentKind::Setting,
         ],
         projection_kinds: &[ProjectionKind::NativeFiles],
+        scoped_projections: &[],
         max_files: 4096,
         max_bytes: 64 * 1024 * 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,
@@ -3744,5 +3764,46 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+    }
+    /// `status` says which slots retention may not take, and whose they are.
+    ///
+    /// The pool has known this since held slots shipped; `status` did not
+    /// publish it, so a consumer planning a long series could only learn a
+    /// baseline was unprotected by watching it evicted -- which is the failure
+    /// a hold exists to prevent, discovered the same way.
+    #[test]
+    fn a_status_says_which_backups_are_held_and_why() {
+        let target = seeded("status-publishes-holds");
+        plan_then_apply(&target, "backup", &[]);
+        plan_then_apply(&target, "backup", &[]);
+
+        let control = target.join(TEST.control_directory);
+        let pool = setup_core::backup::Pool::open(&control, facts::BACKUP_SLOTS).unwrap();
+        let first = pool.list().unwrap().last().unwrap().backup_ref.clone();
+        assert!(pool.hold(&first, "the evidence series baseline").unwrap());
+
+        let listed = run(args("status", &target, &[]));
+        let backups = listed["backups"].as_array().unwrap();
+        assert!(backups.len() >= 2, "{backups:?}");
+
+        let held: Vec<&serde_json::Value> = backups
+            .iter()
+            .filter(|entry| entry["held"] == serde_json::json!(true))
+            .collect();
+        assert_eq!(held.len(), 1, "exactly one slot was held: {backups:?}");
+        assert_eq!(held[0]["backup_ref"], serde_json::json!(first.as_str()));
+        assert_eq!(
+            held[0]["hold_reason"],
+            serde_json::json!("the evidence series baseline"),
+            "the reason travels with the fact, because a caller deciding \
+             whether to release one needs to know whose baseline it is"
+        );
+
+        for entry in backups {
+            if entry["backup_ref"] != serde_json::json!(first.as_str()) {
+                assert_eq!(entry["held"], serde_json::json!(false), "{entry:?}");
+                assert_eq!(entry["hold_reason"], serde_json::Value::Null, "{entry:?}");
+            }
+        }
     }
 }

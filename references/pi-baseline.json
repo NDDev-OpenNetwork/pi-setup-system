@@ -187,7 +187,68 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-26T22:59:43+00:00",
+  "verified_at": "2026-08-27T15:01:11+00:00",
+  "native_surfaces": {
+    "verified_at": "2026-08-27",
+    "config_home": "~/.pi/agent",
+    "surfaces": [
+      {
+        "path": "AGENTS.md",
+        "kinds": [
+          "instruction"
+        ],
+        "shape": "file",
+        "source": "https://pi.dev/docs/latest/sdk"
+      },
+      {
+        "path": "settings.json",
+        "kinds": [
+          "setting"
+        ],
+        "shape": "file",
+        "source": "https://pi.dev/docs/latest/settings",
+        "note": "paths in this file resolve relative to ~/.pi/agent"
+      },
+      {
+        "path": "skills",
+        "kinds": [
+          "skill"
+        ],
+        "shape": "directory",
+        "source": "https://pi.dev/docs/latest/skills"
+      },
+      {
+        "path": "extensions",
+        "kinds": [
+          "plugin"
+        ],
+        "shape": "directory",
+        "source": "https://pi.dev/docs/latest/extensions"
+      },
+      {
+        "path": "prompts",
+        "kinds": [
+          "command"
+        ],
+        "shape": "directory",
+        "source": "https://pi.dev/docs/latest/prompt-templates",
+        "note": "~/.pi/agent/prompts/*.md; discovery is non-recursive"
+      },
+      {
+        "path": "themes",
+        "kinds": [],
+        "shape": "directory",
+        "source": "https://pi.dev/docs/latest/settings"
+      }
+    ],
+    "declined": [
+      {
+        "path": "models.json",
+        "reason": "Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned.",
+        "source": "https://pi.dev/docs/latest/settings"
+      }
+    ]
+  },
   "software_artifacts": {
     "command": "pi",
     "shape": "gzip-tar",
@@ -230,6 +291,6 @@
       }
     },
     "version": "0.84.3",
-    "verified_at": "2026-08-26T22:59:43+00:00"
+    "verified_at": "2026-08-27T15:01:11+00:00"
   }
 }
