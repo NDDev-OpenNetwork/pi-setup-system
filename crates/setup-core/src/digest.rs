@@ -185,9 +185,7 @@ pub fn of_tree(root: &Path) -> Result<String> {
 /// # Errors
 ///
 /// Returns [`ReasonCode::StateUnavailable`] if an owned path cannot be walked,
-/// and [`ReasonCode::InvalidTarget`] if `root` is not a directory or if two
-/// namespaces overlap — an overlap would hash the nested one twice and make the
-/// digest depend on the order they happen to be declared in.
+/// and [`ReasonCode::InvalidTarget`] if `root` is not a directory.
 pub fn of_owned(root: &Path, namespaces: &[&str], excluded: &[&str]) -> Result<String> {
     if !root.is_dir() {
         return Err(Error::new(
@@ -204,18 +202,34 @@ pub fn of_owned(root: &Path, namespaces: &[&str], excluded: &[&str]) -> Result<S
     owned.sort_unstable();
     owned.dedup();
 
-    for pair in owned.windows(2) {
-        let (earlier, later) = (pair[0], pair[1]);
-        if later
-            .strip_prefix(earlier)
-            .is_some_and(|rest| rest.starts_with('/'))
-        {
-            return Err(Error::new(
-                ReasonCode::InvalidTarget,
-                format!("namespace {later:?} lies inside {earlier:?}, so it would be hashed twice"),
-            ));
-        }
-    }
+    // Reduce the declaration to a cover before walking it. A namespace inside
+    // another adds nothing to hash and would be hashed twice, which is why this
+    // was once a refusal — but refusing it conflated two different lists that
+    // happen to have the same name. `native_namespaces` is a *declaration*: a
+    // consumer validates a compiler's route against it by exact membership, so
+    // a provider may have to name both a directory and a place inside it during
+    // the window where either could arrive. What this function needs is a
+    // *cover* — the smallest set of roots whose walk visits each file once.
+    //
+    // Reducing is strictly better than refusing: identity no longer depends on
+    // how the declaration is phrased, so naming a path already covered cannot
+    // move a digest and cannot strand an installed target. Checked against the
+    // whole set rather than the previous entry, because sorting does not put an
+    // ancestor immediately before its descendants (`plugins` < `plugins-extra`
+    // < `plugins/local`, and the ancestor of the third is the first).
+    let cover: Vec<&str> = owned
+        .iter()
+        .copied()
+        .filter(|name| {
+            !owned.iter().any(|other| {
+                other != name
+                    && name
+                        .strip_prefix(*other)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        })
+        .collect();
+    let owned = cover;
 
     let mut entries = Vec::new();
     for namespace in owned {
@@ -399,6 +413,42 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    #[test]
+    fn naming_a_path_already_covered_cannot_move_the_identity() {
+        // The consumer validates a compiler's route against `native_namespaces`
+        // by exact membership, so moving a route from a directory to a place
+        // inside it needs one release declaring both -- otherwise whichever
+        // side moves first refuses every install against the side that has not.
+        // That window is only safe if the extra name is inert here.
+        let base = scratch("cover");
+        fs::create_dir_all(base.join("plugins/local/floor")).unwrap();
+        fs::write(base.join("plugins/local/floor/plugin.json"), b"{}").unwrap();
+        fs::create_dir_all(base.join("plugins-extra")).unwrap();
+        fs::write(base.join("plugins-extra/note"), b"beside, not inside").unwrap();
+
+        let parent_only = of_owned(&base, &["cli-config.json", "plugins"], &[]).unwrap();
+        let both = of_owned(&base, &["cli-config.json", "plugins", "plugins/local"], &[]).unwrap();
+        let child_first =
+            of_owned(&base, &["plugins/local", "plugins", "cli-config.json"], &[]).unwrap();
+        assert_eq!(parent_only, both);
+        assert_eq!(parent_only, child_first);
+
+        // A sibling whose name merely starts with the same letters is not
+        // covered, and sorting does not place it after its would-be ancestor.
+        let with_sibling = of_owned(
+            &base,
+            &[
+                "cli-config.json",
+                "plugins",
+                "plugins-extra",
+                "plugins/local",
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_ne!(parent_only, with_sibling);
     }
 
     #[test]

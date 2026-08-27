@@ -1404,7 +1404,15 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    // A test may spawn: several of these drive a real executable, which is the
+    // only way to prove what the shipped binary does rather than what this
+    // source believes. The lint's subject is the program, not its tests.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::disallowed_types,
+        reason = "tests drive real executables to check the shipped behaviour"
+    )]
 
     use std::fs;
     use std::path::{Path, PathBuf};

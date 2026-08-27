@@ -34,6 +34,65 @@ unused-allowed-license = "allow"
 multiple-versions = "warn"
 wildcards = "deny"
 
+# Every crate this workspace resolves, named. Anything else fails the build.
+#
+# An **allowlist**, not a list of forbidden networking crates, and the direction
+# is the point: a denylist catches only the ones somebody thought of, while this
+# fails on *any* new dependency until a person adds it -- which is the moment to
+# ask what it does. The third-party entries are all filesystem, serialization,
+# hashing and compression; not one opens a socket, measured on the released
+# binaries as zero network symbols imported and only libc and libgcc_s linked.
+#
+# Workspace members are listed too. An earlier version of this comment said
+# cargo-deny scopes `allow` to external crates; it does not, and
+# `cargo deny check bans` said so in ten lines. The tool was right and the note
+# was a claim nobody had measured.
+#
+# A rendered public tree carries this file and builds one harness crate rather
+# than seven, so six entries there match nothing. Deliberate: one file, rendered
+# verbatim, and an entry matching nothing costs nothing.
+#
+# Adding a dependency is a two-line change and a decision. Removing this list to
+# make a build pass is not a shortcut -- it is the guard.
+allow = [
+    { crate = "antigravity-setup-system" },
+    { crate = "claude-setup-system" },
+    { crate = "codex-setup-system" },
+    { crate = "cursor-setup-system" },
+    { crate = "grok-setup-system" },
+    { crate = "harness-runtime" },
+    { crate = "opencode-setup-system" },
+    { crate = "pi-setup-system" },
+    { crate = "provider-v3" },
+    { crate = "setup-core" },
+    { crate = "adler2" },
+    { crate = "block-buffer" },
+    { crate = "cfg-if" },
+    { crate = "const-oid" },
+    { crate = "cpufeatures" },
+    { crate = "crypto-common" },
+    { crate = "digest" },
+    { crate = "equivalent" },
+    { crate = "hashbrown" },
+    { crate = "hybrid-array" },
+    { crate = "indexmap" },
+    { crate = "itoa" },
+    { crate = "libc" },
+    { crate = "memchr" },
+    { crate = "miniz_oxide" },
+    { crate = "proc-macro2" },
+    { crate = "quote" },
+    { crate = "serde" },
+    { crate = "serde_core" },
+    { crate = "serde_derive" },
+    { crate = "serde_json" },
+    { crate = "sha2" },
+    { crate = "syn" },
+    { crate = "typenum" },
+    { crate = "unicode-ident" },
+    { crate = "zmij" },
+]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

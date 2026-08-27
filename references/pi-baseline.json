@@ -238,7 +238,8 @@
         "path": "themes",
         "kinds": [],
         "shape": "directory",
-        "source": "https://pi.dev/docs/latest/settings"
+        "source": "https://pi.dev/docs/latest/themes",
+        "note": "`~/.pi/agent/themes/*.json`, a JSON file per theme defining all 51 required colour tokens; `settings.json`'s `theme` names which one is active. Owned so a setup can carry a theme; the key that selects it is a setting, so no component kind routes here"
       }
     ],
     "declined": [
@@ -246,6 +247,11 @@
         "path": "models.json",
         "reason": "Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned.",
         "source": "https://pi.dev/docs/latest/settings"
+      },
+      {
+        "path": "AGENTS.override.md",
+        "reason": "Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away.",
+        "source": "https://pi.dev/docs/latest/sdk"
       }
     ]
   },

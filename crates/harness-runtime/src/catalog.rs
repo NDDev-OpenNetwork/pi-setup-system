@@ -110,6 +110,131 @@ pub fn asymmetric(setups: &[Setup]) -> Vec<String> {
     found
 }
 
+/// The programs that came before this one, by the names their files carry.
+///
+/// A **closed historical set**: the frozen estate is frozen, so this list can
+/// only shrink. That is what makes a denylist honest here — elsewhere in this
+/// repository an allowlist is used precisely because the other set can grow.
+const FROZEN_ESTATE: &[&str] = &[
+    "nddev_claude_cli",
+    "nddev_codex_cli",
+    "nddev_cursor_cli",
+    "nddev_grok_cli",
+    "nddev_opencode_cli",
+    "nddev_pi_cli",
+    "nddev-antigravity-cli-app",
+    "nddev-claude-app",
+    "nddev-codex-app",
+    "nddev-cursor-cli-app",
+    "nddev-grok-build-app",
+    "nddev-opencode-app",
+    "nddev-pi-app",
+    "nddev-harnesses",
+    "rldyour-ai-cli-tools",
+];
+
+/// Every shipped instruction that names something this program is not.
+///
+/// Setups carry documents an agent reads and acts on — a skill, a rule, a
+/// command file. Those documents are content like any other, and nothing was
+/// checking them, so one of them told an agent to run
+/// `software-status --target <dir> --json` and `list --json` for six releases.
+/// Both are refused by the binary; the second says so in those words.
+///
+/// Two things are refused here:
+///
+/// * **A frozen-estate name.** The program that came before this one had
+///   different commands and a different model, and a document naming it is
+///   describing something a reader cannot run.
+/// * **An invocation this binary would not parse.** Any line naming the
+///   provider followed by a verb is checked against [`crate::human::VERBS`],
+///   which is the list `into_command` itself accepts.
+///
+/// What it deliberately does not do is judge English. `install` in a sentence
+/// is a word; `cursor-setup-system install` is an instruction, and only the
+/// second is checked.
+#[must_use]
+pub fn misdirecting(provider_id: &str, setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        for (relative, path) in files_by_path(&setup.payload) {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let where_it_is = format!("{}/{relative}", setup.manifest.id);
+            for name in FROZEN_ESTATE {
+                if text.contains(name) {
+                    found.push(format!(
+                        "{where_it_is} names {name}, which is the program that came before \
+                         this one and answers none of its commands"
+                    ));
+                }
+            }
+            for line in text.lines() {
+                // Only an *invocation*, never prose. The provider must open the
+                // line or follow a backtick or a shell prompt; "checking
+                // cursor-setup-system behaviour" is a sentence, and an earlier
+                // version of this check called it an instruction.
+                let Some(at) = line.find(provider_id) else {
+                    continue;
+                };
+                let before = line[..at].trim_end_matches(' ');
+                let invoked = before.is_empty()
+                    || before.ends_with('`')
+                    || before.ends_with('$')
+                    || before.ends_with('>');
+                if !invoked {
+                    continue;
+                }
+                let rest = &line[at + provider_id.len()..];
+                let Some(verb) = rest.split_whitespace().next() else {
+                    continue;
+                };
+                let verb = verb.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+                if verb.is_empty() || verb.starts_with('-') {
+                    continue;
+                }
+                if !crate::human::VERBS.contains(&verb) && !provider_id.contains(verb) {
+                    found.push(format!(
+                        "{where_it_is} tells a reader to run `{provider_id} {verb}`, \
+                         which this binary refuses"
+                    ));
+                }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every regular file under a payload, with its relative path and full path.
+fn files_by_path(root: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                found.push((
+                    relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    path,
+                ));
+            }
+        }
+    }
+    found
+}
+
 /// Every regular file under a payload, as slash-separated relative paths.
 fn files_under(root: &std::path::Path) -> Vec<String> {
     let mut found = Vec::new();

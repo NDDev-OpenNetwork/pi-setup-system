@@ -19,6 +19,35 @@
 //! calls it from one test. A row exists in exactly one place and disagreeing
 //! with it is red.
 //!
+//! **What this cannot do, stated here because the sentence is easy to
+//! overclaim.** Both sides of this comparison are written in this repository.
+//! It catches a declaration that drifts from its baseline; it cannot catch a
+//! baseline row that is wrong, because the declaration will have been written
+//! from the same misreading. Shared error is exactly what produced every defect
+//! this module was built after -- `~/.claude/.mcp.json` was in a consumer's
+//! table *and* ours, both citing the same page, and the agreement between them
+//! was worth nothing. Requiring a URL on every owned row is the strongest thing
+//! available from inside a test: it makes the claim checkable by a person, not
+//! by a run. Nothing here reads the page.
+//!
+//! Cursor has now produced three of these, and they share a shape worth naming:
+//! *the page that looks authoritative for a thing does not say where the thing
+//! goes.* The MCP page was about scopes, the rules page about rules, and the
+//! plugin reference tells you how to build one and not where it is installed.
+//! A row taken from the obvious page reads perfectly and is wrong. When a row's
+//! source is a page *about* the feature rather than a page naming its path,
+//! that is the row to re-read first.
+//!
+//! **Declaring a path and a place inside it is legal, and there is one reason
+//! to.** A consumer validates a compiler's route against `native_namespaces` by
+//! exact membership, so moving a route deeper -- cursor's `plugins` to the
+//! `plugins/local` the product actually reads -- has no order that works: the
+//! side that moves first refuses every install against the side that has not.
+//! One release naming both opens the window, and either side may then move.
+//! `setup_core::digest::of_owned` reduces the declaration to a cover before
+//! walking it, so the extra name cannot move an installed target's identity;
+//! `naming_a_path_already_covered_cannot_move_the_identity` is what holds that.
+//!
 //! `declined` carries two different reasons and it is worth knowing which you
 //! are reading. Most entries are paths no vendor documents — `~/.cursor/rules`,
 //! `~/.grok/commands`. Some are documented and deliberately not owned:

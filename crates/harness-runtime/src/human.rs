@@ -36,6 +36,32 @@ use crate::wire::{self, Effect, Mutation};
 /// It is applied within the same process, so the window only has to cover that.
 /// A long one would mean a plan could outlive the state it was made against.
 const PLAN_WINDOW_SECONDS: u64 = 600;
+/// Every verb this surface answers.
+///
+/// Named once so nothing has to remember it. `into_command` is the authority
+/// and a test below proves this list is exactly what that match accepts, in
+/// both directions -- a verb here the match refuses, or a verb the match takes
+/// that is missing here, is red.
+///
+/// Read by [`crate::catalog::misdirecting`], because a setup that tells an
+/// agent to run a command this binary refuses is shipping an instruction that
+/// fails. One of them did, for six releases.
+pub const VERBS: &[&str] = &[
+    "adopt",
+    "backups",
+    "diff",
+    "hold",
+    "install",
+    "list",
+    "reinstall",
+    "release",
+    "remove",
+    "restore",
+    "rollback",
+    "select",
+    "software",
+    "status",
+];
 
 /// One parsed human command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2249,5 +2275,41 @@ mod tests {
     fn an_empty_description_wraps_to_nothing() {
         assert!(wrapped("", 40).is_empty());
         assert!(wrapped("   ", 40).is_empty());
+    }
+    /// `VERBS` is exactly what `into_command` accepts, both ways.
+    ///
+    /// A list beside a match is two expressions of one fact, and this project
+    /// has paid for that five times. Here the match is the authority and the
+    /// list is checked against it, so a verb added to one and not the other is
+    /// red rather than merely inconsistent.
+    #[test]
+    fn the_named_verbs_are_the_ones_the_parser_takes() {
+        for verb in VERBS {
+            let refused = Arguments::scan(verb, &[])
+                .unwrap()
+                .into_command(verb)
+                .is_err_and(|error| error.detail().contains("is not a command"));
+            assert!(!refused, "{verb} is named and the parser does not know it");
+        }
+        // The other direction: anything not named must be refused as unknown,
+        // rather than quietly parsed.
+        for absent in [
+            "migrate",
+            "switch",
+            "plan",
+            "update",
+            "install-cli",
+            "software-status",
+        ] {
+            let error = Arguments::scan(absent, &[])
+                .unwrap()
+                .into_command(absent)
+                .unwrap_err();
+            assert!(
+                error.detail().contains("is not a command"),
+                "{absent} is not named and the parser did not refuse it as unknown: {}",
+                error.detail()
+            );
+        }
     }
 }

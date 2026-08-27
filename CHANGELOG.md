@@ -11,6 +11,39 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-08-27
+
+The release that opens a window, and asks the shipped bytes a question
+the source was already being asked.
+
+- **`plugins` and `plugins/local` are both declared, on purpose.** Cursor reads
+  a local plugin from `~/.cursor/plugins/local/<name>/`, which is where these
+  setups write and what `0.0.7` corrected. The consumer validates a route by
+  exact membership in `native_namespaces`, so there is no order in which one
+  side can move alone: whichever moves first refuses every install against the
+  other. One release naming both opens the window, and the older name goes
+  after the route has moved.
+- **A declaration and a cover were sharing one name.** Declaring both was
+  refused by this repository's own invariant -- a namespace inside another
+  would be hashed twice -- which was right about the hash and wrong about the
+  list. `digest::of_owned` now reduces the declaration to a cover before
+  walking it, so identity no longer depends on how a declaration is phrased.
+  Measured: a target installed against a build declaring `plugins` alone reads
+  the same digest, with no drift, under a build declaring both.
+- **A `boundary` job asks the artifact what `clippy.toml` asks the source.** No
+  network symbol is imported, and a build that declares no `launch` imports
+  nothing that could spawn. Both observed failing first: against `curl` the
+  network step prints `socket`; given a reachable `Command`, the binary that
+  declares no launch grew `execvp`, `fork` and `posix_spawnp` at once.
+- **`SUPPORT.md` states the boundary and what it does not buy.** This program
+  imports `syscall` like any other, so no property of the binary proves a
+  socket is unreachable to code determined to open one. The honest claim is
+  narrower: nothing here reaches for the network, nothing can be added without
+  the build refusing, and no local phase can hand the job to a child.
+- **The surfaces guard states its own limit.** Both sides of that comparison
+  are written in this repository, so it catches drift and never shared error --
+  which is what produced every defect it was built after.
+
 ## [0.0.7] - 2026-08-27
 
 The release where the declaration became true, and a round trip
