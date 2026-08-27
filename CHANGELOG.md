@@ -11,6 +11,34 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-08-28
+
+One product could not be installed on one platform, and the check
+that found it had been running for a day.
+
+- **A pax extended header is read rather than refused.** The extractor accepted
+  regular files and directories and refused every other type flag, on the
+  ground that no entry should be able to redirect a later write. True of hard
+  links, symlinks, devices and GNU long link names. Not true of `x` and `g`:
+  they are records of metadata for the entry that follows, and they create
+  nothing. Refusing them made Cursor's macOS package unreadable, so
+  `software_install` could not work there at all.
+
+  What can move a write is a record that *overrides* something the reader acts
+  on, and `path`, `linkpath`, `size` and `GNU.sparse.*` are still refused by
+  the key they carry. Everything else is skipped. Measured against the real
+  package: 120 directories, 406 files, two pax headers holding Apple's
+  code-signing xattrs and no `path` at all -- and it now extracts to 526
+  entries.
+
+  Records are parsed by length, not by line. The two real ones hold DER, which
+  is full of newline bytes; a parser that split on newlines would read a
+  different archive than the one it was handed, and would do it quietly.
+- **`evidence` tells an honest refusal from a failure.** Cursor publishes no
+  Windows build and the provider says `unsupported_platform` by name rather
+  than planning something it could not apply. The job reported that as a red,
+  which would have taught people to ignore its reds.
+
 ## [0.0.8] - 2026-08-27
 
 The release that opens a window, and asks the shipped bytes a question
