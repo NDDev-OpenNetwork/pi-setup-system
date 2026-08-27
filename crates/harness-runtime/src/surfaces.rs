@@ -278,6 +278,35 @@ fn declined_rows_in(
     }
 }
 
+/// The two paths that are this provider's own must be recorded as declined.
+///
+/// They are not projection surfaces and never should be: the control directory
+/// and the state file are bookkeeping, written by every operation and excluded
+/// from target identity so an applied change does not leave the target
+/// different from the identity it just recorded.
+///
+/// Recording them anyway, because the record is where the next reader looks. A
+/// peer reviewing an installed target found `NDDEV-CLAUDE-PROVIDER.json` sitting
+/// in a home and not in `native_namespaces` -- the same shape as a real defect
+/// found the same day -- and had a report half-written before opening the file
+/// and seeing `drift_state` and `backup_ref` inside. The code said it, in a doc
+/// comment and a per-harness test. The `declined` list, which exists so nobody
+/// repeats a search, did not.
+fn control_state_is_recorded(harness: &Harness, rows: &[Value], found: &mut Vec<String>) {
+    for own in [harness.control_directory, harness.state_file] {
+        if !rows
+            .iter()
+            .any(|row| row.get("path").and_then(Value::as_str) == Some(own))
+        {
+            found.push(format!(
+                "{own} is this provider's own control state and {BLOCK}.declined \
+                 does not record it, so a reader has to open the file to learn \
+                 it is not a surface"
+            ));
+        }
+    }
+}
+
 /// Every path a provider evaluates is relative to `--target`, so a record of
 /// one cannot be written relative to anything else.
 ///
@@ -343,6 +372,37 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
         ));
         return found;
     };
+
+    // The variable that points the product at a target, bound the same way the
+    // home itself is.
+    //
+    // It had been a value in code with nothing to check it against, while the
+    // seven baselines recorded it under five different names --
+    // `config_dir_env`, `configuration.environment_override`,
+    // `runtime.grok_home`, `configuration.custom_config_dir_env`, and for two of
+    // them nothing at all. The declaration has one slot, so five distinctions
+    // collapsed into it, and the one that meant something different --
+    // opencode's *custom config dir* -- read as the same thing as the rest. It
+    // survived that reading, measured, but only because the product happens to
+    // read its configuration there; nothing had checked.
+    match block.get("config_home_env").and_then(Value::as_str) {
+        Some(name) if name == harness.config_home_env => {}
+        Some(name) => found.push(format!(
+            "{BLOCK}.config_home_env is {name:?} and the declaration says {:?}",
+            harness.config_home_env
+        )),
+        None => found.push(format!(
+            "{BLOCK} records no config_home_env, so the variable this build sets \
+             on a launched product is a value nothing checks"
+        )),
+    }
+    match block.get("config_home_env_note").and_then(Value::as_str) {
+        Some(note) if !note.is_empty() => {}
+        _ => found.push(format!(
+            "{BLOCK}.config_home_env carries no note saying how it was \
+             established; a variable name is a claim about a product"
+        )),
+    }
 
     match block.get("config_home").and_then(Value::as_str) {
         Some(home) if home == harness.documented_config_home => {}
@@ -420,6 +480,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
         return found;
     };
     declined_rows(harness, declined, &owned, &mut found);
+    control_state_is_recorded(harness, declined, &mut found);
 
     found
 }
@@ -463,8 +524,24 @@ mod tests {
             BLOCK: {
                 "verified_at": "2026-08-27",
                 "config_home": TEST.documented_config_home,
+                "config_home_env": TEST.config_home_env,
+                "config_home_env_note": "measured against the product",
                 "surfaces": surfaces,
-                "declined": [],
+                // The two paths that are the provider's own. Every real
+                // baseline records them, so the fixture that stands for one
+                // must too.
+                "declined": [
+                    {
+                        "path": TEST.state_file,
+                        "reason": "this provider's own state file",
+                        "source": "this provider's own contract",
+                    },
+                    {
+                        "path": TEST.control_directory,
+                        "reason": "this provider's own control directory",
+                        "source": "this provider's own contract",
+                    },
+                ],
             }
         })
     }
