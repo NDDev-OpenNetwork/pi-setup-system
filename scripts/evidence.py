@@ -133,7 +133,28 @@ def fetch(url: str, into: Path, expect_bytes: int, expect_digest: str) -> None:
     redundant: a mismatch at this point says the registry moved, and a mismatch
     inside apply says the same thing while looking like a provider defect.
     """
-    with urllib.request.urlopen(url) as response, into.open("wb") as handle:
+    # A User-Agent that names this job, because the default one is refused.
+    #
+    # `urllib` sends `Python-urllib/3.x`, and `downloads.cursor.com` answers
+    # that with **403 Forbidden** while serving the identical URL to `curl`.
+    # Measured: default agent 403, `curl` 200, `urllib` with a real agent 200.
+    #
+    # This reached CI rather than a local run for a reason worth naming: every
+    # time I fetched a pinned artifact by hand I used `curl`, and the script
+    # uses `urllib`. The tool I measured with and the tool that ships were
+    # different tools, so the thing that ships had never been tried against six
+    # of the seven vendors. Naming the job is also the more polite thing to
+    # send a stranger's CDN.
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "nddev-setup-system-evidence/1 "
+                "(+https://github.com/NDDev-OpenNetwork)"
+            )
+        },
+    )
+    with urllib.request.urlopen(request) as response, into.open("wb") as handle:
         shutil.copyfileobj(response, handle)
     size = into.stat().st_size
     if size != expect_bytes:
