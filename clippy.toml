@@ -1,3 +1,32 @@
 # Brand and product names clippy's doc_markdown lint would otherwise read as
 # code items. Backticking a brand in prose is worse than naming it here.
 doc-valid-idents = ["NDDev", "OpenNetwork", "OpenCode", "GitHub", "macOS", "SetupDefinition", "HarnessBundle", "BackupRef", ".."]
+
+# Two types this program must not reach for, and the two places that may.
+#
+# The consumer's launcher is what actually denies a provider the network, and a
+# process denying itself is a promise rather than a boundary. But the property
+# that launcher exists to enforce is already true of these artifacts -- measured
+# on the released binaries, all seven import zero network symbols and link only
+# libc and libgcc_s -- and nothing would have noticed if it stopped being true.
+#
+# `std::net` is refused outright: no command here opens a socket, and every v3
+# phase declares `network_requirement: none`.
+#
+# `std::process::Command` is refused everywhere except two `#[allow]` sites that
+# name their reason: `harness_runtime::software` starts the product for `launch`,
+# which is `runtime_external` by declaration, and `harness_runtime::probe` drives
+# this binary's own executable from a test. An allowlist of two, both named, is a
+# boundary; an allowlist nobody counted is a habit.
+#
+# Chosen over asserting a child count at run time: counting children portably
+# means /proc on Linux and something else on each of the other two, so that
+# guard would be strongest where the risk is lowest and absent on Windows, where
+# the consumer has no launcher at all. This project has already paid once for a
+# `cfg!`-gated rule provable only on the platform it fired on.
+disallowed-types = [
+    { path = "std::net::TcpStream", reason = "no command here opens a socket" },
+    { path = "std::net::TcpListener", reason = "no command here opens a socket" },
+    { path = "std::net::UdpSocket", reason = "no command here opens a socket" },
+    { path = "std::process::Command", reason = "only `launch` may spawn, and it is declared" },
+]

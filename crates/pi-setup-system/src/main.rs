@@ -298,4 +298,29 @@ mod tests {
         let problems = harness_runtime::catalog::asymmetric(&catalog.list().unwrap());
         assert!(problems.is_empty(), "{}", problems.join("\n  "));
     }
+    /// Nothing this setup ships tells a reader to run something that is not here.
+    ///
+    /// A setup carries documents an agent reads and acts on -- a skill, a rule,
+    /// a command file -- and nothing was checking them. One shipped
+    /// `software-status --target <dir> --json` and `list --json` for six
+    /// releases; the binary refuses both, and says so in those words.
+    ///
+    /// Two refusals: a name belonging to the frozen estate, and any line naming
+    /// this provider followed by a verb `into_command` does not accept. English
+    /// is not judged -- `install` in a sentence is a word, and only
+    /// `<provider> install` is an instruction.
+    #[test]
+    fn nothing_this_harness_ships_names_a_command_it_refuses() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let problems =
+            harness_runtime::catalog::misdirecting(HARNESS.provider_id, &catalog.list().unwrap());
+        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
 }

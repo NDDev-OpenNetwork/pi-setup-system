@@ -37,6 +37,67 @@ All five core operations do work: `backup`, `restore`, `remove`, `install` and
 `replace`, both from the local setup catalog and from an `ai-stp-bundle/1`
 arriving over the wire.
 
+## What `status` reports, and what it does not
+
+`state` answers **who manages this target**, and never *whether a setup is
+installed*. Three values, and the distinction matters most for the fourth
+situation, which is not a fourth value:
+
+| | |
+| --- | --- |
+| `missing` | the directory is empty |
+| `unmanaged` | it holds content, none of it this provider's |
+| `managed` | this provider's state file is present and current |
+
+`missing` used to be looser -- it asked whether this provider owned anything,
+so a directory full of another product's files reported `missing`. A consumer
+reads this to decide what it is looking at, and being told a populated
+directory is empty invites it to treat the place as free. Emptiness is about
+the directory, not about us.
+
+**After a `remove`, `state` stays `managed`, and that is the honest answer.**
+The setup is gone -- no file a product reads survives it -- but the control
+directory and a backup slot remain, and that slot is what makes the removal
+reversible: `restore` brings the setup back. A target reported as `missing`
+while a restore is pending would be a lie in the direction that costs someone
+their data.
+
+Whether a setup is installed is carried by `setup_stable_id`, which is `null`
+exactly when none is. That is the field to test, not this word.
+`target_identity_digest` corroborates it -- after a remove it is the digest of
+an empty tree -- but the field is the direct answer and the digest is not.
+
+## The network, stated exactly
+
+**This artifact does not link the network, and no local phase can spawn
+anything that could.** Two lints hold it rather than a promise: `std::net` is
+refused outright, and `std::process::Command` is refused everywhere but two
+named places -- the `launch` command, which is declared in `provider-info` and
+absent from builds that do not declare it, and a lifecycle probe that drives
+this binary's own executable. Adding a `tar` shell-out to ordinary code fails
+the build with *only `launch` may spawn, and it is declared*. Every crate that
+may be linked is named in `deny.toml`, so a transitive dependency cannot arrive
+unread.
+
+Those are claims about the source, and a lint can be wrong, bypassed, or simply
+disbelieved. So `ci` reads the shipped binary too: a `boundary` job asks the
+import table of the artifact this build produces whether any network symbol is
+present, and whether a build declaring no `launch` imports anything that could
+spawn. You can run it yourself against a downloaded release --
+`nm -D --undefined-only <binary>` on Linux, `nm -u` on macOS -- and it needs no
+part of this repository to be trusted.
+
+**What that does not buy, said plainly because the stronger claim is the
+tempting one.** This is a dynamically linked program: it imports `syscall` from
+libc like any other, so no property of the binary can prove a socket is
+unreachable to code that is determined to open one. What is proven is narrower
+and still worth having: no code path here reaches for the network, none can be
+added without the build refusing, and no local phase can hand the job to a
+child process. If your threat model needs the guarantee rather than the
+absence, run `plan` and `apply` under whatever sandbox you already trust; both
+phases are offline by design, and `apply` verifies the digests it was given
+with the network gone.
+
 ## What this build owns inside a target
 
 Everything else in the target is a sibling overlay and is preserved
@@ -53,7 +114,7 @@ Configuration home as the product documents it: `~/.pi/agent`.
 | `skills` | `skill` | [source](https://pi.dev/docs/latest/skills) |
 | `extensions` | `plugin` | [source](https://pi.dev/docs/latest/extensions) |
 | `prompts` | `command` | [source](https://pi.dev/docs/latest/prompt-templates) |
-| `themes` | -- | [source](https://pi.dev/docs/latest/settings) |
+| `themes` | -- | [source](https://pi.dev/docs/latest/themes) |
 
 A path routing no component kind is owned so a setup can carry it;
 nothing compiles a component to it.
@@ -64,6 +125,8 @@ Everything named here is left exactly as it was found, like any
 other file beside a target.
 
 **`models.json`** -- Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned. ([source](https://pi.dev/docs/latest/settings))
+
+**`AGENTS.override.md`** -- Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away. ([source](https://pi.dev/docs/latest/sdk))
 
 ## Response
 

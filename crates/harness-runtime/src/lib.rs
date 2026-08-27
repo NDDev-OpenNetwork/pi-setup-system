@@ -244,7 +244,16 @@ fn print_help(harness: &Harness) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // A test may spawn: this one drives a real executable, which is the only
+    // way to prove what the shipped binary does rather than what this source
+    // believes. The lint's subject is the program, not its tests.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::disallowed_types,
+        reason = "tests drive real executables to check the shipped behaviour"
+    )]
 
     /// The entry point uses the toolchain this tree pins, even where a
     /// different one comes first on `PATH`.

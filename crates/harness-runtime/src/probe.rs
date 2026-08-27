@@ -31,6 +31,16 @@
 //! environment that will not cooperate is reported as a disagreement like any
 //! other rather than unwound through a `panic!` the workspace lints forbid.
 
+// The second of the two places that may spawn. This module drives *this
+// program's own executable* from a test; no argv routes to it, and it goes
+// behind a Cargo feature in a later release so a released artifact does not
+// carry test scaffolding at all. That gating is for having no user, not for the
+// network claim: `launch` puts `execvp` in the import table either way.
+#![allow(
+    clippy::disallowed_types,
+    reason = "the probe runs this binary; it is the second named spawn site"
+)]
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

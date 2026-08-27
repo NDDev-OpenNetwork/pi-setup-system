@@ -404,6 +404,14 @@ pub(crate) fn launch(
         ));
     }
 
+    // One of the two places in this program that may spawn, and the reason it
+    // may: `launch` starts the product, which the contract declares
+    // `runtime_external` rather than a local phase. The lint refuses the type
+    // everywhere else so a `tar` shell-out cannot arrive quietly in an unpack.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "launch starts the product, and is declared as doing so"
+    )]
     let mut command = std::process::Command::new(&executable);
     command.args(arguments);
     // The target is what this provider configured, and the product's own
@@ -430,6 +438,10 @@ fn is_executable(_found: &std::fs::Metadata) -> bool {
 
 /// Hand this process to the product, and only return if that failed.
 #[cfg(unix)]
+#[allow(
+    clippy::disallowed_types,
+    reason = "the command `launch` built, handed to exec"
+)]
 fn replace_this_process(mut command: std::process::Command, executable: &Path) -> Error {
     use std::os::unix::process::CommandExt;
     // `exec` returns only on failure. The product inherits this process, so its

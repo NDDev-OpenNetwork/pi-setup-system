@@ -69,3 +69,142 @@ jobs:
       issues: write
       pull-requests: write
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@66fc19d6ee02c703bc219aa4f31d5f98a3def54b
+
+
+  boundary:
+    name: boundary (${{ matrix.os }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is absent and that is a statement rather than an omission.
+        # The equivalent question there is whether the import table names
+        # `WS2_32.dll` and `CreateProcessW`, and reading a PE import table needs
+        # `dumpbin` from a Visual Studio environment that is not on `PATH` by
+        # default. A step that sometimes finds its tool is worse than a gap
+        # nobody was told about, so the gap is written down here instead.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
+        with:
+          toolchain: '1.98.0'
+          # The same reason the release job gives. This job's whole subject is
+          # the bytes that come out of the build, so restoring someone else's
+          # `target/` and then reading its import table would answer a question
+          # about a cache rather than about this commit.
+          cache: false
+
+      - run: cargo build --locked --release
+
+      - name: The artifact does not link the network
+        run: |
+          set -euo pipefail
+          bin=target/release/pi-setup-system
+          case "$RUNNER_OS" in
+            Linux) undefined() { nm -D --undefined-only "$1" | awk '{print $NF}' | sed 's/@.*//' | sort -u; } ;;
+            macOS) undefined() { nm -u "$1" | sed 's/^_//' | sort -u; } ;;
+            *) echo "no reader for $RUNNER_OS" >&2; exit 1 ;;
+          esac
+
+          # Whole names, never substrings. `sendfile64` is a file copy sitting
+          # beside `copy_file_range` in any libc, and a substring match calls it
+          # networking -- which is exactly how an earlier version of this
+          # measurement reported a socket in a program that has never opened
+          # one.
+          # Before believing an empty answer, prove the instrument works. A
+          # missing binary, or an `nm` that reports "no symbols", yields an
+          # empty list -- which every test below reads as "imports nothing
+          # bad" and passes. A check that goes green when its own tool is
+          # broken is worse than no check, and this one did exactly that in
+          # draft: `nm -u` against an ELF file (it needs `-D`) printed nothing
+          # and the step passed a program that opens sockets for a living.
+          test -f "$bin" || { echo "no binary at $bin" >&2; exit 1; }
+          count=$(undefined "$bin" | grep -c . || true)
+          if [ "$count" -lt 10 ]; then
+            echo "read only $count undefined symbols from $bin; the reader is not working" >&2
+            exit 1
+          fi
+          echo "read $count undefined symbols"
+
+          net=$(undefined "$bin" | grep -xE 'socket|socketpair|connect|bind|listen|accept|accept4|sendto|sendmsg|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyname2|res_query|res_search' || true)
+          echo "network imports: ${net:-(none)}"
+
+          # Measured on Linux 2026-08-27: none, on all seven. Enforced there.
+          #
+          # macOS reports and does not fail, for the same reason the next step
+          # gives: what this proves is that *our* code never reaches for a
+          # socket, and what it reads is what the linker left after resolving
+          # a different platform's std. Those are not the same claim, and only
+          # a run here can say whether they coincide on this one.
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            echo "observed, not enforced, on $RUNNER_OS"
+            exit 0
+          fi
+          if [ -n "$net" ]; then
+            echo "this build imports network symbols:" >&2
+            echo "$net" >&2
+            exit 1
+          fi
+          echo "no network symbol is imported"
+
+      - name: The import table agrees with the declaration
+        run: |
+          set -euo pipefail
+          bin=target/release/pi-setup-system
+          case "$RUNNER_OS" in
+            Linux) undefined() { nm -D --undefined-only "$1" | awk '{print $NF}' | sed 's/@.*//' | sort -u; } ;;
+            macOS) undefined() { nm -u "$1" | sed 's/^_//' | sort -u; } ;;
+          esac
+          test -f "$bin" || { echo "no binary at $bin" >&2; exit 1; }
+          count=$(undefined "$bin" | grep -c . || true)
+          if [ "$count" -lt 10 ]; then
+            echo "read only $count undefined symbols from $bin; the reader is not working" >&2
+            exit 1
+          fi
+
+          spawn=$(undefined "$bin" | grep -xE 'execve|execv|execvp|execvpe|fork|vfork|posix_spawn|posix_spawnp' || true)
+          declared=$("$bin" provider-info | python3 -c 'import json,sys; print("yes" if "launch" in json.load(sys.stdin)["supported_commands"] else "no")')
+          echo "launch declared: $declared"
+          echo "spawn imports: ${spawn:-(none)}"
+
+          # `clippy.toml` refuses `std::process::Command` outside the two places
+          # allowed to hold it. This asks the shipped bytes the same question,
+          # which is the stronger form of it: it survives the lint being wrong,
+          # bypassed, or read by someone with no reason to trust it.
+          #
+          # Measured on Linux 2026-08-27 across all seven binaries: the six that
+          # declare `launch` import exactly `execvp`, and the one that declares
+          # none imports no spawn symbol at all -- so the linker does drop what
+          # nothing calls, and the absence is real rather than incidental.
+          #
+          # Enforced where that was measured. On macOS it reports and does not
+          # fail, until a run says what that platform's std leaves in the table.
+          # Asserting a property of a system nobody has measured is the habit
+          # this repository keeps taking out of its own documents -- and the
+          # first draft of this job enforced the network step on macOS while
+          # writing that sentence one step below it.
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            echo "observed, not enforced, on $RUNNER_OS"
+            exit 0
+          fi
+          if [ "$declared" = "no" ] && [ -n "$spawn" ]; then
+            echo "no launch is declared and yet this build can spawn" >&2
+            exit 1
+          fi
+          if [ "$declared" = "yes" ] && [ -z "$spawn" ]; then
+            echo "launch is declared and this build imports nothing that could" >&2
+            exit 1
+          fi
+          echo "the import table agrees with the declaration"
