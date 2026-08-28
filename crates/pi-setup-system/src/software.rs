@@ -15,10 +15,64 @@
 //! field by field, so an edit here fails rather than silently installing bytes
 //! nobody measured.
 
-use harness_runtime::{Artifact, Delivery, Shape, Software};
+use harness_runtime::{Artifact, Delivery, Previous, Shape, Software};
 
 /// The artifacts pi is published as.
 pub(crate) const ARTIFACTS: &[Artifact] = &[
+    Artifact {
+        platform: "linux/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "linux/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "macos/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "macos/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "windows/arm64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+    Artifact {
+        platform: "windows/x86_64",
+        url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
+        bytes: 6_882_502,
+        sha256: "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
+        shape: Shape::GzipTar,
+        member: "package/dist/bundle/cli.js",
+    },
+];
+
+/// The artifacts 0.84.3 was published as, kept so
+/// `software_update` has a version to move from and `rollback` a tree to
+/// return to. Measured from bytes when it was the current pin.
+pub(crate) const PREVIOUS_ARTIFACTS: &[Artifact] = &[
     Artifact {
         platform: "linux/arm64",
         url: "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
@@ -71,13 +125,14 @@ pub(crate) const ARTIFACTS: &[Artifact] = &[
 
 /// Pi Coding Agent's program, and where its bytes come from.
 pub(crate) const SOFTWARE: Software = Software {
-    version: "0.84.3",
+    version: "0.84.4",
     command: "pi",
     delivery: Delivery::Artifacts(ARTIFACTS),
     unsupported: &[],
-    // This harness has not been bumped since it was pinned, so there is
-    // no earlier release to move between. Absent rather than invented.
-    previous: None,
+    previous: Some(Previous {
+        version: "0.84.3",
+        artifacts: PREVIOUS_ARTIFACTS,
+    }),
 };
 
 #[cfg(test)]

@@ -175,29 +175,35 @@ nothing compiles a component to it.
 Everything named here is left exactly as it was found, like any
 other file beside a target.
 
-**`models.json`** -- Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned. ([source](https://pi.dev/docs/latest/settings))
+**`$HOME/.agents/skills`** -- Pi is a second product that reads the user-level convention root, and this is measured from the product rather than from a page. In the pinned 0.84.3 bundle, package/dist/core/package-manager.js:1976 builds `userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills")` and line 2017 loads from it: `addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), ...)`. Line 2012 names the root itself as `userAgentsBaseDir = dirname(userAgentsSkillsDir)`. A neighbouring use in trust-manager.js:160 *excludes* this directory while walking up for a project-scoped one, which is what a first reading of the variable name would have mistaken for the read -- so the line that matters is 2017, not 1976.
+
+Not declared as a user_root scoped profile, though Codex declares exactly that shape (codex/native-files/user-root/1, namespace `skills`, kind `skill`) for the same directory. Two providers owning one path is not two owners: `remove_managed` walks native_namespaces and calls remove_dir_all on each, so a namespace goes whole, and either provider's remove under this scope would take the other's skills. Recoverable -- the capture runs first and restore returns them byte-exact -- but a shared root wants one answer about who owns it, and that answer is the consumer's and the owner's rather than this provider's to assume. Raised. ([source](measured from the pinned 0.84.3 bundle (sha256:d07dc417...), package/dist/core/package-manager.js:1976,2012,2017))
+
+**`.pi-setup-system`** -- This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is. ([source](this provider's own contract; no vendor page is involved))
 
 **`AGENTS.override.md`** -- Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away. ([source](https://pi.dev/docs/latest/sdk))
 
 **`NDDEV-PI-PROVIDER.json`** -- This provider's own state file: which setup is applied, the identity it recorded, and which slot reverses the last operation. Written by every operation and excluded from target identity, because counting it would leave a target different from the identity the operation just wrote. Not a projection surface and never ownable as one. ([source](this provider's own contract; no vendor page is involved))
 
-**`.pi-setup-system`** -- This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is. ([source](this provider's own contract; no vendor page is involved))
-
-**`$HOME/.agents/skills`** -- Pi is a second product that reads the user-level convention root, and this is measured from the product rather than from a page. In the pinned 0.84.3 bundle, package/dist/core/package-manager.js:1976 builds `userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills")` and line 2017 loads from it: `addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), ...)`. Line 2012 names the root itself as `userAgentsBaseDir = dirname(userAgentsSkillsDir)`. A neighbouring use in trust-manager.js:160 *excludes* this directory while walking up for a project-scoped one, which is what a first reading of the variable name would have mistaken for the read -- so the line that matters is 2017, not 1976.
-
-Not declared as a user_root scoped profile, though Codex declares exactly that shape (codex/native-files/user-root/1, namespace `skills`, kind `skill`) for the same directory. Two providers owning one path is not two owners: `remove_managed` walks native_namespaces and calls remove_dir_all on each, so a namespace goes whole, and either provider's remove under this scope would take the other's skills. Recoverable -- the capture runs first and restore returns them byte-exact -- but a shared root wants one answer about who owns it, and that answer is the consumer's and the owner's rather than this provider's to assume. Raised. ([source](measured from the pinned 0.84.3 bundle (sha256:d07dc417...), package/dist/core/package-manager.js:1976,2012,2017))
-
 **`auth.json`** -- Authentication credentials. Pi joins it against its agent directory -- `agentDir, "auth.json"` in the pinned 0.84.3 bundle, beside `keybindings.json`, `models.json` and the owned `settings.json`. Never owned and never captured, for the reason the antigravity list gives: a backup of someone else's credentials is a leak with a schedule. Recorded here because the declaration's `never_touch` is checked against this block. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
-
-**`keybindings.json`** -- A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
-
-**`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
 
 **`git`** -- Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *"When reconciliation changes the checkout, pi resets and cleans the clone"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
 
-**`npm`** -- Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
+**`keybindings.json`** -- A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
+
+**`managed-config`** -- Not a path in the target, and recorded because **there is no such path** -- an absence somebody has to measure once so the next reader does not spend the search again. Four of the seven harnesses here carry a system-wide managed policy that overrides everything a user writes; this product carries none.
+
+Measured 2026-08-29 against the pinned 0.84.4 package, whose bytes match this baseline's own sha256. Searched for the three shapes the other four use -- an `/etc/<product>` literal, a `%ProgramData%\\<product>` literal, and a `/Library/Application Support/<product>` literal -- across the whole of `dist/`. Zero hits of any kind. The product's own shipped `docs/settings.md` agrees by omission: it documents exactly two locations, `~/.pi/agent/settings.json` global and `.pi/settings.json` per project, with project overriding global and nothing above either.
+
+**What that means for the `full-auto` posture**: nothing sits above it. On the four harnesses with a managed layer, a permissive posture can install, verify and restore cleanly while an administrator's policy quietly overrides it. Here the keys this provider writes are the last word, which is a stronger statement than it looks and is the reason the absence is worth recording rather than leaving as a gap in the table.
+
+Absence of a literal is not proof a path cannot exist -- a future release may add one -- so this row says what was searched rather than that none will ever exist. ([source](measured in the pinned 0.84.4 package; docs/settings.md shipped inside it))
 
 **`models-store.json`** -- A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
+
+**`models.json`** -- Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned. ([source](https://pi.dev/docs/latest/settings))
+
+**`npm`** -- Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
 
 **`pi-debug.log`** -- Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
 
@@ -206,6 +212,8 @@ Not declared as a user_root scoped profile, though Codex declares exactly that s
 Never owned. It is a security decision a person made, not configuration a setup can carry: installing one would grant execution to folders nobody approved, and a restore returning an older copy would silently re-grant a trust that had been withdrawn. Recorded here because it sits inside the home this provider configures and every other file there is accounted for.
 
 **This product has no sandbox of its own**, which is what makes the row matter. Its documentation says so plainly -- *"Pi does not include a built-in sandbox. Built-in tools can read files, write files, edit files, and run shell commands with the permissions of the pi process"* -- and points at containers, VMs and micro-VMs instead. So trust is the only gate between a project folder and code running as the person who started the product, and it is a gate this provider must not touch. ([source](the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; https://pi.dev/docs/latest/security))
+
+**`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
 
 ## Response
 

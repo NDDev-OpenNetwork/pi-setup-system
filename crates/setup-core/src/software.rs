@@ -39,6 +39,15 @@ pub enum Shape {
     /// ships `rg`, `zsh` and `bwrap` beside its binary, and cursor's executable
     /// is a shell launcher that runs a bundled `node`.
     GzipTar,
+    /// A ZIP. The executable is one member inside it.
+    ///
+    /// One vendor ships this on Windows and a gzip-tar everywhere else, which
+    /// is the reason the shape sits on an [`Artifact`] rather than on a
+    /// product: the same release, the same version, two container formats and
+    /// two different members. Reading it off the product would have been right
+    /// for six of the seven and silently wrong for the seventh on one platform
+    /// of three -- the shape of defect this estate has now shipped twice.
+    Zip,
 }
 
 /// One platform's artifact, exactly as a plan will state it.
@@ -492,8 +501,12 @@ pub fn install(
             archive::place_executable(source, &placed)?;
             (placed, 1)
         }
-        Shape::GzipTar => {
-            let entries = archive::extract_gzip_tar(source, &version_root, artifact.limits())?;
+        Shape::GzipTar | Shape::Zip => {
+            let entries = if artifact.shape == Shape::Zip {
+                archive::extract_zip(source, &version_root, artifact.limits())?
+            } else {
+                archive::extract_gzip_tar(source, &version_root, artifact.limits())?
+            };
             let found = entries
                 .iter()
                 .any(|entry| entry.path == artifact.member && entry.kind == archive::Kind::File);

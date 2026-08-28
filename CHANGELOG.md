@@ -11,6 +11,75 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-08-29
+
+One vendor shipped Windows support and this estate had not noticed,
+because the two places that would have said so both said the opposite and
+neither was read by anything.
+
+Its own installer fetches a Windows package at the version already pinned here.
+Both architectures were fetched, hashed and extracted end to end -- 400 and 430
+entries, 211 MB each, every entry's checksum verified against its own header.
+The product now installs on all six hosts it publishes rather than four.
+
+**The container is a property of an artifact now, not of a product.** That
+vendor ships a ZIP on Windows and a gzip-tar on its five other hosts, in the
+same release at the same version. A shape read off the product would have been
+right for six harnesses and silently wrong for the seventh on one platform of
+three -- which is the shape of both Windows defects this project has already
+shipped, and the third time the same sentence has been the fix: the platform is
+a parameter, not a compile-time constant.
+
+**The launcher inside is not the one the vendor's installer implies.** That
+script copies three names if each exists, and the first of them is not in the
+archive at all. What actually runs is the batch file, which hands off to a
+PowerShell script, which starts the runtime bundled beside it. The member
+search picks it deliberately; the rule the tar search uses -- take the largest
+match -- would have chosen the one launcher only PowerShell can start.
+
+**A reader written to what was measured rather than to the format.** The
+archive was examined before a line of it existed, and every refusal in it
+refuses something that archive does not contain: the 64-bit extension,
+encryption, deferred sizes, and any compression beyond the two it uses. Each is
+refused by name, so the day a vendor starts using one the message says which.
+Six tests, each observed failing under a mutation of the rule it describes and
+no other.
+
+**Two records were calling Windows unsupported while carrying a Windows
+artifact.** Both were inherited from a retired line of repositories -- one names
+it in its own prose -- and both had become false. The second was false about a
+second product too, whose own package declares Windows among its systems and
+publishes a binary for the architecture a third-party guide insists does not
+exist. They stayed false because nothing read them. A check now compares every
+such block against the artifact table beside it, and the rule is one sentence:
+a record may not call an operating system unsupported while carrying an
+artifact for it.
+
+**That check's first version was wrong and the first run caught it.** It split
+each entry at a hyphen and compared the head, so an entry naming a C library
+read as naming an operating system, and two records were reported as
+contradicting an artifact they agree with. The comparison is exact now, and the
+rule says out loud that a C library, a distribution or an architecture is not a
+claim about an operating system.
+
+**Two products have no administrator policy layer, and finding that out took
+looking.** Four of the seven carry one that overrides everything a user writes.
+The record said nothing about the other three, which reads as a gap rather than
+as a fact. Both were searched for the three shapes the other four use, in their
+own pinned bytes, and neither has one. The second search is the one worth
+keeping: that product does carry system-path literals, every one of them from
+its runtime and its embedded browser rather than from its own configuration,
+and a search that counted them would have invented a policy layer. So both
+entries record what was searched rather than only what was concluded.
+
+What that means is stronger than it sounds. On the four with such a layer, a
+permissive posture can install, verify and restore cleanly while an
+administrator's policy silently overrides it. On these two, the keys written
+here are the last word.
+
+Also advances one product's pinned version, with the outgoing one falling into
+the second slot so a real version transition can be crossed.
+
 ## [0.0.22] - 2026-08-29
 
 A posture that restates a product's own default grants nothing, and
