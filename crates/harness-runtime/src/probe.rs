@@ -377,6 +377,25 @@ fn through_remove(exe: &Path, target: &Path, own: &[String], first: &str, found:
     if !removed.ok {
         found.push(format!("remove failed:\n{}", removed.out));
     }
+    // **The sentence a person acts on, asserted like any other output.**
+    //
+    // `remove` withdraws each declared namespace whole -- `remove_dir_all` per
+    // entry -- so where a declaration keeps a transition window open it takes
+    // more than this provider wrote. Cursor owns `plugins` and `plugins/local`;
+    // the bytes are under the second and a person's marketplace plugin lives in
+    // the first. Nothing is lost, because the capture runs first over exactly
+    // these namespaces, but that is only a comfort to someone who was told.
+    //
+    // Checked here rather than in a unit test because the words only exist on
+    // the human surface, and a `println!` is not reachable from one.
+    for wanted in ["taken whole", "is in the capture below", "restore it with"] {
+        if !removed.out.contains(wanted) {
+            found.push(format!(
+                "remove no longer tells a person {wanted:?}; it said:\n{}",
+                removed.out
+            ));
+        }
+    }
     let left = names(target, own);
     if left != vec![OVERLAY.to_owned()] {
         found.push(format!("remove left {left:?} instead of the overlay alone"));
