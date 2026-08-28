@@ -324,17 +324,27 @@ impl ProjectionKind {
 pub enum TargetScope {
     /// A workspace rather than the product's configuration home.
     Project,
+    /// A root that belongs to a convention rather than to a product.
+    ///
+    /// `~/.agents` is the one this exists for: codex reads user-level skills
+    /// from `$HOME/.agents/skills`, which is a sibling of every configuration
+    /// home rather than a child of one, so no provider targeting a product's
+    /// home can reach it. A profile in this scope is relative to that root --
+    /// a skill is `skills/<name>`, not `.agents/skills/<name>`, and getting
+    /// that wrong is the same sentence this estate has now met eight times.
+    UserRoot,
 }
 
 impl TargetScope {
     /// Every scope a profile may name.
-    pub const ALL: &'static [Self] = &[Self::Project];
+    pub const ALL: &'static [Self] = &[Self::Project, Self::UserRoot];
 
     /// The wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Project => "project",
+            Self::UserRoot => "user_root",
         }
     }
 
