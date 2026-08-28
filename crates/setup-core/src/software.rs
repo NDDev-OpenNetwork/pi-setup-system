@@ -77,6 +77,31 @@ pub enum Delivery {
     },
 }
 
+/// The version this build pinned before the current one.
+///
+/// **Not a second independent choice.** A bump assigns `previous = current` and
+/// then sets `current`, so one value still moves per bump and the old one falls
+/// into this slot instead of being discarded. Two clocks would be two things to
+/// keep fresh; this is one.
+///
+/// It exists because two operations could be declared and not run. An update
+/// needs a version to move *from* and a rollback a tree to return *to*, and a
+/// build pinning one version has neither — which is why
+/// `docs/SOFTWARE-LIFECYCLE.md` carried two `no` rows against
+/// `software_update` and `rollback` for as long as it did.
+///
+/// Two *consecutive real releases* differ in whatever the vendor actually
+/// changed, so the transition exercised is one a person will really perform. A
+/// fabricated pair would prove the plumbing against a case nobody runs, which
+/// is the same kind of evidence as a test that has never been red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Previous {
+    /// The version, exactly as the vendor published it.
+    pub version: &'static str,
+    /// Its artifacts, measured from bytes the same way the current ones were.
+    pub artifacts: &'static [Artifact],
+}
+
 /// A product's software lifecycle, as the runtime needs to know it.
 #[derive(Debug, Clone, Copy)]
 pub struct Software {
@@ -91,6 +116,12 @@ pub struct Software {
     /// Said out loud rather than left as an absence: cursor ships no Windows
     /// build, and a caller deserves that answer instead of "not found".
     pub unsupported: &'static [&'static str],
+    /// The version before this one, when this build has had a bump.
+    ///
+    /// `None` until a harness bumps once. Absent is the honest reading of a
+    /// build that has only ever pinned one version — there is nothing to move
+    /// between and the operations say so, rather than pretending.
+    pub previous: Option<Previous>,
 }
 
 /// What is already under a program directory.
@@ -225,6 +256,66 @@ pub struct Installed {
 }
 
 impl Software {
+    /// Every version this build can name, current first.
+    ///
+    /// One element until the harness has been bumped once, two after. Used to
+    /// say in a refusal what *is* available rather than only what is not.
+    #[must_use]
+    pub fn versions(&self) -> Vec<&'static str> {
+        let mut named = vec![self.version];
+        if let Some(earlier) = self.previous {
+            named.push(earlier.version);
+        }
+        named
+    }
+
+    /// This build, as it describes one of the versions it names.
+    ///
+    /// `None` for the argument means the pinned version, which is what an
+    /// omitted `--software-version` means on the wire. A named version is
+    /// either the pinned one or the one pinned before it; anything else
+    /// returns `None` here, and the caller turns that into a refusal in its own
+    /// error vocabulary.
+    ///
+    /// Returning a whole [`Software`] rather than a version string is what
+    /// keeps this to one resolution point: `artifact_for`, `member_hint`,
+    /// `install` and `remove` all read the value they already read, and none of
+    /// them learns that a second pin exists.
+    #[must_use]
+    pub fn at(&self, asked: Option<&str>) -> Option<Self> {
+        match asked {
+            None => Some(*self),
+            Some(wanted) if wanted == self.version => Some(*self),
+            Some(wanted) => self
+                .previous
+                .filter(|earlier| earlier.version == wanted)
+                .map(|earlier| Self {
+                    version: earlier.version,
+                    delivery: Delivery::Artifacts(earlier.artifacts),
+                    ..*self
+                }),
+        }
+    }
+
+    /// This build, as it describes the release those exact bytes belong to.
+    ///
+    /// `apply` is handed a file, not a version. Reading which release it is
+    /// from the digest makes the version an **observation** rather than a claim
+    /// that travelled beside the bytes: a caller cannot install the previous
+    /// tree under the current version's name by relabelling a flag, because
+    /// nothing here reads a label.
+    #[must_use]
+    pub fn for_bytes(&self, os: &str, arch: &str, digest: &str) -> Option<Self> {
+        self.versions()
+            .into_iter()
+            .filter_map(|version| self.at(Some(version)))
+            .find(|candidate| {
+                candidate
+                    .artifact_for(os, arch)
+                    .is_ok_and(|artifact| artifact.sha256 == digest)
+            })
+    }
+
     /// Where this build's own artifacts put the executable inside their tree.
     ///
     /// A *hint*, and named one deliberately: it is right for a version this
@@ -690,7 +781,110 @@ mod tests {
             command: "codex",
             delivery: Delivery::Artifacts(ARTIFACTS),
             unsupported: &["windows/x86_64"],
+            previous: None,
         }
+    }
+
+    /// The release the fixture can move away from, with bytes of its own.
+    ///
+    /// A different digest from [`ARTIFACTS`] deliberately: resolution by bytes
+    /// is only tested by a pair that can actually be told apart.
+    const EARLIER_ARTIFACTS: &[Artifact] = &[
+        Artifact {
+            platform: "linux/x86_64",
+            url: "https://example.invalid/linux-x86_64-1.2.2.tgz",
+            bytes: 0,
+            sha256: "sha256:earlier",
+            shape: Shape::GzipTar,
+            member: CODEX_MEMBER,
+        },
+        Artifact {
+            platform: "linux/arm64",
+            url: "https://example.invalid/linux-arm64-1.2.2.tgz",
+            bytes: 0,
+            sha256: "sha256:earlier",
+            shape: Shape::GzipTar,
+            member: CODEX_MEMBER,
+        },
+    ];
+
+    fn bumped() -> Software {
+        Software {
+            previous: Some(Previous {
+                version: "1.2.2",
+                artifacts: EARLIER_ARTIFACTS,
+            }),
+            ..software()
+        }
+    }
+
+    /// A build that has never been bumped names exactly one version.
+    ///
+    /// The absence is the point: `software_update` has nothing to move from
+    /// and `rollback` nothing to return to, and both say so rather than
+    /// pretending a transition exists.
+    #[test]
+    fn a_build_with_no_second_pin_names_one_version_and_refuses_the_rest() {
+        let only = software();
+        assert_eq!(only.versions(), vec!["1.2.3"]);
+        assert!(only.at(None).is_some());
+        assert!(only.at(Some("1.2.3")).is_some());
+        assert!(only.at(Some("1.2.2")).is_none());
+    }
+
+    /// Asking for the earlier version gets the earlier version's *artifacts*.
+    ///
+    /// Not just its number. The whole failure this guards against is a build
+    /// that answers "1.2.2" and then downloads 1.2.3's bytes, which would be a
+    /// plan that names one thing and installs another.
+    #[test]
+    fn naming_the_earlier_version_selects_the_earlier_bytes() {
+        let both = bumped();
+        assert_eq!(both.versions(), vec!["1.2.3", "1.2.2"]);
+
+        let earlier = both.at(Some("1.2.2")).unwrap();
+        assert_eq!(earlier.version, "1.2.2");
+        assert_eq!(
+            earlier.artifact_for("linux", "x86_64").unwrap().url,
+            "https://example.invalid/linux-x86_64-1.2.2.tgz"
+        );
+
+        // And the current one is unmoved by the second pin existing.
+        let current = both.at(None).unwrap();
+        assert_eq!(current.version, "1.2.3");
+        assert_eq!(
+            current.artifact_for("linux", "x86_64").unwrap().url,
+            "https://example.invalid/linux-x86_64.tgz"
+        );
+    }
+
+    /// Which release a file belongs to is read from the file.
+    ///
+    /// `apply` is handed bytes, not a version. Resolving by digest is what
+    /// stops a caller installing the earlier tree under the current version's
+    /// name by relabelling a flag -- nothing here reads a label.
+    #[test]
+    fn the_release_a_file_belongs_to_is_read_from_its_digest() {
+        let both = bumped();
+        assert_eq!(
+            both.for_bytes("linux", "x86_64", "sha256:0")
+                .map(|found| found.version),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            both.for_bytes("linux", "x86_64", "sha256:earlier")
+                .map(|found| found.version),
+            Some("1.2.2")
+        );
+        // Bytes belonging to neither release resolve to neither, rather than to
+        // whichever was checked first.
+        assert!(
+            both.for_bytes("linux", "x86_64", "sha256:someone-elses")
+                .is_none()
+        );
+        // A platform this build publishes nothing for cannot resolve either,
+        // however right the digest is.
+        assert!(both.for_bytes("windows", "x86_64", "sha256:0").is_none());
     }
 
     /// The bytes to go back to are already on disk: installing a new version
@@ -786,6 +980,7 @@ mod tests {
             command: "jsprog",
             delivery: Delivery::Artifacts(&[]),
             unsupported: &[],
+            previous: None,
         };
         let root = at.join("prefix");
         let installed = install(&software, &artifact, &at.join("artifact.tgz"), &root).unwrap();
@@ -957,6 +1152,7 @@ mod tests {
                 reason: "its dependency closure is resolved at install time",
             },
             unsupported: &[],
+            previous: None,
         };
         let error = pi.artifact_for("linux", "x86_64").unwrap_err();
         assert_eq!(error.reason(), ReasonCode::UnsupportedOperation);

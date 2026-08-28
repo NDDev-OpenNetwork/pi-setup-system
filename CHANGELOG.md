@@ -11,6 +11,64 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-28
+
+Two operations that were declared and had never run, and two kinds a
+run corrected in opposite directions.
+
+- **A second software pin, so `software_update` and `rollback` can be
+  exercised.** A build pinning one version has nothing for an update to move
+  *from* and nothing for a rollback to return *to*, and this repository recorded
+  that as a measured absence rather than testing them against a fixture.
+
+  The second pin is not a second choice: a bump assigns `previous = current` and
+  then sets `current`, so one value still moves per bump and the pair is always
+  two consecutive real releases -- differing in whatever the vendor actually
+  changed, which is the transition a person really performs.
+
+  Run end to end against opencode's own bytes: `1.18.24` installed, updated to
+  `1.18.25`, rolled back, and forward again, both trees kept throughout. The
+  evidence job crosses the pair on every run on all three operating systems, and
+  prints a reason and skips for a harness not yet bumped.
+
+  `apply` resolves which release the bytes are from **the digest of the file it
+  was handed**, not from a flag, so a relabelled argument cannot install one
+  version under another version's name.
+
+- **`written_paths` in provider state, and a shared root's removal scoped to
+  it.** `native_ownership` records namespaces -- what a backup captures and what
+  a remove takes -- and under a root several products read, those namespaces are
+  several products' worth. Measured on a real install of each: `grok-build` owns
+  twelve namespaces and wrote two files; `antigravity` owns nine and wrote one.
+
+  So `remove` under `target_scope user_root` now takes the files this provider
+  recorded writing and leaves everything else, including a neighbour's file
+  inside an owned namespace. Directories are left standing. The refusal stays
+  for a state file that is absent or at an older schema -- *this build does not
+  know what it wrote* -- because widening to the namespace there is exactly the
+  removal the branch prevents. The state schema moves to 4 with the field, so a
+  record from before it cannot be read as one that wrote nothing.
+
+- **grok's `command` kind withdrawn, one week after it was declared.** A file at
+  `~/.grok/commands/<name>.md` is loaded and `grok inspect` lists it under
+  **Skills**; a file under a directory nothing routes to is not listed, and
+  removing this one removes the entry. The product's own reference puts
+  `skills/` and `commands/` in one row, *"Personal skills for all projects"*.
+  The namespace stays owned because it is read; what comes out is the promise
+  that a component routed there stays a command.
+
+- **cursor's `skill` kind declared.** It had been declined on a vendor page
+  about the plugin-manifest key that does not mention the directory. The
+  product's bundle carries a skill-root table joining `.cursor/skills` to the
+  home directory at user scope, and its own ignore file calls it *"User's
+  personal skills"*. `skills-cursor` and `cloud-skills` are recorded as declined
+  instead -- the first is the product's own built-in set, the second is filled
+  from the account.
+
+Both corrections have one shape: **a declaration can refute a route and cannot
+confirm one.** Reading found the directories; only running said what they were
+read *as*.
+
 ## [0.0.11] - 2026-08-28
 
 The release where seven products were read rather than their pages,

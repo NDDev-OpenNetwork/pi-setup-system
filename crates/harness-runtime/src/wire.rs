@@ -684,6 +684,13 @@ pub(crate) struct Applied {
     /// id and a description and no version, and inventing one there would be
     /// worse than the null.
     pub setup_version: Option<String>,
+    /// The files this operation put on the target.
+    ///
+    /// Lives here rather than beside the effect because it is the same kind of
+    /// fact as the rest of this struct: not what was *planned*, but what the
+    /// operation turned out to have done. Empty for a removal and a backup,
+    /// which is the true answer rather than a missing one.
+    pub written_paths: Vec<String>,
     /// The bundle format, when a bundle put it there.
     pub bundle_format: Option<String>,
     /// The bundle's own digest.
@@ -924,7 +931,7 @@ pub(crate) fn perform(
     let mut applied = mutation.applied.clone();
     let outcome = match &mutation.effect {
         // The capture above *is* the effect. Nothing else is written.
-        Effect::Backup => Ok(()),
+        Effect::Backup => Ok(vec![]),
         Effect::Restore { backup_ref } => {
             let record = chosen_backup(&pool, backup_ref.as_deref())?;
             let payload = pool.payload_of(&record.backup_ref)?;
@@ -937,20 +944,26 @@ pub(crate) fn perform(
                 .clone_from(&record.setup_definition_digest);
             replace_managed_from(harness, &resolved, &payload)
         }
-        Effect::Remove => remove_managed(harness, &resolved, mutation.target_scope),
+        // Removal and backup put nothing on the target, and an empty list is
+        // the true answer rather than a missing one -- which is exactly the
+        // distinction the schema bump beside this field exists to keep.
+        Effect::Remove => {
+            remove_managed(harness, &resolved, mutation.target_scope).map(|()| vec![])
+        }
         Effect::Materialize { setup } => {
             setup.check_within(harness)?;
             replace_managed_from(harness, &resolved, &setup.payload)
         }
         Effect::MaterializeBundle { files } => write_bundle_files(harness, &resolved, files),
         Effect::Adopt { stamp } => {
-            crate::adopt::keep_aside(&control, stamp, harness.predecessor_state_file).map(|_| ())
+            crate::adopt::keep_aside(&control, stamp, harness.predecessor_state_file)
+                .map(|_| vec![])
         }
     };
 
     // On failure the journal stays in `prepared`, which is what makes the
     // interruption legible: recovery restores the captured pre-operation target.
-    outcome?;
+    applied.written_paths = outcome?;
 
     let after =
         resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
@@ -1024,7 +1037,8 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
 /// overlay the product or the owner put in the target survives, because a
 /// restore that also reverted files this provider never wrote would be undoing
 /// someone else's work.
-fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> Result<()> {
+fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> Result<Vec<String>> {
+    let mut written = Vec::new();
     for namespace in harness.native_namespaces {
         let destination = target.root().join(namespace);
         remove_path(&destination)?;
@@ -1034,6 +1048,7 @@ fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> R
         }
         if source.is_dir() {
             setup_core::backup::copy_tree(&source, &destination, &[])?;
+            written.extend(files_under(&destination, namespace)?);
         } else {
             let bytes = fs::read(&source).map_err(|error| {
                 setup_core::Error::new(
@@ -1043,9 +1058,49 @@ fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> R
                 .with_source(error)
             })?;
             lock::atomic_write(&destination, &bytes)?;
+            written.push((*namespace).to_owned());
         }
     }
-    Ok(())
+    written.sort();
+    Ok(written)
+}
+
+/// Every file under one written namespace, as a target-relative slash path.
+///
+/// Read back from the destination rather than counted at the source, because
+/// the destination is what the record is about. Slash-separated so a record
+/// written on Windows names the same paths as one written on Linux -- the same
+/// reason the embedded catalogue joins with `/` rather than with the platform
+/// separator.
+fn files_under(root: &Path, namespace: &str) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), namespace.to_owned())];
+    while let Some((directory, prefix)) = pending.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!("cannot read {} back", directory.display()),
+            )
+            .with_source(error)
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot read an entry of {}", directory.display()),
+                )
+                .with_source(error)
+            })?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let relative = format!("{prefix}/{name}");
+            if entry.path().is_dir() {
+                pending.push((entry.path(), relative));
+            } else {
+                found.push(relative);
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Write a verified bundle over the namespaces this provider owns.
@@ -1057,7 +1112,7 @@ fn write_bundle_files(
     harness: &Harness,
     target: &Target,
     files: &BTreeMap<String, (Vec<u8>, u32)>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     // `None`: a bundle install clears the namespaces it is about to fill, and
     // that is a `global` act by construction -- nothing routes a bundle to a
     // shared root, and the refusal above would be the wrong answer here even if
@@ -1071,7 +1126,7 @@ fn write_bundle_files(
         lock::atomic_write(&destination, bytes)?;
         set_mode(&destination, *mode)?;
     }
-    Ok(())
+    Ok(files.keys().cloned().collect())
 }
 
 #[cfg(unix)]
@@ -1112,36 +1167,74 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 /// recoverable, which is not the same as intended.
 ///
 /// The consumer's `ADR-0127` part 4 says removal under this scope must be
-/// scoped to what the provider's own state records. **This build cannot do
-/// that yet, and the reason is worth stating rather than working around:**
-/// `ProviderState.native_ownership` records *namespaces*, not files. There is
-/// no per-file record to scope a removal to, and inventing one from the setup
-/// catalogue would answer only for setups -- a bundle's files are not retained
-/// after it is materialised. Recording them is a state-schema change, and the
-/// state schema is read by the consumer.
+/// scoped to what the provider's own state records, and **it now is.**
 ///
-/// So: refuse, with the reason. A refusal a person can read is a smaller harm
-/// than a removal that took a neighbour's content, and far smaller than a
-/// removal scoped by a guess. This is the branch to replace when the state
-/// records what it wrote.
+/// This branch refused outright until 2026-08-28, and the reason it gave was
+/// the true one: `ProviderState.native_ownership` records *namespaces*, not
+/// files, so there was nothing to scope a removal to and inventing a scope
+/// from the setup catalogue would have answered only for setups -- a bundle's
+/// files are not retained after it is materialised. Recording them was a
+/// state-schema change, and the state schema is read by the consumer, so it
+/// waited on the kit naming the field.
+///
+/// The kit names it from `0.2.6`. `written_paths` is written by every operation
+/// that writes, the schema moved with it, and the removal takes those files and
+/// nothing else. What has *not* changed is the refusal, which now covers a
+/// narrower and more honest case: a state file that is absent or at an older
+/// schema means this build does not know what it wrote, and widening to the
+/// namespace there would be exactly the removal this branch exists to prevent.
 fn remove_managed(
     harness: &Harness,
     target: &Target,
     scope: Option<provider_v3::TargetScope>,
 ) -> Result<()> {
     if scope == Some(provider_v3::TargetScope::UserRoot) {
-        return Err(Error::refuse(
-            WireReason::UnsupportedOperation,
-            format!(
-                "remove under target_scope user_root would withdraw {} whole from a root \
-                 four of the seven products read, and this build has no per-file record to \
-                 scope it to: provider state records namespaces, not files. Refused rather \
-                 than performed. Remove the components through the consumer, or point \
-                 --target at this product's own configuration home, where a whole-namespace \
-                 removal is correct.",
-                harness.native_namespaces.join(", ")
-            ),
-        ));
+        // A root several products read, so taking a namespace whole would take
+        // a neighbour's content: five of the seven read `~/.agents/skills`
+        // (codex documents it, grok scans it at every tier, opencode lists it
+        // as *Global agent-compatible*, cursor carries it in its own skill-root
+        // table, and pi loads from it at `package-manager.js:2017`). The person
+        // who ran `remove` on codex did not ask to touch pi.
+        //
+        // This branch used to refuse outright, and said why: provider state
+        // recorded namespaces and there was no per-file record to scope a
+        // removal to. There is one now -- `written_paths`, which the kit names
+        // in its provenance list from `0.2.6` -- so the removal is scoped to
+        // the files this provider actually put there.
+        //
+        // **A record it cannot read is still a refusal**, and deliberately not
+        // a fallback to the whole namespace: an absent state file or one at an
+        // older schema means *this build does not know what it wrote*, and
+        // guessing from the namespace is precisely the removal this branch
+        // exists to prevent. Empty-and-present is a different answer and means
+        // nothing was written, so nothing is removed.
+        let recorded = match ProviderState::read(target.root(), harness.state_file)? {
+            StateReading::Current(state) => state.written_paths,
+            StateReading::Absent | StateReading::ForeignSchema { .. } => {
+                return Err(Error::refuse(
+                    WireReason::UnsupportedOperation,
+                    format!(
+                        "remove under target_scope user_root is scoped to the files this \
+                         provider recorded writing, and {} holds no readable record of them \
+                         -- no state file, or one written before this build recorded them. \
+                         Refused rather than widened to {} whole, which is a root five of \
+                         the seven products read. Reinstall to establish a record, remove \
+                         the components through the consumer, or point --target at this \
+                         product's own configuration home.",
+                        target.root().display(),
+                        harness.native_namespaces.join(", ")
+                    ),
+                ));
+            }
+        };
+        for relative in &recorded {
+            remove_path(&target.root().join(relative))?;
+        }
+        // Directories the files lived in are left. Under a shared root an empty
+        // `skills/` is a directory three other products still use, and removing
+        // it because this provider's last file left it empty would take a
+        // surface rather than content.
+        return Ok(());
     }
     for namespace in harness.native_namespaces {
         remove_path(&target.root().join(namespace))?;
@@ -1335,6 +1428,11 @@ fn write_state(
             .iter()
             .map(|n| (*n).to_owned())
             .collect(),
+        // Namespaces above, files here, and the gap between the two numbers is
+        // the whole reason this field exists: under a shared root such as
+        // `~/.agents` the namespaces are read by several products at once, so
+        // only the files can scope a removal to what this provider put there.
+        written_paths: applied.written_paths.clone(),
         backup_ref: Some(captured.backup_ref.as_str().to_owned()),
         previous_verified_identity: previous,
         drift_state: DriftState::Clean,
@@ -1408,6 +1506,13 @@ pub(crate) mod tests_support {
     /// binary, so the test can run what it installed and read the answer.
     pub(crate) const TEST_PAYLOAD: &[u8] = b"#!/bin/sh\nexec echo test-harness 1.2.3\n";
 
+    /// The earlier release's bytes, and they really are different bytes.
+    ///
+    /// Same length as [`TEST_PAYLOAD`] and a different digest, which is the
+    /// pair that catches a resolver comparing the wrong field: a length check
+    /// alone would call these two the same file.
+    pub(crate) const TEST_EARLIER_PAYLOAD: &[u8] = b"#!/bin/sh\nexec echo test-harness 1.2.2\n";
+
     /// One artifact, published for every platform, so the test does not depend
     /// on which machine runs it. `Raw` because raw bytes have one digest on
     /// every system, where a compressor's output is only as stable as its
@@ -1432,12 +1537,42 @@ pub(crate) mod tests_support {
         }
     }
 
+    /// The release the test harness can move *from*, with its own bytes.
+    ///
+    /// A different digest from [`TEST_ARTIFACTS`] on purpose: the whole point
+    /// of the second pin is that an update crosses two real trees, and a pair
+    /// sharing one digest would let a resolution-by-bytes test pass while
+    /// resolving nothing.
+    pub(crate) const TEST_PREVIOUS_ARTIFACTS: &[setup_core::software::Artifact] = &[
+        earlier_artifact("linux/x86_64"),
+        earlier_artifact("linux/arm64"),
+        earlier_artifact("macos/x86_64"),
+        earlier_artifact("macos/arm64"),
+        earlier_artifact("windows/x86_64"),
+        earlier_artifact("windows/arm64"),
+    ];
+
+    const fn earlier_artifact(platform: &'static str) -> setup_core::software::Artifact {
+        setup_core::software::Artifact {
+            platform,
+            url: "https://example.invalid/test-harness-1.2.2",
+            bytes: 39,
+            sha256: "sha256:42c3e0650b099f95955b0ff86c75499848e1343a6c40af6a7acd10f3c18ce226",
+            shape: setup_core::software::Shape::Raw,
+            member: "",
+        }
+    }
+
     pub(crate) const TEST_SOFTWARE: setup_core::software::Software =
         setup_core::software::Software {
             version: "1.2.3",
             command: "test-harness",
             delivery: setup_core::software::Delivery::Artifacts(TEST_ARTIFACTS),
             unsupported: &[],
+            previous: Some(setup_core::software::Previous {
+                version: "1.2.2",
+                artifacts: TEST_PREVIOUS_ARTIFACTS,
+            }),
         };
 
     pub(crate) const TEST: Harness = Harness {
@@ -1490,7 +1625,7 @@ mod tests {
 
     use super::*;
 
-    use crate::wire::tests_support::{TEST, TEST_PAYLOAD};
+    use crate::wire::tests_support::{TEST, TEST_EARLIER_PAYLOAD, TEST_PAYLOAD};
 
     const RELEASE: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 
@@ -1595,7 +1730,7 @@ mod tests {
         ));
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
         let said = error.to_string();
-        for wanted in ["user_root", "no per-file record", "namespaces, not files"] {
+        for wanted in ["user_root", "no readable record", "five of the seven"] {
             assert!(said.contains(wanted), "{said}");
         }
 
@@ -1604,6 +1739,81 @@ mod tests {
         assert!(
             target.join("AGENTS.md").exists(),
             "the refusal removed something anyway"
+        );
+    }
+
+    /// With a record, the removal happens and takes only what it wrote.
+    ///
+    /// The other half of the branch above, and the reason `written_paths`
+    /// exists: under a shared root the owned *namespaces* belong to several
+    /// products at once, so only the files this provider recorded writing can
+    /// scope a removal. A neighbour's file inside an owned namespace is the
+    /// case that decides it.
+    #[test]
+    fn a_removal_under_a_shared_root_takes_only_the_files_this_build_wrote() {
+        let target = seeded("shared-root-scoped");
+
+        // Establish a record through the ordinary write path: a backup, then a
+        // restore, which materialises the slot's payload and records the files
+        // it put there. Any operation that writes would do; this one needs no
+        // bundle to construct.
+        fs::create_dir_all(target.join("skills").join("ours")).unwrap();
+        fs::write(
+            target.join("skills").join("ours").join("SKILL.md"),
+            b"ours\n",
+        )
+        .unwrap();
+        let captured = plan_then_apply(&target, "backup", &[]);
+        assert_eq!(captured["state"], "verified", "{captured}");
+        let restored = plan_then_apply(&target, "restore", &[]);
+        assert_eq!(restored["state"], "verified", "{restored}");
+
+        // A neighbour writes into a namespace this build owns. Under a shared
+        // root that is the ordinary case, not an intrusion.
+        let theirs = target.join("skills").join("someone-elses");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("SKILL.md"), b"another product's skill\n").unwrap();
+
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01SCOPED",
+                "--expires-at",
+                far_future(),
+                "--target-scope",
+                "user_root",
+            ],
+        ));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        let plan_path = target.join("..").join("plan-scoped.json");
+        fs::write(&plan_path, serde_json::to_vec(&planned["plan"]).unwrap()).unwrap();
+        let done = run(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                plan_path.to_str().unwrap(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ));
+        assert_eq!(done["state"], "verified", "{done}");
+
+        assert!(
+            theirs.join("SKILL.md").exists(),
+            "the removal took a file this build never wrote"
+        );
+        assert!(
+            !target.join("AGENTS.md").exists(),
+            "the removal left a file this build did write"
         );
     }
 
@@ -3506,6 +3716,62 @@ mod tests {
             .into_owned()
     }
 
+    /// Apply a plan that was already produced, so a test can inspect it first.
+    ///
+    /// Split out of [`plan_then_install`] rather than duplicated: an update is
+    /// interesting because of what its *plan* says, and a helper that plans and
+    /// applies in one breath gives a test no place to look.
+    fn apply_planned(
+        target: &Path,
+        prefix: &str,
+        operation: &str,
+        planned: &serde_json::Value,
+        artifact: Option<&Path>,
+    ) -> serde_json::Value {
+        let plan_path = target.join("..").join(format!("plan-{operation}.json"));
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let digest = planned["plan_digest"].as_str().unwrap().to_owned();
+        let path = plan_path.to_string_lossy().into_owned();
+        let mut extra = vec![
+            "--plan",
+            &path,
+            "--plan-digest",
+            &digest,
+            "--provider-release-digest",
+            RELEASE,
+            "--prefix",
+            prefix,
+        ];
+        let held;
+        if let Some(file) = artifact {
+            held = file.to_string_lossy().into_owned();
+            extra.push("--software-artifact");
+            extra.push(&held);
+        }
+        run(args("apply-operation", target, &extra))
+    }
+
+    /// [`plan_then_install`], told which version to plan for.
+    fn plan_then_install_at(
+        target: &Path,
+        operation: &str,
+        artifact: Option<&Path>,
+        version: Option<&str>,
+    ) -> serde_json::Value {
+        let prefix = ready_prefix(target);
+        let mut arguments = software_plan_args(operation, &prefix);
+        if let Some(wanted) = version {
+            arguments.extend_from_slice(&["--software-version", wanted]);
+        }
+        let planned = run(args("plan-operation", target, &arguments));
+        assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+        apply_planned(target, &prefix, operation, &planned, artifact)
+    }
+
     fn plan_then_install(
         target: &Path,
         operation: &str,
@@ -3674,6 +3940,176 @@ mod tests {
         exact.extend_from_slice(&["--software-version", "1.2.3"]);
         let planned = run(args("plan-operation", &target, &exact));
         assert_eq!(planned["state"], "planned");
+    }
+
+    /// The version pinned before this one is nameable, and names its own bytes.
+    ///
+    /// This is what makes `software_update` and `rollback` operations that can
+    /// be *run* rather than only declared: an update needs a version to move
+    /// from, and a rollback a tree to return to. Before the second pin existed
+    /// this repository recorded both as measured absences, honestly, for as
+    /// long as it did.
+    #[test]
+    fn the_version_pinned_before_this_one_can_be_planned_and_names_its_own_bytes() {
+        let target = seeded("software-previous");
+        let prefix = ready_prefix(&target);
+
+        let mut earlier = software_plan_args("software_install", &prefix);
+        earlier.extend_from_slice(&["--software-version", "1.2.2"]);
+        let planned = run(args("plan-operation", &target, &earlier));
+        assert_eq!(planned["state"], "planned");
+
+        let artifacts = planned["plan"]["software_artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            artifacts[0]["url"], "https://example.invalid/test-harness-1.2.2",
+            "the earlier version was named and the current bytes were planned"
+        );
+        assert_eq!(
+            artifacts[0]["sha256"],
+            "sha256:42c3e0650b099f95955b0ff86c75499848e1343a6c40af6a7acd10f3c18ce226"
+        );
+
+        // And a version that is neither is still refused, naming both.
+        let mut neither = software_plan_args("software_install", &prefix);
+        neither.extend_from_slice(&["--software-version", "9.9.9"]);
+        let error = refuse(args("plan-operation", &target, &neither));
+        assert!(error.detail().contains("1.2.3"), "{}", error.detail());
+        assert!(error.detail().contains("1.2.2"), "{}", error.detail());
+    }
+
+    /// An update crosses two real trees, and the exposed command follows.
+    ///
+    /// The whole transition, in one test, because the interesting failure is
+    /// between the steps: the earlier tree must survive the update (a rollback
+    /// has nowhere to go otherwise) and the exposed command must actually move.
+    #[test]
+    fn an_update_moves_the_command_between_two_versions_that_both_stay_on_disk() {
+        let target = seeded("software-update-across");
+        let prefix = ready_prefix(&target);
+        let root = Path::new(&prefix).to_path_buf();
+
+        // Install the earlier release first: `software_update` refuses an empty
+        // prefix, and rightly -- an update of nothing is a different operation.
+        let earlier_file = downloaded(&target, TEST_EARLIER_PAYLOAD);
+        let installed = plan_then_install_at(
+            &target,
+            "software_install",
+            Some(&earlier_file),
+            Some("1.2.2"),
+        );
+        assert_eq!(installed["state"], "verified", "{installed}");
+        assert_eq!(installed["version"], "1.2.2");
+
+        // Now update to the pinned one. The plan says what it is replacing,
+        // which is the difference between an update and an install.
+        let mut arguments = software_plan_args("software_update", &prefix);
+        arguments.extend_from_slice(&["--software-version", "1.2.3"]);
+        let planned = run(args("plan-operation", &target, &arguments));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        let effects = serde_json::to_string(&planned["plan"]["effects"]).unwrap();
+        assert!(
+            effects.contains("1.2.2") && effects.contains("1.2.3"),
+            "an update should name both ends of the move: {effects}"
+        );
+
+        let current_file = downloaded(&target, TEST_PAYLOAD);
+        let updated = apply_planned(
+            &target,
+            &prefix,
+            "software_update",
+            &planned,
+            Some(&current_file),
+        );
+        assert_eq!(updated["state"], "verified", "{updated}");
+        assert_eq!(updated["version"], "1.2.3");
+
+        // Both trees are there. Losing the earlier one would leave `rollback`
+        // declared and unrunnable again, which is the absence this closes.
+        assert!(
+            root.join("1.2.2").is_dir(),
+            "the earlier tree was discarded"
+        );
+        assert!(root.join("1.2.3").is_dir(), "the new tree is missing");
+
+        let exposed = root.join("bin").join("test-harness");
+        assert_eq!(
+            fs::read(&exposed).unwrap(),
+            TEST_PAYLOAD,
+            "the exposed command still runs the version the update moved away from"
+        );
+    }
+
+    /// Which release the bytes are is read from the bytes, not from the flag.
+    ///
+    /// A caller handing the earlier artifact to an apply whose plan named the
+    /// current version installs *the earlier version* -- because nothing on
+    /// this path reads a label. The alternative would let a relabelled flag
+    /// put one version's bytes under another version's name.
+    #[test]
+    fn apply_installs_the_release_the_bytes_belong_to_rather_than_the_one_named() {
+        let target = seeded("software-bytes-decide");
+        let prefix = ready_prefix(&target);
+
+        // Plan the current version, hand it the earlier version's bytes.
+        let earlier_file = downloaded(&target, TEST_EARLIER_PAYLOAD);
+        let applied = plan_then_install(&target, "software_install", Some(&earlier_file));
+        assert_eq!(applied["state"], "verified", "{applied}");
+        assert_eq!(
+            applied["version"], "1.2.2",
+            "the bytes were 1.2.2 and the install claimed otherwise"
+        );
+        assert!(Path::new(&prefix).join("1.2.2").is_dir());
+        assert!(!Path::new(&prefix).join("1.2.3").exists());
+    }
+
+    /// Bytes belonging to no release this build names are refused as such.
+    ///
+    /// `digest_mismatch` rather than a vaguer reason, and the detail names
+    /// every version this build does publish -- a refusal that says only "not
+    /// this one" makes the caller guess what would have worked.
+    #[test]
+    fn an_artifact_from_no_release_this_build_names_is_refused_by_its_digest() {
+        let target = seeded("software-stranger");
+        let prefix = ready_prefix(&target);
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &software_plan_args("software_install", &prefix),
+        ));
+        let plan_path = target.join("..").join("plan-stranger.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let digest = planned["plan_digest"].as_str().unwrap().to_owned();
+        let path = plan_path.to_string_lossy().into_owned();
+        let stranger = downloaded(&target, b"neither release, and not close\n");
+        let held = stranger.to_string_lossy().into_owned();
+
+        let error = refuse(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                &path,
+                "--plan-digest",
+                &digest,
+                "--provider-release-digest",
+                RELEASE,
+                "--prefix",
+                &prefix,
+                "--software-artifact",
+                &held,
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        let detail = error.detail();
+        assert!(
+            detail.contains("1.2.3") && detail.contains("1.2.2"),
+            "the refusal should name what this build does publish: {detail}"
+        );
     }
 
     #[test]
