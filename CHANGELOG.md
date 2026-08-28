@@ -11,6 +11,58 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-08-28
+
+The release where seven products were read rather than their pages,
+and the record lost an argument to every one of them.
+
+- **Nine surfaces declared that the products have and this provider did not.**
+  Each had been declined on the strength of a vendor page that does not mention
+  it. cursor's own rule picker offers a *User Rule* scope at
+  `join(homedir(), ".cursor", "rules")`; it calls
+  `loadCommandsFromDirectory(join(userHomeDirectory, ".cursor", "commands"))`;
+  it resolves user paths for `hooks.json` and `mcp.json`. That harness declared
+  two kinds and now declares six. grok's own embedded reference lists
+  `~/.grok/commands/` at User tier, beside the already-owned `skills/` in the
+  same row. codex's `~/.codex/agents/` is vendor-documented and was undeclared.
+  antigravity's `config/global_workflows/` holds Markdown invoked as
+  `/workflow-name` across all workspaces -- which its own declaration comment
+  had said the product does not have.
+
+  Widening is the safe direction: a consumer matches a route by membership, so
+  a larger set makes more routes valid and none that were valid invalid.
+
+- **`plugin` withdrawn from claude-code, because it was destructive rather than
+  merely unroutable.** It was the only kind across the seven routed to a *file*
+  -- `enabledPlugins` and `extraKnownMarketplaces` are keys in `settings.json`.
+  There are no merge semantics here: `write_bundle_files` calls
+  `remove_managed` and then writes bytes verbatim, so a `plugin` bundle
+  carrying that file would replace it *and* delete `CLAUDE.md`, `skills`,
+  `agents`, `commands` and `rules` on the way in. Declaring it again means
+  building settings-merge first.
+
+- **Two credentials files nobody disclaimed.** Five of seven named theirs;
+  grok's `auth.json` (*Authentication credentials (auto-managed)*, in its own
+  reference) and pi's were not in `never_touch`. No live leak -- a capture walks
+  the owned namespaces and neither file is inside one -- but that is safety
+  resting on a namespace never widening. A guard enforces it now, and it caught
+  nothing until both baselines recorded the files it reads.
+
+- **A scope that reaches removal, and a removal that refuses rather than
+  guesses.** `--target-scope` is accepted a release ahead of anything reading
+  it, travels in the plan, and is read back from the plan by `apply` -- never
+  from argv, because a flag on both would be two statements of one fact. Under
+  `user_root` a removal is **refused**: `ADR-0127` requires it be scoped to what
+  provider state records, and state records *namespaces, not files*. Four of the
+  seven products read `~/.agents/skills`, so a whole-namespace removal there
+  takes three neighbours' content. A refusal a person can read is smaller than
+  that, and far smaller than a removal scoped by a guess.
+
+- **The container base was named by a tag.** Everything else here is pinned;
+  `gcr.io/distroless/cc-debian12:nonroot` was not, and a republished tag leaves
+  no trace, unlike a stale pin which shows as a version going backwards. Pinned
+  to the digest the registry computed.
+
 ## [0.0.10] - 2026-08-28
 
 The release that makes a convention's own root reachable, and the one

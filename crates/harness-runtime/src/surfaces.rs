@@ -6,11 +6,31 @@
 //! consumer plans, verifies and computes target identity against.
 //!
 //! They were once assembled from a consumer's routing table. Measured against
-//! the products themselves on 2026-08-27, that had left paths no vendor
-//! documents — `~/.cursor/rules`, `~/.claude/.mcp.json`, `~/.grok/commands` —
-//! and omitted paths every vendor does. Conformance never noticed: its
+//! the vendors' pages on 2026-08-27, that had left paths no page documented —
+//! `~/.cursor/rules`, `~/.claude/.mcp.json`, `~/.grok/commands` — and omitted
+//! paths every page does. Conformance never noticed: its
 //! `declared_native_route_is_compilable` case requires **one** declared kind to
 //! have a route, not all of them.
+//!
+//! **Two of those three are real, and finding out took reading the products
+//! rather than their pages.** Measured 2026-08-28 against pinned bytes:
+//! cursor's own rule-creation code offers a *User Rule* scope whose path is
+//! `join(homedir(), ".cursor", "rules")`, hint *"Applies to all your
+//! projects"*; grok's own embedded reference lists `~/.grok/commands/` at User
+//! tier. Neither page says so, and both products do.
+//!
+//! So the sentence above is right about pages and was wrong as a conclusion
+//! about surfaces, and the removals it justified were right for a reason that
+//! did not hold. Both are recorded as declined with the measurement, and
+//! whether to own them is a decision rather than an absence — a release and a
+//! consumer's routing table, not a record edit.
+//!
+//! `~/.claude/.mcp.json` is the one of the three that stays removed, and the
+//! record was right about it for the right reason. The product names
+//! `.mcp.json` in seventy-six places — *"Project config (shared via
+//! .mcp.json)"* — and `.claude/.mcp.json` in **none**. MCP servers reach Claude
+//! Code through `.claude.json` at user scope and a project-root `.mcp.json` at
+//! project scope, which is what the declined row has said all along.
 //!
 //! So each `references/<harness>-baseline.json` now carries a `native_surfaces`
 //! block: one row per owned surface with the URL that decided it, and a
@@ -79,6 +99,132 @@ pub const BLOCK: &str = "native_surfaces";
 
 /// The two shapes a surface can have.
 const SHAPES: [&str; 2] = ["file", "directory"];
+
+/// A credentials file the baseline records and `never_touch` does not name.
+///
+/// `never_touch` is a safety declaration: `never_captured` is the control
+/// directory plus this list, and a slot that held a product's credentials would
+/// put them on disk in a second place. The comment beside antigravity's list
+/// says it plainly -- *a backup of someone else's credentials is a leak with a
+/// schedule*.
+///
+/// Five of the seven named theirs. Grok and pi did not, and both have one:
+/// grok's own embedded reference calls `~/.grok/auth.json` *Authentication
+/// credentials (auto-managed)*, and pi joins `agentDir, "auth.json"`. Neither
+/// was a live leak, because `capture` walks `native_namespaces` and neither
+/// file sat inside one -- which is exactly the kind of safety that holds until
+/// somebody widens a declaration.
+///
+/// So the rule is stated rather than remembered: if the baseline knows of a
+/// credentials file, the declaration must disclaim it. The baseline is the only
+/// place that knows, because it is where a vendor's page and a product's own
+/// reference are written down.
+fn credentials_are_disclaimed(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    // Matched on the **path**, never on the row's prose.
+    //
+    // The first version also searched the `reason` text for "credential", and
+    // it fired immediately on antigravity's `transcript.jsonl` -- whose reason
+    // says *for the reason the never_touch list gives about a neighbour's
+    // credentials*. The word was in a sentence explaining an analogy, and the
+    // guard read it as a classification. A guard that matches prose measures
+    // how a thing was described rather than what it is, which is the failure
+    // this file is otherwise full of examples of.
+    //
+    // **And this list is a heuristic, which is worth saying rather than
+    // implying.** It catches `auth.json`, `.credentials.json` and
+    // `oauth_creds.json`; it does not catch antigravity's
+    // `google_accounts.json`, which is a credentials file named after neither.
+    // That one is disclaimed because a person read the page. The guard is a
+    // floor under attention, not a replacement for it.
+
+    let mut named = Vec::new();
+    for block in ["surfaces", "declined"] {
+        let Some(rows) = baseline
+            .get(BLOCK)
+            .and_then(|found| found.get(block))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for row in rows {
+            let Some(path) = row.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let lowered = path.to_lowercase();
+            if ["credential", "auth.json", "oauth", "token"]
+                .iter()
+                .any(|tell| lowered.contains(tell))
+            {
+                named.push(path.to_owned());
+            }
+        }
+    }
+
+    for path in named {
+        // The last component, because `never_touch` names top-level entries.
+        let leaf = path.rsplit('/').next().unwrap_or(&path);
+        if !harness.never_touch.contains(&leaf) {
+            found.push(format!(
+                "{path:?} reads as a credentials file and {} does not disclaim it. \
+                 never_captured is the control directory plus never_touch, and a slot \
+                 holding a product's credentials would put them on disk in a second \
+                 place. Add {leaf:?} to never_touch, or say in the row why it is not one.",
+                harness.provider_id
+            ));
+        }
+    }
+}
+
+/// An owned surface that routes no kind and says nothing about why.
+///
+/// The mirror of `writes_where_nothing_is_routed`. That one catches a path this
+/// provider *writes into* whose surface routes nothing -- the shape that put
+/// cursor's `plugin` kind one directory from its own bytes. This catches the
+/// other direction: a namespace declared, owned, routing nothing, and written
+/// to by nobody.
+///
+/// Three of them exist: claude's `rules`, opencode's `tui.json`, pi's `themes`.
+/// Each is defensible -- claude's row explains that `instruction` already
+/// routes to `CLAUDE.md` and the namespace is owned so a setup *could* carry a
+/// rule -- and the point is not to remove them. It is that the answer should be
+/// written once rather than re-derived by every reader, including the consumer,
+/// who asked about two of the three in the same message.
+///
+/// So: routing nothing is allowed, and being silent about it is not.
+fn silent_about_routing_nothing(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    let Some(rows) = baseline
+        .get(BLOCK)
+        .and_then(|block| block.get("surfaces"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for row in rows {
+        let Some(path) = row.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        if !harness.native_namespaces.contains(&path) {
+            continue;
+        }
+        let routes = row
+            .get("kinds")
+            .and_then(Value::as_array)
+            .is_some_and(|kinds| !kinds.is_empty());
+        let explained = ["note", "reason"].iter().any(|key| {
+            row.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+        });
+        if !routes && !explained {
+            found.push(format!(
+                "{path:?} is owned and routes no kind, and the row says nothing about why. \
+                 That is allowed -- being silent about it is not, because the next reader \
+                 re-derives the answer, and the consumer has already asked about two of \
+                 these. Add a note."
+            ));
+        }
+    }
+}
 
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
@@ -512,6 +658,8 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     let mut found = Vec::new();
     rooted_elsewhere(baseline, &mut found);
     shares_a_name_with_the_protocol(baseline, &mut found);
+    credentials_are_disclaimed(harness, baseline, &mut found);
+    silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
@@ -666,6 +814,16 @@ mod tests {
                     "kinds": kinds,
                     "shape": "file",
                     "source": "https://example.invalid/docs",
+                    // The rows carrying no kind need one, because
+                    // `silent_about_routing_nothing` refuses an owned surface
+                    // that routes nothing and says nothing. A fixture standing
+                    // for a real baseline has to satisfy the same rules the
+                    // real ones do, or it stops standing for anything.
+                    "note": if kinds.is_empty() {
+                        "owned so a backup returns it; no kind describes it"
+                    } else {
+                        "routes the kinds this fixture declares"
+                    },
                 })
             })
             .collect();

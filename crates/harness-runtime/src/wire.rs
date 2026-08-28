@@ -571,6 +571,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         operation: request.operation,
         canonical_target: &resolved.root().to_string_lossy(),
         expected_target_digest: &identity,
+        target_scope: request.target_scope,
         projection_profile_digest: &profile.digest,
         bundle: request.bundle.as_ref().map(|bundle| bundle.binding.clone()),
         backup_ref,
@@ -656,6 +657,8 @@ pub(crate) struct Mutation<'a> {
     pub plan_digest: String,
     /// The identity the plan was made against. Re-checked once the lock is held.
     pub expected_target_digest: String,
+    /// The scope the plan recorded, when the consumer named one.
+    pub target_scope: Option<provider_v3::TargetScope>,
     pub effect: Effect<'a>,
     /// The plan artifact, recorded into provider state as provenance.
     pub provenance: serde_json::Value,
@@ -703,6 +706,19 @@ pub(crate) struct Applied {
 }
 
 /// Apply one exact plan under the target lock.
+/// The scope a plan recorded, when the consumer named one.
+///
+/// Read back from the plan rather than taken from argv: `apply` is handed a
+/// plan and not a scope, so this is the only place a scope can arrive -- and it
+/// arrives having been bound into the plan digest the consumer verified, which
+/// a second argv flag could not claim.
+fn scope_of(artifact: &serde_json::Value) -> Option<provider_v3::TargetScope> {
+    artifact
+        .get("target_scope")
+        .and_then(serde_json::Value::as_str)
+        .and_then(provider_v3::TargetScope::parse)
+}
+
 fn apply(
     harness: &Harness,
     target: &Path,
@@ -825,6 +841,7 @@ fn apply(
             operation_id: string_field(&artifact, "operation_id")?,
             plan_digest: plan_digest.to_owned(),
             expected_target_digest: string_field(&artifact, "expected_target_digest")?,
+            target_scope: scope_of(&artifact),
             effect,
             applied,
             provenance: artifact,
@@ -920,7 +937,7 @@ pub(crate) fn perform(
                 .clone_from(&record.setup_definition_digest);
             replace_managed_from(harness, &resolved, &payload)
         }
-        Effect::Remove => remove_managed(harness, &resolved),
+        Effect::Remove => remove_managed(harness, &resolved, mutation.target_scope),
         Effect::Materialize { setup } => {
             setup.check_within(harness)?;
             replace_managed_from(harness, &resolved, &setup.payload)
@@ -1041,7 +1058,12 @@ fn write_bundle_files(
     target: &Target,
     files: &BTreeMap<String, (Vec<u8>, u32)>,
 ) -> Result<()> {
-    remove_managed(harness, target)?;
+    // `None`: a bundle install clears the namespaces it is about to fill, and
+    // that is a `global` act by construction -- nothing routes a bundle to a
+    // shared root, and the refusal above would be the wrong answer here even if
+    // something did, because these bytes are about to be replaced rather than
+    // withdrawn.
+    remove_managed(harness, target, None)?;
     for (relative, (bytes, mode)) in files {
         // `atomic_write` creates the parent; this used to do it here, and the
         // catalog path next door did not, which is how they came apart.
@@ -1073,7 +1095,54 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn remove_managed(harness: &Harness, target: &Target) -> Result<()> {
+/// Withdraw what this provider owns, by a rule that depends on the scope.
+///
+/// **Under `global`, a namespace goes whole, and that is correct.** The target
+/// is the product's own configuration home; nothing else is there, and a
+/// removal that left fragments would leave a target this provider still
+/// half-owns.
+///
+/// **Under `user_root` it would be wrong, and this build refuses rather than
+/// does it.** That target is a convention's root, shared by design: four of the
+/// seven products read `~/.agents/skills` -- codex documents it, grok scans it
+/// at every tier, opencode lists it as *Global agent-compatible*, and pi loads
+/// from it at `package-manager.js:2017`. One provider's `remove_dir_all` on
+/// `skills` takes three other products' skills, and the person who ran `remove`
+/// on codex did not ask to touch pi. The capture that runs first makes that
+/// recoverable, which is not the same as intended.
+///
+/// The consumer's `ADR-0127` part 4 says removal under this scope must be
+/// scoped to what the provider's own state records. **This build cannot do
+/// that yet, and the reason is worth stating rather than working around:**
+/// `ProviderState.native_ownership` records *namespaces*, not files. There is
+/// no per-file record to scope a removal to, and inventing one from the setup
+/// catalogue would answer only for setups -- a bundle's files are not retained
+/// after it is materialised. Recording them is a state-schema change, and the
+/// state schema is read by the consumer.
+///
+/// So: refuse, with the reason. A refusal a person can read is a smaller harm
+/// than a removal that took a neighbour's content, and far smaller than a
+/// removal scoped by a guess. This is the branch to replace when the state
+/// records what it wrote.
+fn remove_managed(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<()> {
+    if scope == Some(provider_v3::TargetScope::UserRoot) {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "remove under target_scope user_root would withdraw {} whole from a root \
+                 four of the seven products read, and this build has no per-file record to \
+                 scope it to: provider state records namespaces, not files. Refused rather \
+                 than performed. Remove the components through the consumer, or point \
+                 --target at this product's own configuration home, where a whole-namespace \
+                 removal is correct.",
+                harness.native_namespaces.join(", ")
+            ),
+        ));
+    }
     for namespace in harness.native_namespaces {
         remove_path(&target.root().join(namespace))?;
     }
@@ -1473,6 +1542,82 @@ mod tests {
 
     fn far_future() -> &'static str {
         "2099-01-01T00:00:00.000Z"
+    }
+
+    /// A removal under a shared root is refused, and the refusal says why.
+    ///
+    /// `user_root` names a convention's root, not a product's home: four of the
+    /// seven products read `~/.agents/skills`. A whole-namespace removal there
+    /// takes three neighbours' content, and this build has no per-file record to
+    /// scope it to -- provider state records namespaces. Refusing is the answer
+    /// until it does.
+    ///
+    /// Planned with the scope and applied from the plan, because that is the
+    /// only path a scope travels: `apply` is handed a plan, never a scope. So
+    /// the plan is produced first and `apply` is invoked directly, rather than
+    /// through the helper, which unwraps and would turn the refusal into a
+    /// panic.
+    #[test]
+    fn a_removal_under_a_shared_root_is_refused_rather_than_performed() {
+        let target = seeded("shared-root-remove");
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+                "--target-scope",
+                "user_root",
+            ],
+        ));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert_eq!(planned["plan"]["target_scope"], "user_root", "{planned}");
+
+        let plan_path = target.join("..").join("plan.json");
+        fs::write(&plan_path, serde_json::to_vec(&planned["plan"]).unwrap()).unwrap();
+        let error = refuse(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                plan_path.to_str().unwrap(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        let said = error.to_string();
+        for wanted in ["user_root", "no per-file record", "namespaces, not files"] {
+            assert!(said.contains(wanted), "{said}");
+        }
+
+        // And the target is untouched: a refusal that had already removed
+        // something would be the defect this refusal exists to prevent.
+        assert!(
+            target.join("AGENTS.md").exists(),
+            "the refusal removed something anyway"
+        );
+    }
+
+    /// Without a scope the removal is the one it always was.
+    #[test]
+    fn a_removal_without_a_scope_still_withdraws_the_namespaces() {
+        let target = seeded("unscoped-remove");
+        assert!(target.join("AGENTS.md").exists());
+        let done = plan_then_apply(&target, "remove", &[]);
+        assert_eq!(done["state"], "verified", "{done}");
+        assert!(
+            !target.join("AGENTS.md").exists(),
+            "remove left the instruction file"
+        );
     }
 
     fn plan_then_apply(target: &Path, operation: &str, extra: &[&str]) -> serde_json::Value {

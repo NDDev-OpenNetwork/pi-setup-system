@@ -1071,6 +1071,11 @@ fn mutate(
     };
 
     let artifact = PlanArtifact::new(PlanInputs {
+        // No scope: the human surface is a person at a terminal, and a
+        // scope is something a consumer resolves. Omitted rather than
+        // guessed at `global`, because a plan that named a scope nobody
+        // chose would be a fact invented by this side.
+        target_scope: None,
         provider_id: harness.provider_id,
         provider_version: harness.version,
         provider_build_digest: &build_digest,
@@ -1104,6 +1109,11 @@ fn mutate(
         harness,
         target,
         &Mutation {
+            // The human surface names no scope, so a removal here is the
+            // `global` one. A person typing `remove --target <dir>` is
+            // pointing at a product's home; a shared root arrives only
+            // through a consumer, which is where the scope comes from.
+            target_scope: None,
             operation,
             operation_id,
             plan_digest,
