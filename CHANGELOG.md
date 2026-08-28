@@ -11,6 +11,101 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-08-28
+
+A builder toolkit on every harness, a coupling nobody was checking, a
+green that now names what produced it, and a correction to what 0.0.14 said
+about cursor.
+
+**`nddev-builder` on all seven.** Two harnesses carried a maintainer's toolkit
+and five did not, so the components published for those five had no source in
+these repositories at all. Each of the five now ships one, and *what it carries
+differs because what each harness routes differs*:
+
+- `codex` routes `skill` only under `target_scope: user_root`, so a setup aimed
+  at its own home cannot carry one -- it gets an agent and prompts instead;
+- `pi` routes no `agent`; `grok` owns a command surface that routes no kind,
+  because slash commands there surface as skills.
+
+Shipping an identical tree everywhere would mean writing components into
+directories the product does not read, which is the defect `0.0.11` removed.
+Being native to each harness *is* the consistency; an identical layout would
+only look like one.
+
+**Half of each toolkit is derived, not written.** *What this harness owns and
+why* already exists, measured, in its baseline: every surface with the page that
+decided it, every declined row with what was searched, and the configuration
+file's grammar. `tools/build_nddev_builder.py` renders that into the toolkit and
+`--check` runs in the gate, so a baseline edited without re-running it fails
+rather than leaving a shipped toolkit describing surfaces the harness no longer
+declares. A stale toolkit is worse than none, because a reader trusts it.
+
+**Cursor and antigravity keep their hand-written toolkits and gain the derived
+half.** Their prose is better than a template -- antigravity's names the one
+problem unique to it, that the product is a *guest* in Gemini CLI's home and a
+write one directory too high succeeds and corrupts another product's
+configuration. So nothing of theirs is overwritten; only the derived surfaces
+table is added, and for antigravity the lifecycle and validation references it
+did not have.
+
+**A guard written because this repository's own generator produced the defect.**
+The first draft of that addition wrote references into a `skills/nddev-builder/`
+directory of a harness whose skill is called something else -- a `references/`
+folder no entry point reaches. Every existing guard passed it: the files are
+documents, so the sourcing rule exempts them, and there is no `SKILL.md`, so the
+description rule has nothing to check. The absence was invisible *because* the
+thing that would have been checked was the thing missing.
+`catalog::unreachable_references` refuses it now, and the generator refuses to
+write there at all.
+
+**One guard was wrong and is fixed.** `catalog::misdirecting` refuses a shipped
+instruction that tells a reader to run a command the binary does not answer --
+and it knew only the *human* verbs, so it called `provider-info` refused. That
+is a wire command this build answers on demand and one a toolkit has every
+reason to document. A guard naming a working command as refused is the same
+false statement it exists to catch, one level up. It now asks both surfaces, and
+still refuses a verb neither answers.
+
+**One of eight, not all eight.** `0.0.14` added a line to `--help` saying that
+`XDG_CONFIG_HOME` moves cursor's configuration home. Tracing which surfaces
+actually reach that resolver shows **exactly one of the eight this build owns**
+does: `cli-config.json`, built as `join(configRoot(), "cli-config.json")`.
+`commands`, `rules`, `hooks.json`, `mcp.json` and the `plugins` pair come from a
+literal `join(homedir(), ".cursor", ...)` and reach neither the config root nor
+the data root, so no variable moves them.
+
+The config root carries `acp-config.json`, `acp-sessions`, `chats`,
+`permissions.json` and `statsig-cache.json`; the data root, which honours
+`CURSOR_DATA_DIR` and is not XDG-aware, carries `projects` and `computer-use`.
+None of those seven belongs to this provider.
+
+So the line now says what it measured: XDG moves `cli-config.json` and nothing
+else this build owns. `documented_config_home` stays `~/.cursor`, which was
+right for seven of eight throughout. The defect was reading a resolver and
+writing a note about a home -- a measurement of one thing stated as a fact about
+another, which is the shape this estate has found four times this week.
+
+The GDS anchor in each of these trees is generated, and its shape is fixed by a
+schema in another repository that sets `additionalProperties: false`. That is a
+real coupling in one direction: a **narrowing** there turns every anchor in this
+estate invalid at once, and nothing here would have noticed. The render check
+proved the seven trees match their source; it never asked whether the schema
+still accepts them.
+
+`scripts/check_render.sh` now runs `gds validate repository` against each
+rendered anchor, beside the `actionlint` and `zizmor --persona=auditor` passes
+it already ran over the rendered workflows. Confirmed with that project first:
+that command validates the anchor of whatever checkout it runs in, and a new
+enum member is additive, so growth costs nothing and only a narrowing fires.
+
+**It prints the validator's version, and that is not decoration.** The `gds` on
+the machine that wrote this is a development build predating the schema release
+it validates against -- and so was the one on the other side of that
+conversation. A green that does not name its validator is worth less than one
+that does. Following the same convention as the two checks above it: an absent
+tool is said on stderr, never skipped quietly, because a check that silently
+passes is worse than no check.
+
 ## [0.0.15] - 2026-08-28
 
 Three things that were correct and held correct by nothing, found by

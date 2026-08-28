@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "nddev-builder",
+  "description": "A working floor plus the NDDev builder toolkit: what this harness owns, the lifecycle it performs, and the gate a change must pass.",
+  "sources": [
+    "https://pi.dev/docs/latest/extensions",
+    "https://pi.dev/docs/latest/prompt-templates",
+    "https://pi.dev/docs/latest/sdk",
+    "https://pi.dev/docs/latest/settings",
+    "https://pi.dev/docs/latest/skills",
+    "https://pi.dev/docs/latest/themes"
+  ]
+}

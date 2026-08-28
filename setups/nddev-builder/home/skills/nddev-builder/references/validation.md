@@ -1,0 +1,46 @@
+# Before Handing Off
+
+## The gate
+
+One entry point, from the repository root:
+
+```bash
+scripts/gate.sh
+```
+
+It exists rather than four bare `cargo` commands because the workspace pins a
+toolchain that a local `cargo` earlier on `PATH` will shadow, and a green run
+under the wrong compiler is worse than a red one.
+
+## And the render, whenever the output could have moved
+
+```bash
+scripts/check_render.sh                 # strict: do the published trees match this source?
+scripts/check_render.sh --deterministic # does the renderer agree with itself?
+```
+
+Run it for any change to `crates/`, `setups/`, `references/`, `provider-kit/`
+or `tools/render_public_trees.py`. **The gate does not render**, and a change to
+the renderer that only passes the gate has not been checked at all -- that has
+reached CI more than once.
+
+The strict form clones the seven from their remotes, so it answers a question no
+local checkout can: are the published trees actually current?
+
+## The rule that does not move
+
+Never weaken an invariant, raise a threshold, silence a check or delete a test
+to buy green.
+
+Every new guard is observed **failing on the defect it describes** before it is
+kept -- and once per branch, not once per guard. A guard whose test has never
+been red proves nothing, and this estate has twice found a new guard's first
+test passing under a mutation because every case it named exercised the same
+branch.
+
+## Classifying a finding is not silencing it
+
+A false positive dismissed with its reasoning recorded is correct. Rewriting
+code until a checker goes quiet is not. The difference is whether the change
+stands on its own merits: if the code was worse for a reason that has nothing to
+do with the checker, fix it; if it was not, dismiss the finding and say why.

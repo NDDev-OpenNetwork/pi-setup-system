@@ -194,10 +194,18 @@ pub fn misdirecting(provider_id: &str, setups: &[Setup]) -> Vec<String> {
                 if verb.is_empty() || verb.starts_with('-') {
                     continue;
                 }
-                if !crate::human::VERBS.contains(&verb) && !provider_id.contains(verb) {
+                // Both surfaces, because the binary answers both. The first
+                // version knew only `human::VERBS` and so called
+                // `provider-info` refused -- a wire command this build answers
+                // on demand, and one a toolkit has every reason to document.
+                // A guard that names a working command as refused is the same
+                // false statement it exists to catch, one level up.
+                let human = crate::human::VERBS.contains(&verb);
+                let wire = provider_v3::vocabulary::Command::parse(verb).is_some();
+                if !human && !wire && !provider_id.contains(verb) {
                     found.push(format!(
                         "{where_it_is} tells a reader to run `{provider_id} {verb}`, \
-                         which this binary refuses"
+                         which this binary answers on neither its human nor its wire surface"
                     ));
                 }
             }
@@ -305,6 +313,49 @@ pub fn undescribed(setups: &[Setup]) -> Vec<String> {
             }
         }
     }
+    found
+}
+
+/// A `references/` directory no entry point reaches.
+///
+/// [`undescribed`] requires an entry point to describe itself; this requires
+/// the supporting documents to have one. A `skills/x/references/*.md` with no
+/// `skills/x/SKILL.md` beside it is prose nothing routes to -- installed,
+/// backed up, restored, and read by nobody.
+///
+/// **Written because a generator in this repository produced exactly that.**
+/// `tools/build_nddev_builder.py` wrote three references into a
+/// `skills/nddev-builder/` directory of a harness whose skill is called
+/// something else, and every other guard passed: the files are documents, so
+/// `unsourced` exempts them; there is no `SKILL.md`, so `undescribed` has
+/// nothing to check. The absence was invisible precisely because the thing that
+/// would have been checked was the thing missing.
+#[must_use]
+pub fn unreachable_references(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        let files = files_under(&setup.payload);
+        for name in &files {
+            let parts: Vec<&str> = name.split('/').collect();
+            let Some(at) = parts.iter().position(|part| *part == "references") else {
+                continue;
+            };
+            if at == 0 {
+                continue;
+            }
+            let owner = parts[..at].join("/");
+            let entry = format!("{owner}/SKILL.md");
+            if !files.iter().any(|other| other.eq_ignore_ascii_case(&entry)) {
+                found.push(format!(
+                    "{} ships {name:?} under {owner:?}, which has no SKILL.md, so the \
+                     document is reachable from no entry point",
+                    setup.manifest.id
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
     found
 }
 

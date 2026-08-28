@@ -336,6 +336,27 @@ mod tests {
     /// its directory and gives the model nothing to choose on. Documents under
     /// `references/` and files under `commands/` are exempt, because the
     /// products measured do not read frontmatter from either.
+    /// Supporting documents are reachable from an entry point.
+    ///
+    /// A `references/` folder whose skill has no `SKILL.md` is prose nothing
+    /// routes to. A generator in this repository produced exactly that, and
+    /// every other guard passed it: the files are documents, so `unsourced`
+    /// exempts them, and there is no `SKILL.md`, so `undescribed` has nothing
+    /// to check.
+    #[test]
+    fn every_reference_folder_has_an_entry_point() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let problems = harness_runtime::catalog::unreachable_references(&catalog.list().unwrap());
+        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
     #[test]
     fn every_component_entry_point_describes_itself() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
