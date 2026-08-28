@@ -19,14 +19,18 @@ JSON. The vendor documents no comment support and publishes no schema; searched 
 
 ## Owned surfaces
 
-| path | kinds | shape | decided by |
-|---|---|---|---|
-| `AGENTS.md` | instruction | file | <https://pi.dev/docs/latest/sdk> |
-| `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> |
-| `skills` | skill | directory | <https://pi.dev/docs/latest/skills> |
-| `extensions` | plugin | directory | <https://pi.dev/docs/latest/extensions> |
-| `prompts` | command | directory | <https://pi.dev/docs/latest/prompt-templates> |
-| `themes` | *(routes no kind)* | directory | <https://pi.dev/docs/latest/themes> |
+| path | kinds | shape | decided by | exercised by |
+|---|---|---|---|---|
+| `AGENTS.md` | instruction | file | <https://pi.dev/docs/latest/sdk> | read its bytes |
+| `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> | read its bytes |
+| `skills` | skill | directory | <https://pi.dev/docs/latest/skills> | read its bytes |
+| `extensions` | plugin | directory | <https://pi.dev/docs/latest/extensions> | read its bytes |
+| `prompts` | command | directory | <https://pi.dev/docs/latest/prompt-templates> | read its bytes |
+| `themes` | *(routes no kind)* | directory | <https://pi.dev/docs/latest/themes> | read its bytes |
+
+**A citation is not a measurement.** `decided by` says where a row came from; `exercised by` says whether anybody made the product demonstrate it. Where a row records no method the answer is a page and nothing else, because absence of a record of measurement is not evidence of measurement.
+
+Here that is **0 run**, **6 read from the product's own bytes**, and **0 resting on a page alone**. The last number is the one worth acting on: a row in it is not wrong, it is untested, and the two are indistinguishable from here.
 
 A surface that routes no kind is owned deliberately: a backup captures
 it and a restore returns it, and no component is routed there because
@@ -36,7 +40,7 @@ surfaces makes a consumer's route ambiguous, and the guard in
 
 ## Considered and not owned
 
-8 rows. Each records what was searched, so the next reader does not repeat the search:
+12 rows. Each records what was searched, so the next reader does not repeat the search:
 
 - **`models.json`** — Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned.
 - **`AGENTS.override.md`** — Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away.
@@ -46,3 +50,7 @@ surfaces makes a consumer's route ambiguous, and the guard in
 - **`auth.json`** — Authentication credentials. Pi joins it against its agent directory -- `agentDir, "auth.json"` in the pinned 0.84.3 bundle, beside `keybindings.json`, `models.json` and the owned `settings.json`. Never owned and never captured, for the reason the antigravity list gives: a backup of someone else's credentials is a leak with a schedule. Recorded here because the declaration's `never_touch` is checked against this block.
 - **`keybindings.json`** — A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap.
 - **`working-directories`** — One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations.
+- **`git`** — Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *"When reconciliation changes the checkout, pi resets and cleans the clone"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository.
+- **`npm`** — Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again.
+- **`models-store.json`** — A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface.
+- **`pi-debug.log`** — Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured.

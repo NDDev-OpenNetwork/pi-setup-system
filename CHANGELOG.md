@@ -11,6 +11,92 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-08-28
+
+A citation is not a measurement, and this declaration had been
+presenting them as one column.
+
+`decided by` said where a row came from. Nothing said whether anybody had made
+the product demonstrate it. A vendor URL sat beside a bare *measured in the
+pinned binary* with no ranking between them, and a reader takes the URL as the
+stronger -- **which is backwards.** The `agent` route this estate carried for
+codex until the release before this one had a live vendor page behind it and
+did not exist. Antigravity's `agents` route was correct throughout the weeks
+its citation answered 404. The row that came out of a binary's own embedded
+reference was right.
+
+So every owned row now records `evidence`, on the only axis that predicts
+whether a row is true:
+
+- `ran` -- the product was run and the behaviour observed;
+- `bytes` -- the product's own shipped bytes were read, an embedded reference
+  or a path literal in the binary;
+- `page` -- a vendor page, and nothing else.
+
+**Where a row records no method the value is `page`**, because absence of a
+record of measurement is not evidence of measurement. That rule is what makes
+the column worth reading, and the first count it produced was unflattering: 2
+rows run, 10 read out of the product, **42 resting on a page alone**, with two
+harnesses carrying not one exercised row between them.
+
+So the column was used before it shipped. Two of those harnesses were taken
+apart against a temporary configuration home: one had its skill, agent and
+command routes each confirmed by running it and reading back what it resolved;
+the other refuses to start without a credential, and cannot be run here, but
+ships its own documentation inside the pinned package -- which is the product's
+bytes rather than its website, and confirms all six of its rows. Doing that
+also turned up four paths its own documentation names under the home this
+provider configures and that this record mentioned nowhere: two package
+directories the product clones into and cleans, a model catalogue cache, and a
+debug log. All four are declined now, with the reason.
+
+A third was taken apart with the command it ships for exactly this -- *show the
+configuration this product discovers* -- against a temporary home holding one
+marker component per declared directory. Seven of its rows came back named, and
+the eighth **found a fact this toolkit had been shipping wrong.** The plugin
+manifest is `plugin.json`. This estate's authoring reference said
+`.grok-plugin/plugin-index.json`, which is what a third-party page says and
+what the product does not read: the same directory registers as a plugin with
+the first file and as nothing at all with the second, and the product says why
+in its own words -- *"no plugins found in the source (no plugin.json or
+convention components)"*.
+
+That is the column earning its place on the day it shipped. The wrong filename
+had a citation, sat in a table beside correct rows, and passed every check in
+this repository, because no check here can ask a product a question. Only
+running it can.
+
+The count is **12 run, 15 read out of the product, 27 on a page alone**, from 2
+and 10 and 42. None of those 27 is known to be wrong. Every one is untested,
+and from here the two are indistinguishable -- which is what the release before
+this one demonstrated, and what a page-sourced manifest filename demonstrated
+again this week.
+
+The generated surfaces table carries both columns and counts them, so the
+number is in front of whoever opens the toolkit rather than in a plan nobody
+opens. A guard refuses an owned row that does not record one, and refuses a
+value outside the three so the field cannot drift into free text.
+
+**`scripts/check_citations.sh` asks the smaller question a person had been
+answering by hand**: does every cited page still answer. It is deliberately not
+in the gate -- a check that depends on seven vendors' websites being up goes
+red for somebody else's outage, and a check that is red for reasons nobody can
+fix stops being read. It reads citation fields only, because an earlier pass
+that swept every URL in the baselines reported two dead and neither was one: a
+URL template that cannot resolve by construction, and a URL quoted inside the
+note recording that it had rotted. **A checker that reads prose reports the fix
+as the defect.** Refusals that are not answers -- 401, 403, 405, 429 -- are
+inconclusive rather than dead, or the one finding that matters is buried in
+thirteen that do not.
+
+What it cannot check is in its own output: a page that still answers may have
+been rewritten to describe something else, and no fetch detects that. The
+`exercised by` column is the answer to that question, which is why both shipped
+together.
+
+Pi Coding Agent
+
+
 ## [0.0.18] - 2026-08-28
 
 The builder toolkit learns to teach component authoring, and in reading
