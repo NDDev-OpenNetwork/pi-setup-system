@@ -11,6 +11,36 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-08-28
+
+This product's nine surfaces were a vendor page each. They are read out
+of the product now, where the product says so.
+
+The pinned artifact was fetched and its bytes matched this baseline's own
+sha256 exactly. It carries an embedded reference table, the same way one other
+harness in this estate does, and five rows are named in it: the skills
+directory, the MCP configuration, the hooks file, the global workflows
+directory, and the settings file. Those five say `bytes` now rather than
+`page`.
+
+**Four are not named there and keep the weaker value.** A path a program builds
+by joining a directory to a name leaves no literal to find, so the absence
+argues nothing in either direction -- and the rule for a row with no recorded
+method is the weakest value, not a guess. Reporting them as confirmed because
+the other five were would be the ranking error this column was added to remove.
+
+The same reference names two paths this record had explained only inside a
+neighbouring row's note: the workspace tier of the workflow surface, beside the
+global one this provider owns. A note on another row is not where a reader
+looks before opening a file to find out what it is. They are declined rows now,
+with the reason on them.
+
+Across the seven: **12 run, 19 read out of the product, 23 resting on a page
+alone**, from 2 and 10 and 42 two releases ago.
+
+Pi Coding Agent
+
+
 ## [0.0.19] - 2026-08-28
 
 A citation is not a measurement, and this declaration had been
