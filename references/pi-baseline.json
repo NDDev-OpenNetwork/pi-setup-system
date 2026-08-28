@@ -262,6 +262,11 @@
         "path": ".pi-setup-system",
         "reason": "This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is.",
         "source": "this provider's own contract; no vendor page is involved"
+      },
+      {
+        "path": "$HOME/.agents/skills",
+        "reason": "Pi is a second product that reads the user-level convention root, and this is measured from the product rather than from a page. In the pinned 0.84.3 bundle, package/dist/core/package-manager.js:1976 builds `userAgentsSkillsDir = join(getHomeDir(), \".agents\", \"skills\")` and line 2017 loads from it: `addResources(\"skills\", collectAutoSkillEntries(userAgentsSkillsDir, \"agents\"), ...)`. Line 2012 names the root itself as `userAgentsBaseDir = dirname(userAgentsSkillsDir)`. A neighbouring use in trust-manager.js:160 *excludes* this directory while walking up for a project-scoped one, which is what a first reading of the variable name would have mistaken for the read -- so the line that matters is 2017, not 1976.\n\nNot declared as a user_root scoped profile, though Codex declares exactly that shape (codex/native-files/user-root/1, namespace `skills`, kind `skill`) for the same directory. Two providers owning one path is not two owners: `remove_managed` walks native_namespaces and calls remove_dir_all on each, so a namespace goes whole, and either provider's remove under this scope would take the other's skills. Recoverable -- the capture runs first and restore returns them byte-exact -- but a shared root wants one answer about who owns it, and that answer is the consumer's and the owner's rather than this provider's to assume. Raised.",
+        "source": "measured from the pinned 0.84.3 bundle (sha256:d07dc417...), package/dist/core/package-manager.js:1976,2012,2017"
       }
     ],
     "config_home_env": "PI_CODING_AGENT_DIR",

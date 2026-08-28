@@ -28,6 +28,18 @@ where two validators stopped being two.
   only Codex documents reading from the user-level root, and Antigravity's
   `.agents` surfaces are workspace-level with its global configuration
   elsewhere. The declaration says what to re-read if a second product adopts it.
+
+  Four of the seven do, and the sweep that found them read products rather than
+  pages -- pinned artifacts, digests verified before reading. Grok's own embedded
+  reference scans `.agents/skills/` at each tier; OpenCode's vendor lists it as
+  *Global agent-compatible* and the binary carries the literal; Pi loads from it
+  at `package-manager.js:2017`, where no Pi page says so.
+
+  Codex's declaration stands, and none of the other three is given the same
+  scope: a namespace is removed whole, so providers declaring one path are not
+  several owners. The same sweep found `~/.claude/skills` read by Grok and
+  OpenCode as well as by Claude Code. All recorded in the baselines, and raised
+  with the consumer, whose scope this is.
 - **One digest is one installability.** A bundle whose paths cannot be written
   on Windows installs on two systems out of three, and nothing in its digest
   says which two. Refused now: a segment whose stem is a reserved device
