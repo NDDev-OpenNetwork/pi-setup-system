@@ -336,6 +336,13 @@ pub enum TargetScope {
 }
 
 impl TargetScope {
+    /// The request argument that carries a scope, as `plan_request_fields`
+    /// names it.
+    ///
+    /// One constant, because the flag, the field and the kit's enum are three
+    /// spellings of one name and two of them are strings a consumer compares.
+    pub const REQUEST_FIELD: &'static str = "target_scope";
+
     /// Every scope a profile may name.
     pub const ALL: &'static [Self] = &[Self::Project, Self::UserRoot];
 

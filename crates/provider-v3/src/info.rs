@@ -228,6 +228,26 @@ pub struct ProviderInfo {
     /// exactly what it published before this field existed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scoped_projection_profiles: Vec<ProjectionProfile>,
+    /// The request-side arguments this release accepts.
+    ///
+    /// **A provider says what it will tolerate, so a consumer can send it.** A
+    /// request field runs the opposite way to a response field: a consumer that
+    /// starts sending an unknown flag makes every older provider refuse the
+    /// invocation outright, so tolerance has to be published before anything
+    /// sends. Measured before the acceptance existed:
+    /// `--target-scope is not an argument of this command`.
+    ///
+    /// The consumer sends `--target-scope` only where this list names it, so an
+    /// older release that does not publish the field is never sent the flag.
+    /// Omitted entirely when empty, which is what a build declaring no
+    /// request-side arguments publishes -- byte-identical to what it published
+    /// before this field existed.
+    ///
+    /// Not "which scopes this build knows". That is a different statement, and
+    /// argv makes it: an unknown scope is refused by name rather than served a
+    /// `global` plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plan_request_fields: Vec<String>,
 }
 
 /// What a build declares about itself, by name rather than by position.
@@ -345,6 +365,23 @@ impl ProviderInfo {
                 .collect(),
             projection_profile: declaration.projection_profile,
             scoped_projection_profiles: declaration.scoped_projection_profiles,
+            // **Held, not absent.** Every build here accepts `--target-scope`
+            // and would declare it as `[TargetScope::REQUEST_FIELD]` -- the
+            // vendored kit blesses the field, and the type below is ready for
+            // it.
+            //
+            // What it waits on is a *released* checker. Measured 2026-08-28:
+            // with the field declared, `ai-stp-cli 0.0.7` refuses **all seven**
+            // with `provider-info fields differ from the closed v3 schema`,
+            // because the released runner predates the regenerated kit. Trading
+            // one conformance failure for seven is not a trade.
+            //
+            // This is the third time the kit and its runner have disagreed and
+            // the second time in this direction. The rule that comes out of it:
+            // a kit blessing a field is permission to *build* against it, and a
+            // released runner accepting it is permission to *emit* it. One line
+            // changes when the CLI ships.
+            plan_request_fields: Vec::new(),
         })
     }
 
