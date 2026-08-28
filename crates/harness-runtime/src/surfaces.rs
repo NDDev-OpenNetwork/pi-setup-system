@@ -901,6 +901,60 @@ fn writes_where_nothing_is_routed(harness: &Harness, baseline: &Value, found: &m
     }
 }
 
+/// What actually exercised a row, which is not the same as what cites it.
+///
+/// A `source` column that mixes a vendor URL, a URL plus "measured", and a
+/// bare "measured in the pinned binary" ranks them by nothing, and a reader
+/// takes the URL as the strong one. **That ranking is upside down.** The
+/// `agent` route this provider carried for codex had a live vendor page behind
+/// it and did not exist; antigravity's `agents` route was correct throughout
+/// the weeks its citation answered 404; grok's `personas` came out of a
+/// binary's own embedded reference and was right.
+///
+/// So the axis is whether anybody ran the thing:
+///
+/// - `ran` -- the product was run and the behaviour observed;
+/// - `bytes` -- the product's own shipped bytes were read, an embedded
+///   reference or a path literal in the binary;
+/// - `page` -- a vendor page, and nothing else.
+///
+/// `page` is the default when a row records no method, because absence of a
+/// record of measurement is not evidence of measurement. It is also, today,
+/// most of them -- which is the reason to render it rather than to hide it.
+fn evidence_is_recorded(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    const ALLOWED: [&str; 3] = ["ran", "bytes", "page"];
+    let Some(rows) = baseline
+        .get(BLOCK)
+        .and_then(|block| block.get("surfaces"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for row in rows {
+        let Some(path) = row.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        if !harness.native_namespaces.contains(&path) {
+            continue;
+        }
+        match row.get("evidence").and_then(Value::as_str) {
+            Some(value) if ALLOWED.contains(&value) => {}
+            Some(value) => found.push(format!(
+                "{path:?} records evidence {value:?}, which is not one of \
+                 `ran`, `bytes` or `page`"
+            )),
+            None => found.push(format!(
+                "{path:?} is owned and does not say what exercised it. Add \
+                 `evidence`: `ran` if the product was run and the behaviour \
+                 observed, `bytes` if its own shipped bytes were read, `page` \
+                 if a vendor page is all there is. A citation is not a \
+                 measurement, and the weakest of the three is the one a reader \
+                 mistakes for the strongest."
+            )),
+        }
+    }
+}
+
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
 /// Empty is the only passing answer. Each string names one disagreement and is
@@ -916,6 +970,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     owned_paths_fold_together(harness, &mut found);
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
+    evidence_is_recorded(harness, baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
         found.push(format!(
@@ -1032,6 +1087,11 @@ mod tests {
                     "kinds": kinds,
                     "shape": "file",
                     "source": "https://example.invalid/docs",
+                    // A fixture standing for a real baseline satisfies
+                    // the same rules the real ones do. `page` is what a
+                    // row with only a URL behind it gets, and that is
+                    // what this one has.
+                    "evidence": "page",
                     // The rows carrying no kind need one, because
                     // `silent_about_routing_nothing` refuses an owned surface
                     // that routes nothing and says nothing. A fixture standing
@@ -1401,5 +1461,35 @@ mod tests {
         writes_where_nothing_is_routed(&blind, &plain, &mut found);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("routes no kind"), "{found:?}");
+    }
+
+    /// A citation is not a measurement, and the column that used to carry both
+    /// ranked them by nothing. Observed failing on the row that says where it
+    /// came from and not whether anybody ran it.
+    #[test]
+    fn an_owned_row_that_does_not_say_what_exercised_it_is_refused() {
+        let mut baseline = agreeing();
+        baseline["native_surfaces"]["surfaces"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence");
+        let mut found = Vec::new();
+        evidence_is_recorded(&TEST, &baseline, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("what exercised it"), "{found:?}");
+
+        // A value outside the three is refused too, so the field cannot become
+        // free text meaning whatever the writer felt.
+        let mut baseline = agreeing();
+        baseline["native_surfaces"]["surfaces"][0]["evidence"] = json!("documented");
+        let mut found = Vec::new();
+        evidence_is_recorded(&TEST, &baseline, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("not one of"), "{found:?}");
+
+        // And the agreeing fixture, untouched, says nothing.
+        let mut found = Vec::new();
+        evidence_is_recorded(&TEST, &agreeing(), &mut found);
+        assert!(found.is_empty(), "{found:?}");
     }
 }

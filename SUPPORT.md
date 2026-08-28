@@ -160,12 +160,12 @@ Configuration home as the product documents it: `~/.pi/agent`.
 
 | Path | Component kinds routed here | Decided by |
 | --- | --- | --- |
-| `AGENTS.md` | `instruction` | [source](https://pi.dev/docs/latest/sdk) |
-| `settings.json` | `setting` | [source](https://pi.dev/docs/latest/settings) |
-| `skills` | `skill` | [source](https://pi.dev/docs/latest/skills) |
-| `extensions` | `plugin` | [source](https://pi.dev/docs/latest/extensions) |
-| `prompts` | `command` | [source](https://pi.dev/docs/latest/prompt-templates) |
-| `themes` | -- | [source](https://pi.dev/docs/latest/themes) |
+| `AGENTS.md` | `instruction` | [source](https://pi.dev/docs/latest/sdk; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `settings.json` | `setting` | [source](https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `skills` | `skill` | [source](https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `extensions` | `plugin` | [source](https://pi.dev/docs/latest/extensions; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `prompts` | `command` | [source](https://pi.dev/docs/latest/prompt-templates; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `themes` | -- | [source](https://pi.dev/docs/latest/themes; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
 
 A path routing no component kind is owned so a setup can carry it;
 nothing compiles a component to it.
@@ -192,6 +192,14 @@ Not declared as a user_root scoped profile, though Codex declares exactly that s
 **`keybindings.json`** -- A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
 
 **`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
+
+**`git`** -- Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *"When reconciliation changes the checkout, pi resets and cleans the clone"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
+
+**`npm`** -- Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
+
+**`models-store.json`** -- A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
+
+**`pi-debug.log`** -- Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
 
 ## Response
 

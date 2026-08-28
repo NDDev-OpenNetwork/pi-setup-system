@@ -198,7 +198,8 @@
           "instruction"
         ],
         "shape": "file",
-        "source": "https://pi.dev/docs/latest/sdk"
+        "source": "https://pi.dev/docs/latest/sdk; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes"
       },
       {
         "path": "settings.json",
@@ -206,7 +207,8 @@
           "setting"
         ],
         "shape": "file",
-        "source": "https://pi.dev/docs/latest/settings",
+        "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes",
         "note": "paths in this file resolve relative to ~/.pi/agent"
       },
       {
@@ -215,7 +217,8 @@
           "skill"
         ],
         "shape": "directory",
-        "source": "https://pi.dev/docs/latest/skills"
+        "source": "https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes"
       },
       {
         "path": "extensions",
@@ -223,7 +226,8 @@
           "plugin"
         ],
         "shape": "directory",
-        "source": "https://pi.dev/docs/latest/extensions"
+        "source": "https://pi.dev/docs/latest/extensions; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes"
       },
       {
         "path": "prompts",
@@ -231,14 +235,16 @@
           "command"
         ],
         "shape": "directory",
-        "source": "https://pi.dev/docs/latest/prompt-templates",
+        "source": "https://pi.dev/docs/latest/prompt-templates; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes",
         "note": "~/.pi/agent/prompts/*.md; discovery is non-recursive"
       },
       {
         "path": "themes",
         "kinds": [],
         "shape": "directory",
-        "source": "https://pi.dev/docs/latest/themes",
+        "source": "https://pi.dev/docs/latest/themes; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes",
         "note": "`~/.pi/agent/themes/*.json`, a JSON file per theme defining all 51 required colour tokens; `settings.json`'s `theme` names which one is active. Owned so a setup can carry a theme; the key that selects it is a setting, so no component kind routes here"
       }
     ],
@@ -282,6 +288,26 @@
         "path": "working-directories",
         "reason": "One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations.",
         "source": "measured from the pinned 0.84.3 bundle, package/dist/core"
+      },
+      {
+        "path": "git",
+        "reason": "Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *\"When reconciliation changes the checkout, pi resets and cleans the clone\"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository.",
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+      },
+      {
+        "path": "npm",
+        "reason": "Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again.",
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+      },
+      {
+        "path": "models-store.json",
+        "reason": "A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface.",
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+      },
+      {
+        "path": "pi-debug.log",
+        "reason": "Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured.",
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
       }
     ],
     "config_home_env": "PI_CODING_AGENT_DIR",
@@ -338,5 +364,5 @@
     "version": "0.84.3",
     "verified_at": "2026-08-28T04:43:37+00:00"
   },
-  "setup_catalogue_digest": "sha256:1220eefb80bea22acb7baf0454229ee6fe3369fb90ad24810b8365ee2ef16a20"
+  "setup_catalogue_digest": "sha256:c6c72159372e5699e33097d73b59a221596206c32c061297fdd4b2ee7eb5fb3b"
 }
