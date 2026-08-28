@@ -561,6 +561,49 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Where a version tree can hold its executable, most specific first.
+///
+/// Looked for rather than assumed. This build pins one version and knows where
+/// *its* executable sits inside the archive; an older tree was written by an
+/// older build, whose artifact table this one does not carry. Every shape it
+/// could have used is tried, and none is guessed at: if the file is not there,
+/// the refusal says where it looked.
+///
+/// **The platform is a parameter and not a `cfg!`**, for the same reason
+/// [`exposed_name_on`] takes one. That is not hypothetical here.
+/// [`Software::member_hint`] answers with the *first* artifact's member
+/// whatever host is asking, the tables in this repository list Linux first, and
+/// so a Windows rollback looked for `package/bin/opencode` while the file on
+/// disk was `package/bin/opencode.exe`. Ubuntu and macOS passed; only the
+/// evidence run on Windows failed, and a `cfg!` here would have left the fix
+/// unprovable from the machine that wrote it.
+fn executable_candidates(
+    software: &Software,
+    version_root: &Path,
+    os: &str,
+    arch: &str,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut push = |relative: &str| {
+        let path = version_root.join(relative);
+        if !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    };
+    // This host's own member first: it is the only one that is right by
+    // construction rather than by the table happening to be ordered well.
+    if let Ok(artifact) = software.artifact_for(os, arch) {
+        push(artifact.member);
+    }
+    // Then the shapes an older build could have written.
+    push(software.member_hint());
+    push(software.command);
+    if os == "windows" {
+        push(&format!("{}.exe", software.command));
+    }
+    candidates
+}
+
 /// Point the exposed command back at a version that is already on disk.
 ///
 /// Installing 1.0.6 leaves 1.0.5 in its own directory and moves only the
@@ -606,15 +649,8 @@ pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed>
     }
 
     let version_root = root.join(to);
-    // Looked for rather than assumed. This build pins one version and knows
-    // where *its* executable sits inside the archive; an older tree was written
-    // by an older build, whose artifact table this one does not carry. Both
-    // shapes it could have used are tried, and neither is guessed at: if the
-    // file is not there, the refusal says where it looked.
-    let candidates = [
-        version_root.join(software.member_hint()),
-        version_root.join(software.command),
-    ];
+    let (os, arch) = crate::platform_of_this_host();
+    let candidates = executable_candidates(software, &version_root, os, arch);
     let Some(executable) = candidates.iter().find(|path| path.is_file()) else {
         return Err(Error::new(
             ReasonCode::StateUnavailable,
@@ -1083,6 +1119,95 @@ mod tests {
             Present::under(&root, "codex").exposed.as_deref(),
             Some("1.2.3")
         );
+    }
+
+    /// Two platforms whose executables are named differently inside the
+    /// archive, which is the ordinary case and not an exotic one: every
+    /// `windows/*` artifact in this repository ends in `.exe` and no other
+    /// does.
+    const CROSS_ARTIFACTS: &[Artifact] = &[
+        Artifact {
+            platform: "linux/x86_64",
+            url: "https://example.invalid/linux.tgz",
+            bytes: 0,
+            sha256: "sha256:0",
+            shape: Shape::GzipTar,
+            member: "package/bin/tool",
+        },
+        Artifact {
+            platform: "windows/x86_64",
+            url: "https://example.invalid/windows.tgz",
+            bytes: 0,
+            sha256: "sha256:0",
+            shape: Shape::GzipTar,
+            member: "package/bin/tool.exe",
+        },
+    ];
+
+    fn cross() -> Software {
+        Software {
+            version: "1.2.3",
+            command: "tool",
+            delivery: Delivery::Artifacts(CROSS_ARTIFACTS),
+            unsupported: &[],
+            previous: None,
+        }
+    }
+
+    /// A rollback on Windows looked for the Linux member and refused a tree
+    /// that held the executable all along.
+    ///
+    /// `member_hint` answers with the *first* artifact's member whatever host
+    /// asks, and every table here lists Linux first. The evidence run caught it
+    /// on `windows-latest` while Ubuntu and macOS passed, which is exactly the
+    /// shape a `cfg!` would have made unprovable from the machine that fixes
+    /// it -- so the platform is a parameter and this runs everywhere.
+    #[test]
+    fn the_candidate_list_is_this_hosts_member_and_not_the_tables_first() {
+        let root = Path::new("/prefix/1.2.2");
+
+        let windows = executable_candidates(&cross(), root, "windows", "x86_64");
+        assert_eq!(
+            windows.first(),
+            Some(&root.join("package/bin/tool.exe")),
+            "this host's own member comes first: {windows:?}"
+        );
+        assert!(
+            windows.contains(&root.join("tool.exe")),
+            "the bare command with its extension is a shape an older tree may \
+             have used: {windows:?}"
+        );
+
+        let linux = executable_candidates(&cross(), root, "linux", "x86_64");
+        assert_eq!(
+            linux.first(),
+            Some(&root.join("package/bin/tool")),
+            "{linux:?}"
+        );
+        assert!(
+            !linux.contains(&root.join("tool.exe")),
+            "the Windows shape is not offered to a platform that cannot run it: {linux:?}"
+        );
+
+        // The defect, stated as the thing that must not come back: the hint is
+        // the Linux member on both hosts, so a list built from it alone sends a
+        // Windows rollback to a file that is not there.
+        assert_eq!(cross().member_hint(), "package/bin/tool");
+        assert_ne!(
+            windows.first(),
+            Some(&root.join(cross().member_hint())),
+            "a Windows candidate list must not start at the hint"
+        );
+    }
+
+    /// An unsupported platform still gets a usable list rather than an empty
+    /// one: the tree may have been written by a build that supported it.
+    #[test]
+    fn a_platform_with_no_artifact_still_offers_the_older_shapes() {
+        let root = Path::new("/prefix/1.2.2");
+        let found = executable_candidates(&software(), root, "windows", "x86_64");
+        assert!(!found.is_empty(), "{found:?}");
+        assert!(found.contains(&root.join("codex.exe")), "{found:?}");
     }
 
     fn scratch(name: &str) -> PathBuf {

@@ -40,7 +40,7 @@ surfaces makes a consumer's route ambiguous, and the guard in
 
 ## Considered and not owned
 
-12 rows. Each records what was searched, so the next reader does not repeat the search:
+13 rows. Each records what was searched, so the next reader does not repeat the search:
 
 - **`models.json`** — Named by the consumer's catalog as a second setting surface. The settings documentation does not describe it, and a row nobody can source is not owned.
 - **`AGENTS.override.md`** — Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away.
@@ -54,3 +54,4 @@ surfaces makes a consumer's route ambiguous, and the guard in
 - **`npm`** — Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again.
 - **`models-store.json`** — A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface.
 - **`pi-debug.log`** — Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured.
+- **`trust.json`** — A person's saved decisions about which project folders may load project-local settings and resources and **execute project extensions**. The product's own shipped documentation names it five times and is explicit about what turns on it: *"pi asks before trusting a project folder that contains project-local settings, resources, or project `.agents/skills` and has no saved decision for the folder or a parent folder in `~/.pi/agent/trust.json`. Trusting a project allows pi to load `.pi/settings.json` and `.pi` resources, install missing project packages, and execute project extensions."*
