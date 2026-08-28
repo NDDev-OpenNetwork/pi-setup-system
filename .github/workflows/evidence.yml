@@ -57,4 +57,4 @@ jobs:
           suffix=""
           [ "$RUNNER_OS" = "Windows" ] && suffix=".exe"
           exe="target/release/pi-setup-system$suffix"
-          "$py" scripts/evidence.py --binary "$exe" --harness pi --writes-absent "neither --version nor list writes anything; installing an extension needs a source"
+          "$py" scripts/evidence.py --binary "$exe" --harness pi --writes-absent "neither --version nor list writes anything; installing an extension needs a source" --probe-absent "list reports extensions from settings and this setup installs none; no command renders the resolved settings"

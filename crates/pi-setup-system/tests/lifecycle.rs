@@ -30,3 +30,15 @@ fn a_target_that_is_not_one_is_refused_on_this_system() {
     let problems = harness_runtime::probe::refuses_a_target_it_should(exe);
     assert!(problems.is_empty(), "{}", problems.join("\n  "));
 }
+
+/// Two processes cannot write one target at once, on this system.
+///
+/// The lock is an in-process claim over `File::try_lock`, and the second is an
+/// operating-system primitive -- `flock` here, `LockFileEx` on Windows. A unit
+/// test in one process cannot reach it, so this drives real ones.
+#[test]
+fn one_process_writes_this_target_at_a_time() {
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_pi-setup-system"));
+    let problems = harness_runtime::probe::one_writer_at_a_time(exe);
+    assert!(problems.is_empty(), "{}", problems.join("\n  "));
+}
