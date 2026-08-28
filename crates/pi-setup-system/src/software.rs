@@ -6,6 +6,11 @@
 //! Every member path below was read out of the archive it names, not assumed:
 //! codex's carries the target triple and so genuinely differs per platform.
 //!
+//! Where a `previous_software_artifacts` block is present, it is transcribed
+//! too. It is not a second choice: `refresh_software_pins.py` puts the outgoing
+//! current pin there on a bump, so the pair is always two consecutive real
+//! releases and there is still exactly one value to keep fresh.
+//!
 //! Do not edit. The test at the bottom re-reads that baseline and compares it
 //! field by field, so an edit here fails rather than silently installing bytes
 //! nobody measured.
@@ -70,6 +75,9 @@ pub(crate) const SOFTWARE: Software = Software {
     command: "pi",
     delivery: Delivery::Artifacts(ARTIFACTS),
     unsupported: &[],
+    // This harness has not been bumped since it was pinned, so there is
+    // no earlier release to move between. Absent rather than invented.
+    previous: None,
 };
 
 #[cfg(test)]
@@ -125,6 +133,45 @@ mod tests {
                 "{} disagrees about whether the bytes are the program",
                 artifact.platform
             );
+        }
+    }
+
+    /// The second pin is the baseline's, or it is absent in both places.
+    ///
+    /// Asserted from either side rather than only where it exists: a harness
+    /// that has never been bumped must compile in `None`, and a build that
+    /// dropped the block while the baseline still carried it would otherwise
+    /// pass by having nothing to compare.
+    #[test]
+    fn the_version_this_build_can_move_between_is_the_one_measured_before_it() {
+        let baseline = measured();
+        let recorded = baseline.get("previous_software_artifacts");
+        let Some(earlier) = SOFTWARE.previous else {
+            assert!(
+                recorded.is_none(),
+                "the baseline records a previous release and this build names none"
+            );
+            return;
+        };
+        let block = recorded.unwrap_or_else(|| {
+            panic!("this build names a previous release the baseline does not record")
+        });
+        assert_eq!(block["version"], earlier.version);
+        assert_ne!(
+            earlier.version, SOFTWARE.version,
+            "a second pin equal to the first is one version wearing two names"
+        );
+        let published = block["platforms"].as_object().unwrap();
+        assert_eq!(
+            earlier.artifacts.len(),
+            published.len(),
+            "the previous table and the baseline disagree on how many platforms exist"
+        );
+        for artifact in earlier.artifacts {
+            let entry = &published[artifact.platform];
+            assert_eq!(entry["url"], artifact.url, "{}", artifact.platform);
+            assert_eq!(entry["bytes"], artifact.bytes, "{}", artifact.platform);
+            assert_eq!(entry["sha256"], artifact.sha256, "{}", artifact.platform);
         }
     }
 

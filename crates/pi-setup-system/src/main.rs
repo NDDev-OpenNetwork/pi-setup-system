@@ -26,6 +26,8 @@ pub const PI: Harness = Harness {
     vendor: "Earendil Works",
     documented_config_home: "~/.pi/agent",
     config_home_env: "PI_CODING_AGENT_DIR",
+    // One home, one variable: nothing here is conditional.
+    config_home_note: "",
     control_directory: ".pi-setup-system",
     state_file: "NDDEV-PI-PROVIDER.json",
     predecessor_state_file: "NDDEV-PI-SETUP.json",
