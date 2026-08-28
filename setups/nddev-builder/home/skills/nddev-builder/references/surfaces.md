@@ -22,7 +22,7 @@ JSON. The vendor documents no comment support and publishes no schema; searched 
 | path | kinds | shape | decided by | exercised by |
 |---|---|---|---|---|
 | `AGENTS.md` | instruction | file | <https://pi.dev/docs/latest/sdk> | read its bytes |
-| `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> | read its bytes |
+| `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> | **ran it** |
 | `skills` | skill | directory | <https://pi.dev/docs/latest/skills> | read its bytes |
 | `extensions` | plugin | directory | <https://pi.dev/docs/latest/extensions> | read its bytes |
 | `prompts` | command | directory | <https://pi.dev/docs/latest/prompt-templates> | read its bytes |
@@ -30,7 +30,7 @@ JSON. The vendor documents no comment support and publishes no schema; searched 
 
 **A citation is not a measurement.** `decided by` says where a row came from; `exercised by` says whether anybody made the product demonstrate it. Where a row records no method the answer is a page and nothing else, because absence of a record of measurement is not evidence of measurement.
 
-Here that is **0 run**, **6 read from the product's own bytes**, and **0 resting on a page alone**. The last number is the one worth acting on: a row in it is not wrong, it is untested, and the two are indistinguishable from here.
+Here that is **1 run**, **5 read from the product's own bytes**, and **0 resting on a page alone**. The last number is the one worth acting on: a row in it is not wrong, it is untested, and the two are indistinguishable from here.
 
 A surface that routes no kind is owned deliberately: a backup captures
 it and a restore returns it, and no component is routed there because

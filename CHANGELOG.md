@@ -11,6 +11,73 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-08-29
+
+A posture that restates a product's own default grants nothing, and
+two of the seven were doing it.
+
+`full-auto` is meant to leave nothing asked, nothing sandboxed, and every
+capability the product carries switched on. Three harnesses were brought to
+that last week. This is the other four, each measured against the product's own
+pinned artifact -- whose bytes were checked against this repository's recorded
+digest before anything was read from them -- and the result was not four
+products with tools left off. It was two of each.
+
+**Two gained a capability that was genuinely switched off.** One product's own
+default configuration object declares web-search auto-acceptance as false, so
+the posture had been calling itself full auto while asking about a search every
+time. Another names four inputs to its permission decision in its own runtime
+log and this posture set two; the agent may now reach files outside the
+workspace, see files the repository ignores, and continue rather than stop at
+its invocation ceiling.
+
+**Two were setting a value the product already used.** One product's permission
+catch-all *is* its default -- with no configuration at all its resolved rule set
+already allows everything -- and seven of its rules are the product's own, moved
+by no key at any scope. Another's skill-command toggle defaults to on in
+documentation shipped inside the package itself.
+
+Both are kept. A posture that states what it wants survives the product changing
+its mind, and removing them would leave the posture silent about the one thing
+it exists to say. What changes is that each now records **which it is**, because
+a setting that restates a default reads as a switch somebody threw, and the
+reader stops looking for the switch that was not.
+
+**How the two cases were told apart, since it is small and transferable:** write
+the candidate keys into a configuration file, ask the product to print what it
+resolved, and put an invented key in the same file. Without that control, a key
+surviving proves nothing -- the command might be echoing the file rather than
+parsing it. With it, eleven keys one product reads separated cleanly from six it
+drops in silence, every one of the six a plausible spelling.
+
+**One key was deliberately not written.** Its name is carried by the same
+registry that produced the three that were, but its value is an enumeration and
+which spelling the settings file takes could not be measured here without a
+credential. A plausible value the product does not read is worse than an absent
+one: it reads as configured and does nothing.
+
+**Nine surface rows stopped being unfalsifiable.** The evidence column records
+what exercised each declared surface -- a run, the product's own bytes, or a
+page alone -- and a page-only row is not merely unverified, it is a row where a
+wrong answer is invisible to every check in this repository. Six were answered
+by literals in one product's pinned artifact, joined to the home its environment
+variable resolves; two by driving products offline; one by a product naming its
+own settings file on screen. Fourteen run, twenty-five bytes, fifteen page, from
+twelve, nineteen and twenty-three.
+
+**The gate stopped being red for a reason belonging to no branch.** Its render
+check compares the published trees against this source, which is a property of
+the default branch: a branch that legitimately changes code has published
+nothing yet. The entry point asked that question unconditionally while telling
+you to run it before opening a pull request, so it was red on every branch that
+changed anything. It picks by reference now and says which question it asked
+and why.
+
+Also advances this product's pinned version by one release, and with it gains a
+previous version to move back to -- so a second harness can now cross a real
+version transition end to end rather than declaring an operation nothing
+exercises.
+
 ## [0.0.21] - 2026-08-28
 
 A rollback on Windows looked for the Linux executable and refused a
