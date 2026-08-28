@@ -372,4 +372,65 @@ mod tests {
             "the entry point used the shadow rather than the pinned {pinned}: {said}"
         );
     }
+
+    /// The entry point asks the render question the ref it is on can answer.
+    ///
+    /// There are two, and `check_render.sh` says in its own header that they
+    /// are not the same one: strict compares the published trees against this
+    /// source and is a property of `main`; `--deterministic` asks whether the
+    /// renderer agrees with itself and is what a branch can answer. The gate
+    /// asked strict unconditionally while telling you, in *its* header, to run
+    /// it before opening a pull request — so the documented pre-PR command was
+    /// red on every branch that changed anything, for a reason belonging to no
+    /// branch. The ways out of that are to ignore the gate or to misread its
+    /// exit status, and both happened.
+    ///
+    /// Tested through `--render-mode <ref>` rather than by rendering: the
+    /// decision is the thing that was wrong, and it is one function. Driving it
+    /// with three refs also proves it *distinguishes* them — an implementation
+    /// that answered `deterministic` to everything would satisfy a branch-only
+    /// assertion and quietly stop proving the trees are what this source says.
+    #[test]
+    #[cfg(unix)]
+    fn the_entry_point_asks_the_render_question_this_ref_can_answer() {
+        use std::process::Command;
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("scripts/gate.sh").is_file() {
+            assert!(
+                !root.join("tools/render_public_trees.py").is_file(),
+                "the gate entry point is missing from a workspace that still \
+                 renders the public trees; scripts/gate.sh was deleted rather \
+                 than never present"
+            );
+            return;
+        }
+
+        let asked = |git_ref: &str| {
+            let out = Command::new("bash")
+                .arg("scripts/gate.sh")
+                .arg("--render-mode")
+                .arg(git_ref)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "--render-mode {git_ref} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+
+        assert_eq!(asked("main"), "strict", "main publishes, so it is compared");
+        assert_eq!(
+            asked("fix/something"),
+            "deterministic",
+            "a branch has published nothing, so strict is red by construction"
+        );
+        // CI checks out a detached HEAD, where `git branch --show-current` is
+        // empty. Empty is not `main`, and the question it can answer is the
+        // second one.
+        assert_eq!(asked(""), "deterministic", "a detached HEAD is not main");
+    }
 }

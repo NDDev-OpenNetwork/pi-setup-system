@@ -207,9 +207,9 @@
           "setting"
         ],
         "shape": "file",
-        "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
-        "evidence": "bytes",
-        "note": "paths in this file resolve relative to ~/.pi/agent"
+        "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the pinned 0.84.3 package",
+        "evidence": "ran",
+        "note": "paths in this file resolve relative to ~/.pi/agent Confirmed 2026-08-29 by running the pinned 0.84.3 package: `pi config`, which needs no credential where a prompt does, opens on the global-resources scope and names `~/.pi/agent/settings.json` on screen as the file it manages. One caution recorded with it: that label did not change when `PI_CODING_AGENT_DIR` was pointed elsewhere, so it may be display text rather than a resolved path -- which costs this route nothing, because `~/.pi/agent` is the target this provider is handed, but would matter to anyone reading the line as proof that the home follows the variable."
       },
       {
         "path": "skills",
@@ -369,5 +369,5 @@
     "version": "0.84.3",
     "verified_at": "2026-08-28T04:43:37+00:00"
   },
-  "setup_catalogue_digest": "sha256:8c56ac7221069d0d41c1b371e047789c86fe2e3e222e2d1442f2d74c7f276854"
+  "setup_catalogue_digest": "sha256:00bbc5f686fc04e5aadc7f0c9e8255c40fc3cacc0841e30248e9d82a189a9bb7"
 }
