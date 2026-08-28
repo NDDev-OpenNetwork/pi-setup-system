@@ -322,6 +322,48 @@ mod tests {
     /// Neither changed anything about the product — a target that looks
     /// configured and is not, which is the failure this estate refuses one
     /// level up and had been shipping one level down.
+    /// Two files in one setup that a case-insensitive filesystem would merge.
+    ///
+    /// macOS and Windows fold case, so such a pair is one file there and two on
+    /// Linux -- the setup would install different content depending on the
+    /// machine, and its catalogue digest would differ per platform. The bundle
+    /// reader has refused this for an arriving bundle since 0.0.11; this is the
+    /// same rule applied to what this repository authors.
+    /// Every component entry point describes itself.
+    ///
+    /// A `SKILL.md` or an agent whose frontmatter lost its `description` still
+    /// installs, verifies and restores cleanly -- and the product names it after
+    /// its directory and gives the model nothing to choose on. Documents under
+    /// `references/` and files under `commands/` are exempt, because the
+    /// products measured do not read frontmatter from either.
+    #[test]
+    fn every_component_entry_point_describes_itself() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let problems = harness_runtime::catalog::undescribed(&catalog.list().unwrap());
+        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
+    #[test]
+    fn no_two_files_in_a_setup_differ_only_in_case() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let problems = harness_runtime::catalog::colliding(&catalog.list().unwrap());
+        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
     #[test]
     fn a_setup_that_writes_configuration_says_where_its_format_came_from() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

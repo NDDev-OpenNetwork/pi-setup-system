@@ -261,6 +261,125 @@ fn files_under(root: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// A component entry point that carries no frontmatter, or none the product
+/// reads.
+///
+/// [`unsourced`] exempts documents on the ground that *prose has no keys to
+/// spell wrong*. An entry point is not prose: its `description` is what the
+/// model reads to decide whether to invoke the thing at all. A `SKILL.md` that
+/// lost its frontmatter installs, verifies and restores cleanly, and the
+/// product names it after its directory and gives the model nothing to choose
+/// on -- the same shape as a correct key under a wrong name, one level up.
+///
+/// **Which files are entry points is measured, not assumed**, and the negative
+/// half is the part that took the measuring:
+///
+/// * `SKILL.md`, and a file directly under `agents/`, are entry points. Cursor's
+///   own generator writes `{name, description}` for exactly these.
+/// * A file under `references/` is **not** -- it is a document a skill links to,
+///   and requiring frontmatter there would be inventing a rule.
+/// * A file under `commands/` is **not**. Cursor's loader builds
+///   `{id, name: filename.replace(".md",""), path, scope}`: the name comes from
+///   the filename and no frontmatter is read. Requiring it would be a rule the
+///   product does not have.
+#[must_use]
+pub fn undescribed(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        for name in files_under(&setup.payload) {
+            if !is_entry_point(&name) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(setup.payload.join(&name)) else {
+                found.push(format!("{} cannot read {name:?}", setup.manifest.id));
+                continue;
+            };
+            for key in ["name", "description"] {
+                if !frontmatter_names(&text, key) {
+                    found.push(format!(
+                        "{} ships {name:?} with no `{key}` in its frontmatter, and a component \
+                         the product cannot describe is one the model cannot choose",
+                        setup.manifest.id
+                    ));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether a relative path inside a setup is a component's entry point.
+fn is_entry_point(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let Some(leaf) = parts.last() else {
+        return false;
+    };
+    // Anything under `references/` is a document, whatever it is called.
+    if parts.contains(&"references") {
+        return false;
+    }
+    if leaf.eq_ignore_ascii_case("SKILL.md") {
+        return true;
+    }
+    // `agents/<name>.md`, and only directly under it.
+    parts.len() >= 2
+        && parts[parts.len() - 2] == "agents"
+        && std::path::Path::new(leaf)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+/// Whether a file opens with YAML frontmatter naming `key`.
+///
+/// Read by structure rather than by searching the whole file: a `description:`
+/// three hundred lines into the prose is not frontmatter, and a guard that
+/// matched it would be measuring the document instead of its header.
+fn frontmatter_names(text: &str, key: &str) -> bool {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return false;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return false;
+    };
+    rest[..end]
+        .lines()
+        .any(|line| line.trim_start().starts_with(&format!("{key}:")))
+}
+
+/// Two files in one setup that a case-insensitive filesystem would merge.
+///
+/// macOS and Windows fold case by default, so `SKILL.md` and `skill.md` in one
+/// setup are **one** file there and two on Linux. The setup would then install
+/// different content depending on the machine, and its
+/// `setup_catalogue_digest` would differ per platform — which the three-OS
+/// matrix does catch, but only after the mistake has been written and pushed.
+///
+/// `provider_v3::bundle` already refuses this for a bundle *arriving* from a
+/// consumer, on the same reasoning: *"the second would silently overwrite the
+/// first"*. This applies the rule to the files this repository authors, which
+/// is the direction it was missing.
+#[must_use]
+pub fn colliding(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        let mut folded: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for name in files_under(&setup.payload) {
+            if let Some(other) = folded.insert(name.to_lowercase(), name.clone())
+                && other != name
+            {
+                found.push(format!(
+                    "{} ships {name:?} and {other:?}, which differ only in case and are one \
+                     file on macOS and Windows",
+                    setup.manifest.id
+                ));
+            }
+        }
+    }
+    found
+}
+
 /// Every setup that writes a configuration file and does not say where its
 /// format came from, by setup id.
 ///

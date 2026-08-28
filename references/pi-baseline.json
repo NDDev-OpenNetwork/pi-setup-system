@@ -285,7 +285,14 @@
       }
     ],
     "config_home_env": "PI_CODING_AGENT_DIR",
-    "config_home_env_note": "Documented at https://pi.dev/docs/latest/settings and recorded in this baseline as `configuration.environment_override`. Not measured by writing: no credential-free command makes this product write its home."
+    "config_home_env_note": "Documented at https://pi.dev/docs/latest/settings and recorded in this baseline as `configuration.environment_override`. Not measured by writing: no credential-free command makes this product write its home.",
+    "configuration_format": {
+      "file": "settings.json",
+      "grammar": "json",
+      "accepts_comments": false,
+      "note": "JSON. The vendor documents no comment support and publishes no schema; searched 2026-08-28 and none found on SchemaStore or the vendor's own site.",
+      "measured_at": "2026-08-28"
+    }
   },
   "software_artifacts": {
     "command": "pi",
