@@ -215,6 +215,98 @@ fn credentials_are_disclaimed(harness: &Harness, baseline: &Value, found: &mut V
 /// grok's `requirements.toml`, which is an org-enforced fail-closed clamp named
 /// after none of that; that one is disclaimed because a person read the page.
 /// A floor under attention, not a replacement for it.
+/// Two owned namespaces a case-insensitive filesystem would merge.
+///
+/// The declaration is one string set for three operating systems, and two of
+/// them fold case. `skills` and `Skills` are two namespaces on Linux and one on
+/// macOS and Windows, so the same declaration would mean different things per
+/// platform: `remove_managed` would walk one directory twice,
+/// `digest::of_owned` reduces by string prefix and would hash the same tree
+/// under two names, and a bundle routed to either would land in whichever the
+/// filesystem chose.
+///
+/// The scoped namespaces are folded in with the global ones rather than checked
+/// separately, because a filesystem does not know about scopes — if a scoped
+/// `Skills` sat beside a global `skills` under one root, they would still be
+/// one directory.
+/// The file whose grammar was measured must be one this build owns.
+///
+/// `configuration_format` records what a product's configuration file *is* --
+/// JSON, JSONC or TOML, whether the parser takes comments, and the vendor's
+/// schema where one exists. Seven measurements that would otherwise live only
+/// in a plan, which is where the previous seven ended up before being
+/// re-derived.
+///
+/// Bound rather than merely written, because a record naming a path this build
+/// does not own is a measurement about somebody else's file. It cannot check
+/// the *grammar* -- this build has no parser for three of them and asserting
+/// one would be the claim-without-a-source this estate keeps removing -- so it
+/// checks the one thing it can: that the file named is in the declaration.
+fn the_measured_format_names_an_owned_file(
+    harness: &Harness,
+    block: &serde_json::Map<String, Value>,
+    found: &mut Vec<String>,
+) {
+    let Some(format) = block.get("configuration_format") else {
+        found.push(format!(
+            "{BLOCK} records no configuration_format, so what a file at the owned \
+             configuration path *is* -- its grammar, whether it takes comments, whether a \
+             vendor publishes a schema -- is a measurement nobody kept"
+        ));
+        return;
+    };
+    let Some(named) = format.get("file").and_then(Value::as_str) else {
+        found.push(format!("{BLOCK}.configuration_format names no file"));
+        return;
+    };
+    if !harness.native_namespaces.contains(&named) {
+        found.push(format!(
+            "{BLOCK}.configuration_format measures {named:?}, which is not in \
+             native_namespaces -- a grammar recorded for a file this build does not own is a \
+             measurement about somebody else's"
+        ));
+    }
+    for key in ["grammar", "note"] {
+        if format
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            found.push(format!("{BLOCK}.configuration_format has no {key}"));
+        }
+    }
+    if format
+        .get("accepts_comments")
+        .and_then(Value::as_bool)
+        .is_none()
+    {
+        found.push(format!(
+            "{BLOCK}.configuration_format does not say whether the parser accepts comments, \
+             and absent is not the same answer as false"
+        ));
+    }
+}
+
+fn owned_paths_fold_together(harness: &Harness, found: &mut Vec<String>) {
+    let mut folded: std::collections::BTreeMap<String, &str> = std::collections::BTreeMap::new();
+    let owned = harness.native_namespaces.iter().copied().chain(
+        harness
+            .scoped_projections
+            .iter()
+            .flat_map(|scope| scope.native_namespaces.iter().copied()),
+    );
+    for name in owned {
+        if let Some(other) = folded.insert(name.to_lowercase(), name)
+            && other != name
+        {
+            found.push(format!(
+                "{name:?} and {other:?} are both owned and differ only in case, so they are one \
+                 path on macOS and Windows and two on Linux"
+            ));
+        }
+    }
+}
+
 fn policy_is_not_owned(harness: &Harness, found: &mut Vec<String>) {
     let owned: Vec<&str> = harness
         .native_namespaces
@@ -787,6 +879,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     shares_a_name_with_the_protocol(baseline, &mut found);
     credentials_are_disclaimed(harness, baseline, &mut found);
     policy_is_not_owned(harness, &mut found);
+    owned_paths_fold_together(harness, &mut found);
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
 
@@ -799,6 +892,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     };
 
     the_home_and_what_moves_it(harness, block, &mut found);
+    the_measured_format_names_an_owned_file(harness, block, &mut found);
 
     let Some(surfaces) = block.get("surfaces").and_then(Value::as_array) else {
         found.push(format!("{BLOCK}.surfaces is missing or not an array"));
@@ -923,6 +1017,16 @@ mod tests {
                 "config_home": TEST.documented_config_home,
                 "config_home_env": TEST.config_home_env,
                 "config_home_env_note": "measured against the product",
+                // The fixture has to satisfy every rule a real baseline does,
+                // or it stops standing for one. `settings.json` is the first
+                // of TEST's owned namespaces, so this names a file the
+                // declaration really carries.
+                "configuration_format": {
+                    "file": TEST.native_namespaces[0],
+                    "grammar": "json",
+                    "accepts_comments": false,
+                    "note": "measured by reading the product",
+                },
                 "surfaces": surfaces,
                 // The two paths that are the provider's own. Every real
                 // baseline records them, so the fixture that stands for one
@@ -1164,6 +1268,43 @@ mod tests {
         let mut ordinary = TEST;
         ordinary.native_namespaces = &["settings.json", "manage.json", "signals.json"];
         policy_is_not_owned(&ordinary, &mut kept);
+        assert!(kept.is_empty(), "{kept:?}");
+    }
+
+    /// Two owned namespaces differing only in case are refused.
+    ///
+    /// The pair is one path on macOS and Windows and two on Linux, so the same
+    /// declaration would mean different things per platform.
+    #[test]
+    fn two_owned_paths_that_fold_together_are_refused() {
+        let mut found = Vec::new();
+        let mut harness = TEST;
+        harness.native_namespaces = &["settings.json", "skills", "Skills"];
+        owned_paths_fold_together(&harness, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("Skills"), "{found:?}");
+
+        // A scoped namespace folds against a global one, because a filesystem
+        // does not know about scopes.
+        let mut across = Vec::new();
+        let mut scoped = TEST;
+        scoped.native_namespaces = &["skills"];
+        scoped.scoped_projections = &[crate::facts::Scoped {
+            target_scope: provider_v3::TargetScope::Project,
+            profile_id: "test/native-files/project/1",
+            component_kinds: &[],
+            projection_kinds: &[],
+            native_namespaces: &["SKILLS"],
+        }];
+        owned_paths_fold_together(&scoped, &mut across);
+        assert_eq!(across.len(), 1, "{across:?}");
+
+        // And names that merely share a prefix are kept: the rule folds case,
+        // it does not merge neighbours.
+        let mut kept = Vec::new();
+        let mut ordinary = TEST;
+        ordinary.native_namespaces = &["skills", "skills-extra", "agents"];
+        owned_paths_fold_together(&ordinary, &mut kept);
         assert!(kept.is_empty(), "{kept:?}");
     }
 }

@@ -11,6 +11,48 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-08-28
+
+Three things that were correct and held correct by nothing, found by
+sweeping the format axis across seven products and three operating systems.
+
+The sweep itself produced almost no defects, and that is the result: what each
+product's configuration file *is*, what its parser accepts, and what this
+repository writes into it all agree. All 45 configuration files across the 23
+setups parse; none carries a byte-order mark; no two owned paths and no two
+files in a setup collide on a case-insensitive filesystem; every component entry
+point carries the frontmatter its kind needs, and every file that does not is
+one that should not.
+
+What it found was three rules the estate follows and does not enforce.
+
+- **Two owned paths, or two files in one setup, that fold together.** macOS and
+  Windows fold case by default, so `skills` and `Skills` are one path there and
+  two on Linux -- the same declaration meaning different things per platform,
+  and a setup installing different content per machine. The bundle reader has
+  refused exactly this for an *arriving* bundle since 0.0.11; these are the same
+  rule applied to what this repository authors. Scoped namespaces fold against
+  global ones, because a filesystem does not know about scopes.
+
+- **A component entry point that cannot describe itself.** A `SKILL.md` whose
+  frontmatter lost its `description` installs, verifies and restores cleanly,
+  and the product then names it after its directory and gives the model nothing
+  to choose on. Which files are entry points is measured rather than assumed,
+  and the negative half took the measuring: files under `references/` are
+  documents, and files under `commands/` are exempt because cursor's loader
+  names a command after its **filename**, with `.md` stripped, and reads no
+  frontmatter at all. Requiring it there would be inventing a rule the product
+  does not have.
+
+- **What a file at an owned path actually is.** The baselines recorded paths,
+  kinds, shapes and sources, and never the grammar. Each now carries a
+  `configuration_format` block: the file, whether it is JSON, JSONC or TOML,
+  whether the parser accepts comments, the vendor's schema URL where one exists,
+  and how it was measured. opencode is JSONC at both spellings; cursor's own
+  reference says its file admits no comments; five of the seven vendors publish
+  no schema at all. Bound to the declaration -- a grammar recorded for a file
+  this build does not own is a measurement about somebody else's file.
+
 ## [0.0.14] - 2026-08-28
 
 One line a person reads before choosing a target, which for one
