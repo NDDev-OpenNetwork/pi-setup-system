@@ -60,6 +60,15 @@ class Failed(Exception):
     """One step did not do what it said. The message is the report."""
 
 
+class NothingToProve(Exception):
+    """The provider declined for a reason that is true, so there is nothing here.
+
+    Distinct from `Failed` on purpose: a vendor that publishes no build for a
+    platform is not a defect, and a job that cannot tell the two apart teaches
+    people to ignore its reds.
+    """
+
+
 def run_text(argv: list[str]) -> str:
     """Run one provider command that answers a person, and return what it said."""
     done = subprocess.run(argv, capture_output=True, text=True)
@@ -119,6 +128,12 @@ def plan_software_install(binary: str, target: Path, prefix: Path) -> dict:
             "--expires-at", EXPIRES_AT,
         ]
     )
+    if answer.get("reason") == "unsupported_platform":
+        # An honest answer, not a failure. Cursor publishes no Windows build,
+        # and the provider says so by name rather than planning something it
+        # could not apply. Treating that as a red would make this job report a
+        # vendor's product range as a defect of ours.
+        raise NothingToProve(str(answer.get("detail", "")))
     if answer.get("state") != "planned":
         raise Failed(
             f"plan-operation refused: {answer.get('reason')} {answer.get('detail')}"
@@ -170,7 +185,9 @@ def fetch(url: str, into: Path, expect_bytes: int, expect_digest: str) -> None:
         )
 
 
-def software_lifecycle(binary: str, harness: str, writes: list[str] | None) -> None:
+def software_lifecycle(
+    binary: str, harness: str, writes: list[str] | None, absent: str
+) -> None:
     control = Path(binary).name
     # Made and removed by hand rather than with `TemporaryDirectory`, for one
     # measured reason. Grok holds `active_sessions.lock` open in its home, and
@@ -263,11 +280,12 @@ def software_lifecycle(binary: str, harness: str, writes: list[str] | None) -> N
         print(f"-> the product answered {first[:60]!r}")
 
         if not writes:
-            print(
-                "write -> no credential-free command is known to make "
-                f"{harness} write its own configuration, so the round trip "
-                "against a product-written home is not exercised here"
-            )
+            # The reason comes from the caller, measured per product, rather
+            # than from the absence of an argument. An empty `--writes` is a
+            # condition about this invocation; it says nothing about the
+            # product, and printing a claim about the product here would
+            # exonerate one that had simply been left out.
+            print(f"write -> not exercised: {absent}")
             return
 
         print("write ", end="", flush=True)
@@ -380,6 +398,15 @@ def main() -> int:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--harness", required=True)
     parser.add_argument(
+        "--writes-absent",
+        default="",
+        help=(
+            "The measured reason this product writes no configuration without "
+            "credentials. Required when --writes is empty, so the absence "
+            "carries a measurement rather than an assumption."
+        ),
+    )
+    parser.add_argument(
         "--writes",
         default="",
         help=(
@@ -391,6 +418,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not args.writes and not args.writes_absent:
+        print(
+            "one of --writes or --writes-absent is required: an unexercised "
+            "round trip has to say why, measured rather than assumed",
+            file=sys.stderr,
+        )
+        return 1
+
     binary = os.path.abspath(args.binary)
     if not os.path.isfile(binary):
         print(f"no binary at {binary}", file=sys.stderr)
@@ -398,7 +433,12 @@ def main() -> int:
 
     print(f"== {args.harness} on {sys.platform} ==")
     try:
-        software_lifecycle(binary, args.harness, shlex.split(args.writes))
+        software_lifecycle(
+            binary, args.harness, shlex.split(args.writes), args.writes_absent
+        )
+    except NothingToProve as why:
+        print(f"nothing to prove here: {why}")
+        return 0
     except Failed as why:
         print(f"\nFAILED: {why}", file=sys.stderr)
         return 1
