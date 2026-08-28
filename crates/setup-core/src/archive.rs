@@ -1,9 +1,16 @@
 //! Reading the one archive shape every vendor ships.
 //!
 //! Six of the seven products distribute their binary as a gzip-compressed tar,
-//! and the seventh publishes the executable as plain bytes. Nothing else
-//! appears: no zip, no zstd, no brotli. That is measured rather than assumed --
-//! every artifact named in a baseline was fetched and its raw headers read.
+//! and the seventh publishes the executable as plain bytes. **One of the six
+//! ships a ZIP on Windows and a gzip-tar everywhere else**, which is why the
+//! shape is a property of an artifact here and not of a product. No zstd, no
+//! brotli. That is measured rather than assumed -- every artifact named in a
+//! baseline was fetched and its raw headers read.
+//!
+//! The ZIP claim in this comment was `no zip` until 2026-08-29, and it was true
+//! when it was written. What made it false was not a new measurement of an old
+//! artifact: the vendor shipped Windows support, and a sentence recording a
+//! survey is only true of the day it surveyed.
 //!
 //! The measurement mattered, because the convenient tools lie about it. Python's
 //! `tarfile` consumes GNU long-name headers transparently and reports only the
@@ -31,7 +38,7 @@
 //! on disk without a copy of the archive existing anywhere.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path};
 
 use crate::checksum::continue_crc32;
@@ -738,6 +745,378 @@ pub fn extract_gzip_tar(
     Ok(written)
 }
 
+/// The ZIP reader, and why it is deliberately narrow.
+///
+/// One vendor ships a ZIP for Windows and a gzip-tar for every other platform.
+/// Its archive was measured before this was written, and every field below is a
+/// refusal of something that archive does not contain:
+///
+/// ```text
+/// entries          400 (16 stored, 384 deflate)      211 MB inflated
+/// create_system    0 (MS-DOS) for all 400            so no Unix mode to read
+/// create_version   20 (2.0) for all 400              so no Zip64
+/// flag_bits        0 for all 400                     so no data descriptors
+/// end-of-central-directory at exactly -22            so no archive comment
+/// ```
+///
+/// A reader that accepted Zip64, data descriptors or encryption would be
+/// carrying code no artifact exercises, and code nothing exercises is where a
+/// defect lives longest. Each is refused **by name**, so the day a vendor starts
+/// using one the message says which.
+mod zip {
+    use super::{
+        Entry, Kind, Limits, check_relative, from_io, from_source_io, guard_within, refuse,
+    };
+    use crate::checksum::continue_crc32;
+    use crate::error::Result;
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::Path;
+
+    /// The end-of-central-directory record, without an archive comment.
+    const EOCD_LEN: usize = 22;
+    /// How far back to look for that record when a comment does push it up.
+    const EOCD_SEARCH: usize = EOCD_LEN + u16::MAX as usize;
+    /// The largest central directory this reader will hold in memory.
+    const MAX_CENTRAL_BYTES: u64 = 16 * 1024 * 1024;
+    /// Stored: the entry's bytes are its content.
+    const STORED: u16 = 0;
+    /// Deflate: the entry's bytes inflate to its content.
+    const DEFLATE: u16 = 8;
+
+    fn u16_at(bytes: &[u8], at: usize) -> Result<u16> {
+        bytes
+            .get(at..at + 2)
+            .and_then(|slice| <[u8; 2]>::try_from(slice).ok())
+            .map(u16::from_le_bytes)
+            .ok_or_else(|| refuse("zip record ends inside a field"))
+    }
+
+    fn u32_at(bytes: &[u8], at: usize) -> Result<u32> {
+        bytes
+            .get(at..at + 4)
+            .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| refuse("zip record ends inside a field"))
+    }
+
+    /// One central-directory entry, reduced to what extraction needs.
+    struct Central {
+        path: String,
+        method: u16,
+        crc: u32,
+        compressed: u64,
+        uncompressed: u64,
+        offset: u64,
+        directory: bool,
+    }
+
+    /// Find the central directory: how many entries, how large, and where.
+    fn locate(source: &mut (impl Read + Seek)) -> Result<(u64, u64, u64)> {
+        let end = source
+            .seek(SeekFrom::End(0))
+            .map_err(|error| from_source_io("zip length could not be read", error))?;
+        let window = EOCD_SEARCH.min(usize::try_from(end).unwrap_or(usize::MAX));
+        let from = end.saturating_sub(window as u64);
+        source
+            .seek(SeekFrom::Start(from))
+            .map_err(|error| from_source_io("zip tail could not be reached", error))?;
+        let mut tail = vec![0_u8; window];
+        source
+            .read_exact(&mut tail)
+            .map_err(|error| from_source_io("zip tail could not be read", error))?;
+
+        // Scanned backwards: the signature can also appear inside compressed
+        // data, and the last one is the record.
+        let at = (0..=tail.len().saturating_sub(EOCD_LEN))
+            .rev()
+            .find(|&at| tail.get(at..at + 4) == Some(&[0x50, 0x4B, 0x05, 0x06]))
+            .ok_or_else(|| refuse("not a zip archive: no end-of-central-directory record"))?;
+        let record = &tail[at..];
+
+        if u32_at(record, 16)? == u32::MAX || u16_at(record, 10)? == u16::MAX {
+            return Err(refuse(
+                "zip uses the Zip64 format, which this reader does not accept",
+            ));
+        }
+        if u16_at(record, 4)? != 0 || u16_at(record, 6)? != 0 {
+            return Err(refuse("zip spans multiple disks"));
+        }
+
+        Ok((
+            u64::from(u16_at(record, 10)?),
+            u64::from(u32_at(record, 12)?),
+            u64::from(u32_at(record, 16)?),
+        ))
+    }
+
+    /// Parse the central directory into the entries extraction will walk.
+    fn entries(bytes: &[u8], count: u64) -> Result<Vec<Central>> {
+        let mut found = Vec::new();
+        let mut at = 0_usize;
+        while (found.len() as u64) < count {
+            let header = bytes
+                .get(at..)
+                .ok_or_else(|| refuse("zip central directory ends early"))?;
+            if header.get(..4) != Some(&[0x50, 0x4B, 0x01, 0x02]) {
+                return Err(refuse("zip central directory header is malformed"));
+            }
+            let flags = u16_at(header, 8)?;
+            if flags & 0b0000_0001 != 0 {
+                return Err(refuse("zip entry is encrypted"));
+            }
+            if flags & 0b0000_1000 != 0 {
+                return Err(refuse(
+                    "zip entry carries a data descriptor, whose sizes this reader will not trust",
+                ));
+            }
+            let name_len = usize::from(u16_at(header, 28)?);
+            let extra_len = usize::from(u16_at(header, 30)?);
+            let comment_len = usize::from(u16_at(header, 32)?);
+            let raw = header
+                .get(46..46 + name_len)
+                .ok_or_else(|| refuse("zip entry name is truncated"))?;
+            let name = std::str::from_utf8(raw)
+                .map_err(|_| refuse("zip entry name is not valid UTF-8"))?;
+            let compressed = u64::from(u32_at(header, 20)?);
+            let uncompressed = u64::from(u32_at(header, 24)?);
+            let offset = u64::from(u32_at(header, 42)?);
+            if compressed == u64::from(u32::MAX)
+                || uncompressed == u64::from(u32::MAX)
+                || offset == u64::from(u32::MAX)
+            {
+                return Err(refuse(
+                    "zip entry uses a Zip64 extended field, which this reader does not accept",
+                ));
+            }
+            let directory = name.ends_with('/');
+            let path = check_relative(name.trim_end_matches('/'))?;
+            found.push(Central {
+                path,
+                method: u16_at(header, 10)?,
+                crc: u32_at(header, 16)?,
+                compressed,
+                uncompressed,
+                offset,
+                directory,
+            });
+            at += 46 + name_len + extra_len + comment_len;
+        }
+        Ok(found)
+    }
+
+    /// Copy one entry's content out, checking its CRC-32 against the header.
+    fn write_entry(
+        source: &mut (impl Read + Seek),
+        central: &Central,
+        into: &mut fs::File,
+    ) -> Result<()> {
+        source
+            .seek(SeekFrom::Start(central.offset))
+            .map_err(|error| from_source_io("zip entry could not be reached", error))?;
+        let mut local = [0_u8; 30];
+        source
+            .read_exact(&mut local)
+            .map_err(|error| from_source_io("zip local header could not be read", error))?;
+        if local.get(..4) != Some(&[0x50, 0x4B, 0x03, 0x04]) {
+            return Err(refuse(format!(
+                "{} does not start with a local file header",
+                central.path
+            )));
+        }
+        // The local header repeats the name and extra lengths and they may
+        // differ from the central directory's; the local ones govern here.
+        let skip = u64::from(u16_at(&local, 26)?) + u64::from(u16_at(&local, 28)?);
+        source
+            .seek(SeekFrom::Current(i64::try_from(skip).map_err(|_| {
+                refuse("zip local header is implausibly long")
+            })?))
+            .map_err(|error| from_source_io("zip entry body could not be reached", error))?;
+
+        let mut taken = source.take(central.compressed);
+        let (crc, length) = match central.method {
+            STORED => copy_checked(&mut taken, into)?,
+            DEFLATE => inflate_checked(&mut taken, into)?,
+            other => {
+                return Err(refuse(format!(
+                    "{} uses zip compression method {other}, and this reader accepts only stored \
+                     and deflate",
+                    central.path
+                )));
+            }
+        };
+        if crc != central.crc {
+            return Err(refuse(format!(
+                "{} fails its CRC-32: the archive states {:#010x} and the bytes give {crc:#010x}",
+                central.path, central.crc
+            )));
+        }
+        if length != central.uncompressed {
+            return Err(refuse(format!(
+                "{} is {length} bytes and the archive states {}",
+                central.path, central.uncompressed
+            )));
+        }
+        Ok(())
+    }
+
+    /// Copy stored bytes through, accumulating their CRC-32.
+    fn copy_checked(from: &mut impl Read, into: &mut fs::File) -> Result<(u32, u64)> {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let (mut crc, mut length) = (0_u32, 0_u64);
+        loop {
+            let read = from
+                .read(&mut buffer)
+                .map_err(|error| from_source_io("zip entry could not be read", error))?;
+            if read == 0 {
+                return Ok((crc, length));
+            }
+            crc = continue_crc32(crc, &buffer[..read]);
+            length = length.saturating_add(read as u64);
+            into.write_all(&buffer[..read])
+                .map_err(|error| from_io("zip entry could not be written", error))?;
+        }
+    }
+
+    /// Inflate a raw DEFLATE entry, accumulating its CRC-32.
+    fn inflate_checked(from: &mut impl Read, into: &mut fs::File) -> Result<(u32, u64)> {
+        let mut state =
+            miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Raw);
+        let mut input = vec![0_u8; 64 * 1024];
+        let mut output = vec![0_u8; 256 * 1024];
+        let (mut crc, mut length) = (0_u32, 0_u64);
+        let (mut filled, mut consumed) = (0_usize, 0_usize);
+        loop {
+            if consumed == filled {
+                filled = from
+                    .read(&mut input)
+                    .map_err(|error| from_source_io("zip entry could not be read", error))?;
+                consumed = 0;
+                if filled == 0 {
+                    return Err(refuse("zip entry ended before its DEFLATE stream did"));
+                }
+            }
+            let result = miniz_oxide::inflate::stream::inflate(
+                &mut state,
+                &input[consumed..filled],
+                &mut output,
+                miniz_oxide::MZFlush::None,
+            );
+            consumed += result.bytes_consumed;
+            let written = result.bytes_written;
+            if written > 0 {
+                crc = continue_crc32(crc, &output[..written]);
+                length = length.saturating_add(written as u64);
+                into.write_all(&output[..written])
+                    .map_err(|error| from_io("zip entry could not be written", error))?;
+            }
+            match result.status {
+                Ok(miniz_oxide::MZStatus::StreamEnd) => return Ok((crc, length)),
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(refuse(format!(
+                        "zip entry's DEFLATE stream is malformed: {error:?}"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Extract a ZIP into `destination`, returning what was written.
+    pub fn extract(
+        mut source: impl Read + Seek,
+        destination: &Path,
+        limits: Limits,
+    ) -> Result<Vec<Entry>> {
+        let (count, size, at) = locate(&mut source)?;
+        if count > limits.entries {
+            return Err(refuse(format!(
+                "archive holds more than the {} entries this extraction allows",
+                limits.entries
+            )));
+        }
+        if size > MAX_CENTRAL_BYTES {
+            return Err(refuse("zip central directory is implausibly large"));
+        }
+        source
+            .seek(SeekFrom::Start(at))
+            .map_err(|error| from_source_io("zip central directory could not be reached", error))?;
+        let mut central = vec![0_u8; usize::try_from(size).unwrap_or(0)];
+        source
+            .read_exact(&mut central)
+            .map_err(|error| from_source_io("zip central directory could not be read", error))?;
+
+        let listed = entries(&central, count)?;
+        let total: u64 = listed.iter().map(|entry| entry.uncompressed).sum();
+        if total > limits.bytes {
+            return Err(refuse(format!(
+                "archive inflates past the {} bytes this extraction allows",
+                limits.bytes
+            )));
+        }
+
+        fs::create_dir_all(destination)
+            .map_err(|error| from_io("destination could not be created", error))?;
+
+        let mut written = Vec::with_capacity(listed.len());
+        for entry in listed {
+            let path = destination.join(&entry.path);
+            guard_within(destination, &path)?;
+            if entry.directory {
+                fs::create_dir_all(&path)
+                    .map_err(|error| from_io("archive directory could not be created", error))?;
+                written.push(Entry {
+                    path: entry.path,
+                    kind: Kind::Directory,
+                    // This dialect records no Unix mode: every entry in the
+                    // measured archive has `create_system` 0 and an external
+                    // attribute of zero. Stating a plausible one would be an
+                    // invention, and the platform this shape is fetched for has
+                    // no mode bits to apply anyway.
+                    mode: 0o755,
+                    size: 0,
+                });
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    from_io("archive parent directory could not be created", error)
+                })?;
+            }
+            let mut file = fs::File::create(&path)
+                .map_err(|error| from_io("archive file could not be created", error))?;
+            write_entry(&mut source, &entry, &mut file)?;
+            file.sync_all()
+                .map_err(|error| from_io("archive file could not be flushed", error))?;
+            written.push(Entry {
+                path: entry.path,
+                kind: Kind::File,
+                mode: 0o644,
+                size: entry.uncompressed,
+            });
+        }
+        Ok(written)
+    }
+}
+
+/// Extract a ZIP archive into `destination`.
+///
+/// Returns what was written, in central-directory order.
+///
+/// # Errors
+///
+/// Refuses a malformed archive, an unsafe path, Zip64, encryption, a data
+/// descriptor, a compression method other than stored or deflate, an entry
+/// whose CRC-32 or length disagrees with its header, or an archive that
+/// exceeds `limits`.
+pub fn extract_zip(
+    source: impl Read + Seek,
+    destination: &Path,
+    limits: Limits,
+) -> Result<Vec<Entry>> {
+    zip::extract(source, destination, limits)
+}
+
 /// Prove the joined path really is inside the destination.
 ///
 /// [`check_relative`] rejects the paths that could escape, and this repeats the
@@ -951,7 +1330,12 @@ pub mod build {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    // `expect_used` joins the two that were already here, for the same
+    // reason and with the same scope: this attribute is inside `mod tests`
+    // and the workspace lint that forbids all three in shipped code is
+    // untouched. A test that cannot say *why* it expected something is a
+    // test whose failure costs the next reader a debugger.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use std::path::PathBuf;
 
@@ -962,6 +1346,74 @@ mod tests {
         entries: 4096,
         bytes: 1 << 30,
     };
+
+    /// Build a ZIP the way a vendor's tooling does, so the reader meets bytes
+    /// it did not write. `stored` picks the container per entry, because the
+    /// measured archive uses both and a reader tested on one is tested on half.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a fixture archive, whose entries are a few kilobytes"
+    )]
+    fn zip_bytes(items: &[(&str, &[u8], bool)]) -> Vec<u8> {
+        use crate::checksum::crc32;
+        let mut out: Vec<u8> = Vec::new();
+        let mut central: Vec<u8> = Vec::new();
+        let mut count = 0_u16;
+        for (name, body, stored) in items {
+            let directory = name.ends_with('/');
+            let payload: Vec<u8> = if directory || *stored {
+                body.to_vec()
+            } else {
+                miniz_oxide::deflate::compress_to_vec(body, 6)
+            };
+            let method: u16 = if directory || *stored { 0 } else { 8 };
+            let offset = out.len() as u32;
+            let sum = crc32(body);
+            out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+            out.extend_from_slice(&20_u16.to_le_bytes());
+            out.extend_from_slice(&0_u16.to_le_bytes());
+            out.extend_from_slice(&method.to_le_bytes());
+            out.extend_from_slice(&0_u32.to_le_bytes());
+            out.extend_from_slice(&sum.to_le_bytes());
+            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0_u16.to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&payload);
+
+            central.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+            central.extend_from_slice(&20_u16.to_le_bytes());
+            central.extend_from_slice(&20_u16.to_le_bytes());
+            central.extend_from_slice(&0_u16.to_le_bytes());
+            central.extend_from_slice(&method.to_le_bytes());
+            central.extend_from_slice(&0_u32.to_le_bytes());
+            central.extend_from_slice(&sum.to_le_bytes());
+            central.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0_u16.to_le_bytes());
+            central.extend_from_slice(&0_u16.to_le_bytes());
+            central.extend_from_slice(&0_u16.to_le_bytes());
+            central.extend_from_slice(&0_u16.to_le_bytes());
+            central.extend_from_slice(&0_u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+            count += 1;
+        }
+        let at = out.len() as u32;
+        let size = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        out.extend_from_slice(&0_u16.to_le_bytes());
+        out.extend_from_slice(&0_u16.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&at.to_le_bytes());
+        out.extend_from_slice(&0_u16.to_le_bytes());
+        out
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let path =
@@ -1462,5 +1914,144 @@ mod tests {
             error.detail()
         );
         let _ = fs::remove_dir_all(&into);
+    }
+
+    /// Both containers the measured archive uses, in one archive.
+    ///
+    /// 16 of cursor's 400 Windows entries are stored and 384 are deflated. A
+    /// reader exercised on one of those is exercised on part of the archive it
+    /// exists to read, so this mixes them deliberately -- and includes a
+    /// directory entry, which is the third thing that archive contains.
+    #[test]
+    fn a_zip_holding_both_containers_extracts() {
+        let room = scratch("zip-both");
+        let deflatable = "the same line over and over\n".repeat(400);
+        let bytes = zip_bytes(&[
+            ("dist-package/", b"", true),
+            ("dist-package/cursor-agent.cmd", b"@echo off\r\n", true),
+            ("dist-package/index.js", deflatable.as_bytes(), false),
+        ]);
+        let written =
+            extract_zip(io::Cursor::new(bytes), &room, ROOMY).expect("the archive extracts");
+        assert_eq!(written.len(), 3);
+        assert_eq!(
+            std::fs::read_to_string(room.join("dist-package/cursor-agent.cmd")).unwrap(),
+            "@echo off\r\n",
+            "a stored entry must arrive byte for byte"
+        );
+        assert_eq!(
+            std::fs::read_to_string(room.join("dist-package/index.js")).unwrap(),
+            deflatable,
+            "a deflated entry must inflate to what went in"
+        );
+        assert!(room.join("dist-package").is_dir());
+    }
+
+    /// A tampered entry is refused, and the refusal names the CRC.
+    ///
+    /// This is the check that makes extraction mean something: the plan already
+    /// verified the archive's own digest, but every entry inside carries its
+    /// own, and a reader that ignored them would write whatever it inflated.
+    #[test]
+    fn a_zip_entry_whose_bytes_moved_is_refused() {
+        let room = scratch("zip-crc");
+        let mut bytes = zip_bytes(&[("payload.txt", b"the original bytes", true)]);
+        let at = bytes
+            .windows(18)
+            .position(|window| window == b"the original bytes")
+            .expect("the stored body is findable");
+        bytes[at] = b'T';
+        let error = extract_zip(io::Cursor::new(bytes), &room, ROOMY)
+            .expect_err("a changed entry must be refused");
+        assert!(
+            format!("{error}").contains("CRC-32"),
+            "the refusal should name what disagreed: {error}"
+        );
+    }
+
+    /// A path that climbs out is refused before anything is written.
+    #[test]
+    fn a_zip_entry_that_climbs_out_is_refused() {
+        let room = scratch("zip-climb");
+        let bytes = zip_bytes(&[("../escaped.txt", b"nope", true)]);
+        let error = extract_zip(io::Cursor::new(bytes), &room, ROOMY)
+            .expect_err("a climbing path must be refused");
+        assert!(
+            format!("{error}").contains("climbs out"),
+            "unexpected refusal: {error}"
+        );
+        assert!(
+            !room
+                .parent()
+                .is_some_and(|up| up.join("escaped.txt").exists())
+        );
+    }
+
+    /// A compression method this reader does not implement is refused by name.
+    ///
+    /// By name, because the point of refusing is that the next person learns
+    /// which method a vendor started using. A bare "unsupported archive" would
+    /// cost them the measurement this reader was written from.
+    #[test]
+    fn a_zip_using_another_compression_method_is_refused_by_name() {
+        let room = scratch("zip-method");
+        let mut bytes = zip_bytes(&[("payload.txt", b"body", true)]);
+        // Method 93 is Zstandard. Set in the central directory, which is what
+        // this reader dispatches on.
+        let at = bytes
+            .windows(4)
+            .rposition(|window| window == [0x50, 0x4B, 0x01, 0x02])
+            .expect("a central header exists");
+        bytes[at + 10] = 93;
+        bytes[at + 11] = 0;
+        let error = extract_zip(io::Cursor::new(bytes), &room, ROOMY)
+            .expect_err("an unimplemented method must be refused");
+        assert!(
+            format!("{error}").contains("method 93"),
+            "the refusal should name the method: {error}"
+        );
+    }
+
+    /// An entry claiming a data descriptor is refused, because its header
+    /// sizes are not the truth and this reader trusts them.
+    #[test]
+    fn a_zip_entry_with_a_data_descriptor_is_refused() {
+        let room = scratch("zip-descriptor");
+        let mut bytes = zip_bytes(&[("payload.txt", b"body", true)]);
+        let at = bytes
+            .windows(4)
+            .rposition(|window| window == [0x50, 0x4B, 0x01, 0x02])
+            .expect("a central header exists");
+        bytes[at + 8] |= 0b0000_1000;
+        let error = extract_zip(io::Cursor::new(bytes), &room, ROOMY)
+            .expect_err("a data descriptor must be refused");
+        assert!(
+            format!("{error}").contains("data descriptor"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    /// The reader refuses an archive that would inflate past what the caller
+    /// allowed, and it decides *before* writing rather than while writing.
+    #[test]
+    fn a_zip_that_inflates_past_the_limit_is_refused_before_it_writes() {
+        let room = scratch("zip-limit");
+        let big = "x".repeat(4096);
+        let bytes = zip_bytes(&[("payload.txt", big.as_bytes(), false)]);
+        let tight = Limits {
+            entries: 4096,
+            bytes: 1024,
+        };
+        let error = extract_zip(io::Cursor::new(bytes), &room, tight)
+            .expect_err("an over-large archive must be refused");
+        assert!(
+            format!("{error}").contains("inflates past"),
+            "unexpected refusal: {error}"
+        );
+        assert!(
+            !room.join("payload.txt").exists(),
+            "nothing should have been written: the central directory states the \
+             sizes, so the answer is knowable before the first byte lands"
+        );
     }
 }

@@ -236,7 +236,7 @@ pub(crate) fn plan(
                 "place them as {}",
                 root.join(declared.version).join(declared.command).display()
             ),
-            software::Shape::GzipTar => format!(
+            software::Shape::GzipTar | software::Shape::Zip => format!(
                 "extract them into {}, whose {} is the program",
                 root.join(declared.version).display(),
                 artifact.member
