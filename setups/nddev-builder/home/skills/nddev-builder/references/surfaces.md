@@ -19,14 +19,14 @@ JSON. The vendor documents no comment support and publishes no schema; searched 
 
 ## Owned surfaces
 
-| path | kinds | shape |
-|---|---|---|
-| `AGENTS.md` | instruction | file |
-| `settings.json` | setting | file |
-| `skills` | skill | directory |
-| `extensions` | plugin | directory |
-| `prompts` | command | directory |
-| `themes` | *(routes no kind)* | directory |
+| path | kinds | shape | decided by |
+|---|---|---|---|
+| `AGENTS.md` | instruction | file | <https://pi.dev/docs/latest/sdk> |
+| `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> |
+| `skills` | skill | directory | <https://pi.dev/docs/latest/skills> |
+| `extensions` | plugin | directory | <https://pi.dev/docs/latest/extensions> |
+| `prompts` | command | directory | <https://pi.dev/docs/latest/prompt-templates> |
+| `themes` | *(routes no kind)* | directory | <https://pi.dev/docs/latest/themes> |
 
 A surface that routes no kind is owned deliberately: a backup captures
 it and a restore returns it, and no component is routed there because

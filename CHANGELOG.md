@@ -11,6 +11,52 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-08-28
+
+A guard that found three defects in the release before it, all of one
+kind and all invisible to every other check.
+
+**An instruction naming a file the setup does not ship.** A skill's routing
+table sends a reader to `references/surfaces.md`; an agent names the document
+beside it. If the setup does not carry that file the reader is sent nowhere --
+and the reader is a model, which will not say so.
+
+`0.0.16`'s own generator did it three times, and each was correct for six
+harnesses and false for the seventh:
+
+- codex's agent pointed at `references/surfaces.md`, and codex ships no skill at
+  all: its `skill` kind routes only under `target_scope: user_root`, so a setup
+  aimed at its own configuration home carries no `references/` directory. Its
+  agent now says that, and sends the reader to the binary instead;
+- codex's `nddev-surfaces` command did the same, and now omits the hint;
+- and a path was wrapped across a line *inside backticks*, so the quoted text
+  contained a newline and named `references/
+lifecycle.md` -- a file that could
+  not exist anywhere.
+
+**And each owned surface now carries the page that decided it**, beside its path
+and kinds, so a reader can check any row against the thing that settled it. A
+table of paths without its sources is a list somebody could have guessed; the
+declined rows already carried their reasons, and now the owned ones carry theirs.
+
+**Narrowing it was most of the work, and the distinction is the useful part.**
+Describing where a product reads is not naming a file to open, and the
+difference is visible in the path: a glob or a placeholder names a *class* of
+file, a `~`-rooted path is outside the setup, a leading dot-directory is the
+product's own home, and an environment variable as the first segment is a root
+the setup does not contain. Cursor's hand-written references are full of all
+four, and the first version of this guard called every one of them dangling.
+
+That is the same distinction the command guard already drew between an
+invocation and prose, applied to paths instead of verbs.
+
+**And the match is a suffix, deliberately.** A relative reference does not
+resolve the same way in every product -- antigravity's plugin rule names a path
+relative to the *plugin root*, a skill's routing table names one relative to
+itself. A guard that picked one convention called the other broken, and the file
+it named was shipped. So it asks the question it can answer without guessing:
+**is this document in the setup at all?**
+
 ## [0.0.16] - 2026-08-28
 
 A builder toolkit on every harness, a coupling nobody was checking, a
