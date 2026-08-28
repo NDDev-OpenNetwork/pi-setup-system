@@ -53,7 +53,14 @@ pub const PI: Harness = Harness {
     ],
     // The product's own: credentials, session history and runtime caches. Never
     // read, never written, and never copied into a backup slot.
-    never_touch: &["trust.json", "sessions"],
+    // `auth.json` first, and it took a sweep across all seven to notice it was
+    // missing here. Pi joins it against its agent directory
+    // (`agentDir, "auth.json"` in the pinned 0.84.3 bundle) and five of the
+    // seven providers already listed their equivalent. No live leak --
+    // `capture` walks `native_namespaces` and this file is inside none of them
+    // -- but a safety list that depends on a namespace never widening is a
+    // safety list waiting for one declaration change.
+    never_touch: &["auth.json", "trust.json", "sessions"],
     // Oh My Pi is a separate product descended from the same code: package
     // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its
     // shape is Pi's -- both keep their configuration one directory down under

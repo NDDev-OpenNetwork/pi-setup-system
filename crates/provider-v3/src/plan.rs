@@ -27,6 +27,7 @@ use setup_core::digest;
 use crate::error::{Error, Result};
 use crate::platform;
 use crate::reason::WireReason;
+use crate::vocabulary::TargetScope;
 use crate::vocabulary::{Operation, PLAN_DOMAIN, PLAN_FORMAT, PROTOCOL_VERSION};
 
 /// One literal bundle artifact and its independent logical identity.
@@ -108,6 +109,19 @@ pub struct PlanArtifact {
     pub restore_target_digest: Option<String>,
     /// The permission profile to apply, when one was requested.
     pub permission_profile: Option<String>,
+    /// The scope the consumer resolved this target to be, when it said.
+    ///
+    /// Recorded so `apply` can act on it. `plan-operation` accepts
+    /// `--target-scope`; `apply-operation` takes a plan and not a scope,
+    /// because a scope on both would be a second statement of a settled fact
+    /// and the two could disagree. So the plan is where it travels.
+    ///
+    /// Omitted entirely when the consumer did not say, which is every
+    /// invocation today: nothing sends the flag until a consumer's release
+    /// does, and a plan without the key is byte-identical to what this build
+    /// produced before the key existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_scope: Option<String>,
     /// The operating system and architecture that planned this.
     pub platform: serde_json::Value,
     /// When this plan stops being applicable.
@@ -153,6 +167,8 @@ pub struct PlanInputs<'a> {
     pub restore_target_digest: Option<String>,
     /// The permission profile, when one was requested.
     pub permission_profile: Option<String>,
+    /// The scope the consumer resolved this target to be, when it said.
+    pub target_scope: Option<TargetScope>,
     /// When the plan expires.
     pub expires_at: &'a str,
     /// The artifacts a software operation will fetch, in the order `apply`
@@ -209,6 +225,7 @@ impl PlanArtifact {
             canonical_target: inputs.canonical_target.to_owned(),
             expected_target_digest: inputs.expected_target_digest.to_owned(),
             projection_profile_digest: inputs.projection_profile_digest.to_owned(),
+            target_scope: inputs.target_scope.map(|scope| scope.as_str().to_owned()),
             bundle: inputs.bundle,
             backup_ref: inputs.backup_ref,
             restore_target_digest: inputs.restore_target_digest,
@@ -345,6 +362,7 @@ mod tests {
 
     fn inputs(operation: Operation) -> PlanInputs<'static> {
         PlanInputs {
+            target_scope: None,
             software_artifacts: Vec::new(),
             provider_id: "claude-setup-system",
             provider_version: "0.1.0",

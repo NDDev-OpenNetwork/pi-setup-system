@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use crate::error::{Error, Result};
 use crate::plan::BundleBinding;
 use crate::reason::WireReason;
-use crate::vocabulary::{Command, Operation};
+use crate::vocabulary::{Command, Operation, TargetScope};
 
 /// The five flags that bind one bundle.
 const BUNDLE_FLAGS: &[&str] = &[
@@ -78,6 +78,47 @@ pub struct Usage {
     pub note: &'static str,
 }
 
+/// The plan command's own usage, lifted out of `usage`.
+///
+/// Not a refactor for tidiness: `usage` crossed `clippy::too_many_lines` at 101
+/// the moment `--target-scope` was added to this arm, and this is the arm that
+/// grows -- every optional field a request gains lands here. Splitting the one
+/// that moves keeps the rest where a reader expects it.
+const fn plan_usage(command: Command) -> Usage {
+    Usage {
+        command,
+        required: &[
+            "--target",
+            "--json",
+            "--operation",
+            "--provider-release-digest",
+            "--operation-id",
+            "--expires-at",
+        ],
+        optional: &[
+            (
+                "--prefix",
+                "where a program lives; required by every software_* operation",
+            ),
+            ("--backup-ref", "which slot a restore returns to"),
+            ("--permission-profile", "a profile this build declares"),
+            (
+                "--software-version",
+                "exactly one pinned version, when not the current one",
+            ),
+            (
+                "--bundle …",
+                "the five bundle flags, for install and replace",
+            ),
+            (
+                "--target-scope",
+                "which scope this target is; accepted and not yet acted on",
+            ),
+        ],
+        note: "Produce a plan. Always pure: reads the target and the local disk, opens no socket.",
+    }
+}
+
 /// The arguments one command takes.
 #[must_use]
 pub const fn usage(command: Command) -> Usage {
@@ -114,34 +155,7 @@ pub const fn usage(command: Command) -> Usage {
             optional: &[],
             note: "Check a bundle against the exact claim that named it. Touches nothing.",
         },
-        Command::PlanOperation => Usage {
-            command,
-            required: &[
-                "--target",
-                "--json",
-                "--operation",
-                "--provider-release-digest",
-                "--operation-id",
-                "--expires-at",
-            ],
-            optional: &[
-                (
-                    "--prefix",
-                    "where a program lives; required by every software_* operation",
-                ),
-                ("--backup-ref", "which slot a restore returns to"),
-                ("--permission-profile", "a profile this build declares"),
-                (
-                    "--software-version",
-                    "exactly one pinned version, when not the current one",
-                ),
-                (
-                    "--bundle …",
-                    "the five bundle flags, for install and replace",
-                ),
-            ],
-            note: "Produce a plan. Always pure: reads the target and the local disk, opens no socket.",
-        },
+        Command::PlanOperation => plan_usage(command),
         Command::ApplyOperation => Usage {
             command,
             required: &[
@@ -309,6 +323,57 @@ pub struct PlanRequest {
     /// Omitted means the version this build pins. Given means exactly that one,
     /// and anything else is refused rather than quietly installing a neighbour.
     pub software_version: Option<String>,
+    /// Which scope the consumer resolved this target to be.
+    ///
+    /// **Accepted, and not yet acted on.** This build records it and plans the
+    /// same way for every value, because nothing downstream branches on a scope
+    /// yet. It is parsed regardless, for an ordering reason that is the mirror
+    /// image of the one governing response fields.
+    ///
+    /// A *response* field may be declared only after the consumer accepts it:
+    /// the consumer ships, then a provider may say it. A *request* field is the
+    /// other way round. A consumer that starts sending `--target-scope` to a
+    /// provider whose parser has never heard of it makes every older provider
+    /// refuse the invocation outright -- measured before this existed:
+    /// `--target-scope is not an argument of this command`. So a provider must
+    /// tolerate the flag in a release *before* any consumer sends it, and only
+    /// then branch on it.
+    ///
+    /// This is that first release. `scoped_projection_profiles` has been
+    /// declarable since `0.0.7` and operable never, because no request field
+    /// carried a scope; this is the field, arriving one release ahead of the
+    /// behaviour on purpose.
+    pub target_scope: Option<TargetScope>,
+}
+
+/// Read `--target-scope`, refusing a value this build does not know.
+///
+/// **Not "accept anything".** Ignoring the value would be honest -- nothing
+/// branches on it yet -- but it would also swallow a typo, and a flag that
+/// cannot fail is not a flag. More importantly it would swallow a *future*
+/// scope: a consumer sending a third scope to this build must be refused rather
+/// than silently served a `global` plan, because a plan made against the wrong
+/// scope is a correct-looking answer to a question nobody asked.
+///
+/// So the value is parsed against the closed set the kit publishes, and the
+/// refusal names what this build knows.
+fn take_target_scope(flags: &mut Flags) -> Result<Option<TargetScope>> {
+    let Some(named) = flags.take_optional("--target-scope") else {
+        return Ok(None);
+    };
+    TargetScope::parse(&named).map(Some).ok_or_else(|| {
+        Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{named:?} is not a target scope this build knows; it knows {}",
+                TargetScope::ALL
+                    .iter()
+                    .map(|scope| scope.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+    })
 }
 
 impl Invocation {
@@ -434,6 +499,7 @@ where
                     bundle: flags.take_bundle()?,
                     prefix: flags.take_prefix()?,
                     software_version: flags.take_optional("--software-version"),
+                    target_scope: take_target_scope(&mut flags)?,
                 },
             }
         }
@@ -903,6 +969,101 @@ mod tests {
         );
         let error = parse(tokens).unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+    }
+
+    /// A consumer that sends a scope must not be refused by a build that cannot
+    /// yet use it.
+    ///
+    /// This is the ordering that governs a *request* field, and it runs the
+    /// opposite way to the one governing a response field. A response field is
+    /// the consumer's move first: it accepts, it ships, and only then may a
+    /// provider declare it. A request field is a provider's move first, because
+    /// a consumer that starts sending an unknown flag makes every older
+    /// provider refuse the invocation outright -- which is exactly what this
+    /// build did before the flag existed:
+    ///
+    /// ```text
+    /// --target-scope is not an argument of this command
+    /// ```
+    ///
+    /// So the flag is accepted a release ahead of anything branching on it.
+    #[test]
+    fn a_scope_this_build_cannot_yet_use_is_still_accepted() {
+        for named in TargetScope::ALL {
+            let tokens = with_target(
+                "plan-operation",
+                &[
+                    "--operation",
+                    "backup",
+                    "--provider-release-digest",
+                    DIGEST,
+                    "--operation-id",
+                    "operation_01TEST",
+                    "--expires-at",
+                    "2026-08-23T15:00:00Z",
+                    "--target-scope",
+                    named.as_str(),
+                ],
+            );
+            let Invocation::PlanOperation { request, .. } = parse(tokens).unwrap() else {
+                panic!("plan-operation did not parse with --target-scope {named:?}");
+            };
+            assert_eq!(request.target_scope, Some(*named));
+        }
+    }
+
+    /// And a scope it does not know is refused rather than silently served.
+    ///
+    /// Accepting any string would swallow a typo, and worse: it would swallow a
+    /// *future* scope. A consumer sending a third one to this build must be
+    /// refused rather than handed a `global` plan, because a plan made against
+    /// the wrong scope is a correct-looking answer to a question nobody asked.
+    #[test]
+    fn a_scope_this_build_does_not_know_is_refused_by_name() {
+        let tokens = with_target(
+            "plan-operation",
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                DIGEST,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                "2026-08-23T15:00:00Z",
+                "--target-scope",
+                "machine_root",
+            ],
+        );
+        let error = parse(tokens).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        let said = error.to_string();
+        assert!(said.contains("machine_root"), "{said}");
+        for known in TargetScope::ALL {
+            assert!(said.contains(known.as_str()), "{said} omits {known:?}");
+        }
+    }
+
+    /// Omitting it is unchanged, which is the whole point of a tolerated field.
+    #[test]
+    fn a_plan_without_a_scope_still_parses_and_says_so() {
+        let tokens = with_target(
+            "plan-operation",
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                DIGEST,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                "2026-08-23T15:00:00Z",
+            ],
+        );
+        let Invocation::PlanOperation { request, .. } = parse(tokens).unwrap() else {
+            panic!("plan-operation without a scope did not parse");
+        };
+        assert_eq!(request.target_scope, None);
     }
 
     #[test]

@@ -187,6 +187,12 @@ other file beside a target.
 
 Not declared as a user_root scoped profile, though Codex declares exactly that shape (codex/native-files/user-root/1, namespace `skills`, kind `skill`) for the same directory. Two providers owning one path is not two owners: `remove_managed` walks native_namespaces and calls remove_dir_all on each, so a namespace goes whole, and either provider's remove under this scope would take the other's skills. Recoverable -- the capture runs first and restore returns them byte-exact -- but a shared root wants one answer about who owns it, and that answer is the consumer's and the owner's rather than this provider's to assume. Raised. ([source](measured from the pinned 0.84.3 bundle (sha256:d07dc417...), package/dist/core/package-manager.js:1976,2012,2017))
 
+**`auth.json`** -- Authentication credentials. Pi joins it against its agent directory -- `agentDir, "auth.json"` in the pinned 0.84.3 bundle, beside `keybindings.json`, `models.json` and the owned `settings.json`. Never owned and never captured, for the reason the antigravity list gives: a backup of someone else's credentials is a leak with a schedule. Recorded here because the declaration's `never_touch` is checked against this block. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
+
+**`keybindings.json`** -- A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
+
+**`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
+
 ## Response
 
 One maintainer. Defects are triaged as time allows; security reports are
