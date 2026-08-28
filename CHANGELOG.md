@@ -11,6 +11,88 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-08-28
+
+The builder toolkit learns to teach component authoring, and in reading
+seven vendors' formats side by side it found that one of its own routes did not
+exist.
+
+**A file in this product's agents directory may be loaded by nothing.** Codex
+does not scan that directory. A role is declared in the settings file as an
+`agents.<name>` table whose `config_file` points at a TOML layer, and the
+pointer resolves from the declaring file. Measured by running the product
+against a temporary home: a bad pointer is reported --
+
+    Ignoring malformed agent role definition: agents.broken-role.config_file
+    must point to an existing file at .../agents/missing.toml
+
+-- while a Markdown agent sitting beside it was loaded by nothing and
+complained about by nothing. `codex-setup-system` had declared `agent` for that
+directory since it was written, and its own builder setup had never run.
+
+The kind is withdrawn there, and the reason is arity rather than behaviour: a
+role is two files, a component of one kind is one thing installed in one
+namespace, and there is no way to say *and also add a stanza to the settings
+file*. That reason survives a change of behaviour -- if the product started
+scanning the directory tomorrow, a role would still be a stanza plus the layer
+it points at. The directory stays owned,
+so a backup still captures it and a restore still returns it, and it routes
+nothing. This release's builder is delivered as the pair the product reads.
+
+**Two more declarations were short a row, both measured against the pinned
+artifact.** Grok reads `personas/` and `roles/` and neither was recorded as
+owned or declined; both are now owned and route no kind, because a behavioural
+overlay is not an agent and the closed kind set has no word for one. Opencode
+accepts the singular and the plural spelling of four directories -- its own
+embedded reference writes them as `agent(s)`, `command(s)`, `skill(s)` and
+`plugin(s)` -- and this provider owns the plural only, so the singular is now
+declined with the reason, rather than being a path the product reads and the
+declaration never mentions.
+
+**What the toolkit gained.** One authoring reference per kind each harness
+routes -- skills, agents, commands, hooks and plugins -- generated from the
+vendor's own reference and from the pinned binary, plus a table of the same
+rows across every harness in the estate that routes that kind. The table is the part no vendor documents: `name` and `description`
+travel everywhere, and `allowed-tools` is honoured on three products and read
+past in silence on a fourth. A field absent from a column is not rejected there.
+Where it was carrying a restriction, the restriction is gone and nothing says
+so.
+
+**Plugins are the kind where the products least resemble each other**, and the
+references say so rather than flattening it. On one harness a plugin is a
+manifest bundling components the product already understands and runs no code
+of its own. On the two others it is a module loaded at startup -- one of them
+documents plainly that an extension runs with full system permissions, and the
+other loads every file in the directory with no manifest to opt one in and no
+field to disable one. A setup that carries a plugin is carrying a program on
+two of the three, and that belongs in its description. No table is drawn across
+those two shapes: they route the same kind and share no row, and tabulating
+them would invent a comparison the products do not have.
+
+**The check that had to be written to add the seventh toolkit found two more.**
+Two of these trees carry a hand-written entry point, so the generator writes
+references beside it and cannot add the line that routes to them. It now
+refuses unless that line is already there -- and on its first run neither entry
+point named a single one of the files being written beside it. They had been
+shipping unreachable. Every existing guard asks whether a named file exists;
+none asked whether an existing file is named.
+
+Correcting one of them turned up two more sentences that had outlived their
+measurement: it said this product has no global command surface, which this
+declaration itself refuted on 2026-08-28, and it described a plugin's shape
+from the harness next door rather than from this product's own page, listing a
+directory that is not read and omitting two files that are. Both now carry the
+date they were corrected.
+
+**A guard got stricter rather than looser to allow the new pair.** A surface
+that routes no kind may now hold setup files if its row names the file that
+points at them -- and the guard opens that file and requires the path to be in
+it. A pointer claimed and absent reads as routed and is inert, which is the
+defect the guard exists to catch.
+
+Pi Coding Agent
+
+
 ## [0.0.17] - 2026-08-28
 
 A guard that found three defects in the release before it, all of one

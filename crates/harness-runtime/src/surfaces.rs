@@ -857,11 +857,45 @@ fn writes_where_nothing_is_routed(harness: &Harness, baseline: &Value, found: &m
             .and_then(|row| row.get("kinds"))
             .and_then(Value::as_array)
             .is_some_and(|kinds| !kinds.is_empty());
-        if !routes {
+        if routes {
+            continue;
+        }
+        // One product reaches a file here by an explicit pointer from another
+        // owned file rather than by scanning the directory, so bytes can land
+        // in a namespace that routes no kind and still be read. A row says so
+        // with `reached_by`, naming the file that does the pointing.
+        //
+        // The exception is deliberately stronger than the rule it excuses: it
+        // does not take the row's word for it, it opens the named file and
+        // requires the path to be in it. A pointer that is claimed and absent
+        // is worse than no claim, because it reads as routed and is inert --
+        // which is the defect this whole guard exists to catch.
+        let reached_by = rows
+            .iter()
+            .find(|row| row.get("path").and_then(Value::as_str) == Some(path))
+            .and_then(|row| row.get("reached_by"))
+            .and_then(Value::as_str);
+        let Some(pointer) = reached_by else {
             found.push(format!(
                 "the setup file {relative:?} lands in {path:?}, which routes no kind. Either \
                  the kind belongs on this row rather than on a neighbour, or these bytes are \
                  being written somewhere the product reads nothing from."
+            ));
+            continue;
+        };
+        let setup = embedded.split_once("/home/").map_or("", |(id, _)| id);
+        let wanted = format!("{setup}/home/{pointer}");
+        let points_at_it = harness
+            .embedded_setups
+            .iter()
+            .find(|(name, _)| *name == wanted)
+            .is_some_and(|(_, body)| String::from_utf8_lossy(body).contains(relative));
+        if !points_at_it {
+            found.push(format!(
+                "{path:?} says it is reached by {pointer:?}, and the setup file \
+                 {relative:?} is not named in it. A surface that routes no kind is read \
+                 only through the pointer that names it, so a pointer that is claimed \
+                 and missing leaves these bytes inert while the row reads as routed."
             ));
         }
     }
@@ -1306,5 +1340,66 @@ mod tests {
         ordinary.native_namespaces = &["skills", "skills-extra", "agents"];
         owned_paths_fold_together(&ordinary, &mut kept);
         assert!(kept.is_empty(), "{kept:?}");
+    }
+
+    /// One product reaches an agent's file through a pointer in its settings
+    /// rather than by scanning the directory, so `reached_by` lets a namespace
+    /// hold setup files while routing no kind. The exception has to be worth
+    /// more than the rule it excuses, so it is observed failing here on the
+    /// case that makes it dangerous: the claim present and the pointer absent,
+    /// which reads as routed and is inert.
+    #[test]
+    fn a_claimed_pointer_that_names_nothing_is_refused() {
+        const NAMES_IT: &[(&str, &[u8])] = &[
+            ("kit/home/skills/role.toml", b"the layer"),
+            ("kit/home/AGENTS.md", b"config_file = \"skills/role.toml\""),
+        ];
+        const NAMES_NOTHING: &[(&str, &[u8])] = &[
+            ("kit/home/skills/role.toml", b"the layer"),
+            (
+                "kit/home/AGENTS.md",
+                b"a settings file that forgot to point",
+            ),
+        ];
+
+        let mut baseline = agreeing();
+        let rows = baseline["native_surfaces"]["surfaces"]
+            .as_array_mut()
+            .unwrap();
+        for row in rows.iter_mut() {
+            if row["path"] == "skills" {
+                row["reached_by"] = json!("AGENTS.md");
+            }
+        }
+
+        let mut pointing = TEST;
+        pointing.embedded_setups = NAMES_IT;
+        let mut found = Vec::new();
+        writes_where_nothing_is_routed(&pointing, &baseline, &mut found);
+        assert!(
+            found.is_empty(),
+            "a pointer that names it is allowed: {found:?}"
+        );
+
+        let mut blind = TEST;
+        blind.embedded_setups = NAMES_NOTHING;
+        let mut found = Vec::new();
+        writes_where_nothing_is_routed(&blind, &baseline, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("is not named in it"), "{found:?}");
+
+        // And without the claim at all, the original complaint still stands --
+        // widening the guard must not have quietly opened the gate.
+        let mut plain = agreeing();
+        let rows = plain["native_surfaces"]["surfaces"].as_array_mut().unwrap();
+        for row in rows.iter_mut() {
+            if row["path"] == "skills" {
+                row.as_object_mut().unwrap().remove("reached_by");
+            }
+        }
+        let mut found = Vec::new();
+        writes_where_nothing_is_routed(&blind, &plain, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("routes no kind"), "{found:?}");
     }
 }
