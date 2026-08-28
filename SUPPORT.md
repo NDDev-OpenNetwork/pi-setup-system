@@ -201,6 +201,12 @@ Not declared as a user_root scoped profile, though Codex declares exactly that s
 
 **`pi-debug.log`** -- Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured. ([source](measured 2026-08-28 in the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs))
 
+**`trust.json`** -- A person's saved decisions about which project folders may load project-local settings and resources and **execute project extensions**. The product's own shipped documentation names it five times and is explicit about what turns on it: *"pi asks before trusting a project folder that contains project-local settings, resources, or project `.agents/skills` and has no saved decision for the folder or a parent folder in `~/.pi/agent/trust.json`. Trusting a project allows pi to load `.pi/settings.json` and `.pi` resources, install missing project packages, and execute project extensions."*
+
+Never owned. It is a security decision a person made, not configuration a setup can carry: installing one would grant execution to folders nobody approved, and a restore returning an older copy would silently re-grant a trust that had been withdrawn. Recorded here because it sits inside the home this provider configures and every other file there is accounted for.
+
+**This product has no sandbox of its own**, which is what makes the row matter. Its documentation says so plainly -- *"Pi does not include a built-in sandbox. Built-in tools can read files, write files, edit files, and run shell commands with the permissions of the pi process"* -- and points at containers, VMs and micro-VMs instead. So trust is the only gate between a project folder and code running as the person who started the product, and it is a gate this provider must not touch. ([source](the product's own shipped documentation, read from the pinned 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; https://pi.dev/docs/latest/security))
+
 ## Response
 
 One maintainer. Defects are triaged as time allows; security reports are

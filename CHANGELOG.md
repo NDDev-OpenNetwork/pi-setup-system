@@ -11,6 +11,71 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-08-28
+
+A rollback on Windows looked for the Linux executable and refused a
+version tree that held the right file all along.
+
+The lookup tried two shapes: the member this build's artifact table names, and
+the bare command. The first comes from a helper that answers with the **first**
+artifact's member whatever host is asking, and every table in this source lists
+Linux first. So on Windows it looked for `package/bin/<command>` while the file
+on disk was `package/bin/<command>.exe`, and the tree that had just been
+installed successfully was reported as holding no executable.
+
+Install, update and the byte-exact restore round trip all passed on the same
+run. Only going *back* failed, and only on one of the three platforms.
+
+**The platform is a parameter now and not a `cfg!`.** The same file already had
+that rule for the exposed command's name, written after a mutation deleted its
+Windows branch and left every Linux run green. The lookup did not follow it, and
+this is what that costs: a defect that Ubuntu and macOS cannot see, in a code
+path that only runs when somebody is already trying to undo something.
+
+This host's own member is tried first now -- right by construction rather than
+by the table happening to be ordered well -- and the older shapes after it, so a
+tree written by an earlier build is still found.
+
+**The other harness's managed configuration is recorded**, which the research
+that found the rollback bug turned up. Its directory is a system path, one per
+operating system, and an administrator's configuration there is loaded at the
+highest priority tier and overrides everything. This provider can install,
+verify and restore a permissive posture cleanly on such a machine and change
+nothing about what the product permits. Recorded and never touched. Its *user*
+configuration home, by contrast, has no platform branch at all -- one resolver,
+three operating systems -- which is why only the managed row needed writing.
+
+**The permissive posture now grants capability, not just silence.** It set
+approvals and the sandbox and stopped there, which is half of what the name
+promises: those decide what the product asks you and what it confines, while a
+separate set of keys decides which tools exist at all. On one harness four of
+them were off by default and the posture left them off, so *full auto* meant no
+questions and no web fetch.
+
+That harness now enables the six feature toggles its own binary lists in its own
+table, plus subagents, cross-session memory and managed MCP servers -- and the
+product's separate `yolo` switch, which is a real key beside the approval mode
+rather than an alias of it. Another gains the most capable of its four web
+search modes and its local-image tool. A third approves project MCP servers
+without prompting.
+
+**Two toggles were deliberately left alone.** Telemetry and feedback are
+switches on the same list, and they send data outward rather than handing you a
+tool; a posture that flipped them while claiming to grant capability would be
+doing something else. And three feature flags the vendor's own reference
+documents are not set, because the pinned build carries none of those
+spellings -- writing them would set keys it ignores.
+
+**What is claimed about these keys is what was checked.** Each name comes from
+the product's own bytes, and each file is accepted by the product. That they
+take effect is not demonstrated: neither harness reports its feature state, so
+there is no instrument here to read it back from. The evidence column in the
+declaration makes that distinction for surfaces, and it is the same distinction
+here.
+
+Pi Coding Agent
+
+
 ## [0.0.20] - 2026-08-28
 
 This product's nine surfaces were a vendor page each. They are read out
