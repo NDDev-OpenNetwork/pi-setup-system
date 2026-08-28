@@ -40,7 +40,7 @@ pub use catalog::{Catalog, Setup};
 // artifact table and depends only on this crate. Re-exported so that stays
 // true rather than widening seven dependency lists to reach past it.
 pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Foreign, Harness, Scoped};
-pub use setup_core::software::{Artifact, Delivery, Shape, Software};
+pub use setup_core::software::{Artifact, Delivery, Previous, Shape, Software};
 
 /// The kernel's content digest, re-exported for the seven binaries.
 ///
@@ -171,6 +171,16 @@ fn print_help(harness: &Harness) {
             "Documented configuration home: {} ({})",
             harness.documented_config_home, harness.config_home_env
         );
+    }
+    // Printed here rather than left in a baseline nobody runs: for one of the
+    // seven the line above is conditionally false, and this is the surface a
+    // person actually reads before choosing a `--target`.
+    //
+    // Labelled, like every other line in this help. The first version printed
+    // `"  {}"` -- a bare continuation whose meaning depended entirely on the
+    // line above it, which is not how anything else here reads.
+    if !harness.config_home_note.is_empty() {
+        println!("Also honoured: {}", harness.config_home_note);
     }
     println!();
     println!("Provider commands (ai-stp protocol v3):");

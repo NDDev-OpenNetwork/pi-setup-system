@@ -42,6 +42,21 @@ pub struct Harness {
     /// Documentation either way: nothing here resolves a path from it, because
     /// every command takes an explicit target.
     pub config_home_env: &'static str,
+    /// The condition under which [`Self::documented_config_home`] is not where
+    /// the product looks, printed beside it in `--help`.
+    ///
+    /// Empty for six of the seven, because six resolve one home from one
+    /// variable. Cursor does not: its resolver falls through
+    /// `CURSOR_CONFIG_DIR` to `XDG_CONFIG_HOME`, and the second **renames the
+    /// leaf** -- `$XDG_CONFIG_HOME/cursor`, not `.cursor`. So on a Linux
+    /// machine with XDG set, the single string above is wrong, and a person
+    /// reading it would point `--target` at a directory the product does not
+    /// read.
+    ///
+    /// A sentence rather than a second path, because this build does not
+    /// resolve either one: every command takes an explicit `--target`, and the
+    /// job here is to tell a person the truth about their own machine.
+    pub config_home_note: &'static str,
     /// The provider-owned control directory inside a target.
     pub control_directory: &'static str,
     /// The provider-owned state file inside a target.
@@ -429,6 +444,7 @@ mod tests {
         vendor: "NDDev",
         documented_config_home: "~/.sample",
         config_home_env: "SAMPLE_CONFIG_DIR",
+        config_home_note: "",
         control_directory: ".sample-setup-system",
         state_file: "NDDEV-SAMPLE-PROVIDER.json",
         profile_id: "sample/native-files/1",

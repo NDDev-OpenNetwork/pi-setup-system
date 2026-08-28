@@ -42,6 +42,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -146,8 +147,16 @@ def tree_digests(root: Path, skip: str) -> dict[str, str]:
     return found
 
 
-def plan(binary: str, target: Path, prefix: Path, operation: str, nonce: int) -> dict:
+def plan(
+    binary: str,
+    target: Path,
+    prefix: Path,
+    operation: str,
+    nonce: int,
+    version: str = "",
+) -> dict:
     info = run_json([binary, "provider-info"])
+    named = ["--software-version", version] if version else []
     answer = run_json(
         [
             binary,
@@ -159,6 +168,7 @@ def plan(binary: str, target: Path, prefix: Path, operation: str, nonce: int) ->
             "--provider-release-digest", info["provider_build_digest"],
             "--operation-id", "operation_" + f"{nonce:024x}",
             "--expires-at", EXPIRES_AT,
+            *named,
         ]
     )
     if answer.get("reason") == "unsupported_platform":
@@ -218,6 +228,144 @@ def fetch(url: str, into: Path, expect_bytes: int, expect_digest: str) -> None:
         )
 
 
+def cross_two_releases(
+    binary: str, target: Path, prefix: Path, room: Path, info: dict
+) -> None:
+    """Move a real product between two real releases, and back.
+
+    The two operations this file could not reach. Both are declared by every
+    build that installs a program, and until a second version was pinned
+    neither had ever crossed two trees: an update needs a version to come from,
+    a rollback a tree to return to.
+
+    The pair is deliberately two *consecutive vendor releases* rather than a
+    fabricated one. They differ in whatever the vendor actually changed, so
+    what runs here is the transition a person really performs -- and a
+    fabricated pair would prove the plumbing against a case nobody runs.
+
+    Skipped, with the reason printed, for a build that has not been bumped
+    since it was pinned. That is an absence of a second release rather than a
+    failure, and saying which is the whole difference.
+    """
+    earlier = previous_version(binary, target, prefix)
+    if not earlier:
+        print(
+            "update -> this build names one version, so there is no transition "
+            "to cross yet; it appears here on the next bump"
+        )
+        return
+
+    # Start from the earlier release, because an update of nothing is refused
+    # and rightly: installing instead would be doing something else.
+    print(f"back  -> starting from {earlier}, the release before the pin")
+    place(binary, target, prefix, room, info, "software_install", 3, earlier)
+
+    print("update", end="", flush=True)
+    updated = place(binary, target, prefix, room, info, "software_update", 4)
+    print(f"-> {earlier} to {updated['version']}, both trees kept")
+
+    said = run_text([binary, "software", "--prefix", str(prefix)])
+    for version in (earlier, updated["version"]):
+        if version not in said:
+            raise Failed(
+                f"after the update the prefix should hold {earlier} and "
+                f"{updated['version']}; `software` said:\n{said}"
+            )
+
+    print("roll  ", end="", flush=True)
+    back = run_text(
+        [binary, "rollback", "--to", earlier, "--prefix", str(prefix)]
+    )
+    if earlier not in back:
+        raise Failed(f"rollback did not say it moved to {earlier}:\n{back}")
+    now = run_text([binary, "software", "--prefix", str(prefix)])
+    if f"runs {earlier}" not in now:
+        raise Failed(
+            f"rollback answered but the prefix still runs something else:\n{now}"
+        )
+    print(f"-> back on {earlier}, and {updated['version']} is still there")
+
+    # Forward again: a move that only goes one way is half an operation.
+    run_text(
+        [binary, "rollback", "--to", updated["version"], "--prefix", str(prefix)]
+    )
+    forward = run_text([binary, "software", "--prefix", str(prefix)])
+    if f"runs {updated['version']}" not in forward:
+        raise Failed(f"the command did not move forward again:\n{forward}")
+    print(f"      -> and forward to {updated['version']} again")
+
+
+def previous_version(binary: str, target: Path, prefix: Path) -> str:
+    """The release before the pinned one, asked of the build rather than a file.
+
+    Read from the provider's own refusal, which names every version it can
+    install. That keeps this script from carrying a second copy of a fact the
+    binary already states -- the copy that eventually disagrees.
+    """
+    answer = run_json(
+        [
+            binary,
+            "plan-operation",
+            "--target", str(target),
+            "--prefix", str(prefix),
+            "--json",
+            "--operation", "software_install",
+            "--provider-release-digest",
+            run_json([binary, "provider-info"])["provider_build_digest"],
+            "--operation-id", "operation_" + f"{9:024x}",
+            "--expires-at", EXPIRES_AT,
+            "--software-version", "0.0.0-not-a-release",
+        ]
+    )
+    named = re.search(r"names \S+ ([^;]+);", str(answer.get("detail", "")))
+    if not named:
+        return ""
+    versions = [part.strip() for part in named.group(1).split(" and ")]
+    return versions[1] if len(versions) > 1 else ""
+
+
+def place(
+    binary: str,
+    target: Path,
+    prefix: Path,
+    room: Path,
+    info: dict,
+    operation: str,
+    nonce: int,
+    version: str = "",
+) -> dict:
+    """Plan, fetch and apply one software operation, and answer what it did."""
+    planned = plan(binary, target, prefix, operation, nonce, version)
+    artifact = planned["plan"]["software_artifacts"][0]
+    blob = room / f"artifact-{nonce}"
+    fetch(artifact["url"], blob, artifact["byte_length"], artifact["sha256"])
+    body = room / f"plan-{nonce}.json"
+    body.write_text(
+        json.dumps(planned["plan"], separators=(",", ":"), sort_keys=True),
+        encoding="utf-8",
+    )
+    applied = run_json(
+        [
+            binary,
+            "apply-operation",
+            "--target", str(target),
+            "--prefix", str(prefix),
+            "--json",
+            "--plan", str(body),
+            "--plan-digest", planned["plan_digest"],
+            "--provider-release-digest", info["provider_build_digest"],
+            "--software-artifact", str(blob),
+        ]
+    )
+    if applied.get("state") != "verified":
+        raise Failed(
+            f"{operation} answered {applied.get('state')}: "
+            f"{applied.get('reason')} {applied.get('detail')}"
+        )
+    blob.unlink(missing_ok=True)
+    return applied
+
+
 def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> None:
     """Take the product back off, and prove the prefix says so.
 
@@ -226,14 +374,11 @@ def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> N
     then left it there. An operation that is declared and never exercised is a
     promise nobody has read back.
 
-    `software_update` and `rollback` are not here, and the reason is a
-    measurement rather than an omission: each harness pins exactly one version,
-    so an update has no second version to reach and a rollback has no earlier
-    tree to point at. `rollback` answers honestly to both ends of that today --
-    *already runs 0.150.1; nothing to do* for the installed one, and a refusal
-    naming what the prefix holds for one that is not there -- but the path that
-    moves a command between two trees cannot be reached until a second version
-    is pinned.
+    `software_update` and `rollback` now run here too, in
+    [`cross_two_releases`], for harnesses that name a second version. Until one
+    did, the reason they were absent was a measurement rather than an omission:
+    a build pinning one version has nothing for an update to move *from* and
+    nothing for a rollback to return *to*.
     """
     print("remove", end="", flush=True)
     planned = plan(binary, target, prefix, "software_remove", 2)
@@ -260,9 +405,20 @@ def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> N
             f"{applied.get('removed')}: {applied.get('detail')}"
         )
     said = run_text([binary, "software", "--prefix", str(prefix)])
-    if "No version" not in said:
+    # What `software_remove` promises is precise, and the second pin is what
+    # made the difference visible: it takes *the version this build pins* and
+    # the exposed command, and deliberately leaves any other tree alone --
+    # "this build pins X and does not decide about versions it does not pin",
+    # in the plan's own words. Until a second version existed the prefix always
+    # ended up empty, so an assertion that it was empty passed for a reason
+    # that was about the fixture rather than about the operation.
+    if applied["version"] in said:
         raise Failed(
-            f"the program was removed and `software` still reports one:\n{said}"
+            f"{applied['version']} was removed and `software` still lists it:\n{said}"
+        )
+    if "Nothing is exposed" not in said and "No version" not in said:
+        raise Failed(
+            f"the program was removed and a command is still exposed:\n{said}"
         )
     print(f"-> {applied['version']} taken off, and the prefix says so")
 
@@ -441,6 +597,7 @@ def software_lifecycle(
         if not launches:
             # Antigravity, and the refusal is the declaration keeping its word.
             print("launch -> not declared, so this build does not start a product")
+            cross_two_releases(binary, target, prefix, room, info)
             remove_the_program(binary, target, prefix, info)
             return
 
@@ -472,6 +629,7 @@ def software_lifecycle(
             # exonerate one that had simply been left out.
             print(f"write -> not exercised: {absent}")
             run_the_probe(binary, target, prefix, probe)
+            cross_two_releases(binary, target, prefix, room, info)
             remove_the_program(binary, target, prefix, info)
             return
 
@@ -579,6 +737,7 @@ def software_lifecycle(
         print(f"-> install {setup}, reinstall, restore {oldest} of {len(refs)}, byte-exact")
 
         run_the_probe(binary, target, prefix, probe)
+        cross_two_releases(binary, target, prefix, room, info)
         remove_the_program(binary, target, prefix, info)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

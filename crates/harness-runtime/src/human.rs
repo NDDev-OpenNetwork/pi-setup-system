@@ -1274,6 +1274,7 @@ mod tests {
                 reason: "its closure is resolved at install time",
             },
             unsupported: &[],
+            previous: None,
         });
         assert!(!managed.installs_a_program());
 

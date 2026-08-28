@@ -13,7 +13,11 @@
 //!   one repeated `--software-artifact` per element **in that order**, so which
 //!   file answers which entry is never inferred.
 //! * `--software-version` omitted means the pinned version; given means exactly
-//!   that one.
+//!   one of the versions this build names -- the pinned one, or the one pinned
+//!   before it once the harness has been bumped. Two consecutive real releases
+//!   are what make `software_update` and `rollback` runnable rather than only
+//!   declared, and the second is never a separate choice: a bump moves the
+//!   current pin into that slot.
 //! * An unpinned platform refuses with `unsupported_platform`.
 //! * `software_remove` plans and applies with no download and no artifact.
 //!
@@ -83,20 +87,47 @@ fn program_directory(prefix: Option<&Path>, operation: Operation) -> Result<Path
     })
 }
 
-/// The version this operation is for, refusing one this build does not pin.
-fn version_for(declared: &Software, asked: Option<&str>) -> Result<()> {
-    match asked {
-        None => Ok(()),
-        Some(wanted) if wanted == declared.version => Ok(()),
-        Some(wanted) => Err(Error::refuse(
+/// This build as it describes the version an operation was asked for.
+///
+/// A build names its pinned version and, once it has been bumped, the one it
+/// pinned before. Anything else refuses: installing a version it *does* name
+/// instead would be answering a question nobody asked.
+fn version_for(declared: &Software, asked: Option<&str>) -> Result<Software> {
+    declared.at(asked).ok_or_else(|| {
+        let wanted = asked.unwrap_or_default();
+        Error::refuse(
             WireReason::UnsupportedOperation,
             format!(
-                "this build pins {} {}; it cannot install {wanted}, and installing the pinned one \
-                 instead would be answering a question nobody asked",
-                declared.command, declared.version
+                "this build names {} {}; it cannot install {wanted}, and installing one it does \
+                 name instead would be answering a question nobody asked",
+                declared.command,
+                declared.versions().join(" and "),
             ),
-        )),
-    }
+        )
+    })
+}
+
+/// This build as it describes the release the given bytes belong to.
+///
+/// `apply` is handed a file, not a version, and reading which release it is
+/// from the digest makes the version an observation rather than a label that
+/// travelled beside the bytes. A caller cannot install the previous tree under
+/// the current version's name, because nothing here reads a name.
+fn release_of(declared: &Software, path: &Path) -> Result<Software> {
+    let digest = setup_core::digest::of_file(path)?;
+    let (os, arch) = platform_of_this_host();
+    declared.for_bytes(os, arch, &digest).ok_or_else(|| {
+        Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "the artifact given is not a {} release this build names: it hashes to {digest}, \
+                 and {} publishes {} for {os}/{arch}",
+                declared.command,
+                declared.command,
+                declared.versions().join(" and "),
+            ),
+        )
+    })
 }
 
 /// Plan one software operation: name the exact bytes, with no network open.
@@ -112,9 +143,8 @@ pub(crate) fn plan(
     operation: Operation,
     software_version: Option<&str>,
 ) -> Result<(Vec<SoftwareArtifact>, Vec<String>)> {
-    let declared = declared(harness)?;
+    let declared = version_for(&declared(harness)?, software_version)?;
     let root = program_directory(prefix, operation)?;
-    version_for(&declared, software_version)?;
 
     // Not always the command: pi's entry point is JavaScript, and Windows runs
     // a file by its extension rather than by a shebang, so what is exposed
@@ -307,6 +337,11 @@ pub(crate) fn apply(
         ));
     }
 
+    // Which release these bytes are is read from the bytes, not from a flag.
+    // `--software-version` steers the *plan*; by apply time the only honest
+    // source is the file itself, and `install` re-verifies the digest it just
+    // matched, so the two agree by construction rather than by discipline.
+    let declared = release_of(&declared, path)?;
     let (os, arch) = platform_of_this_host();
     let artifact = declared.artifact_for(os, arch)?;
     let installed = software::install(&declared, artifact, path, &root)?;
