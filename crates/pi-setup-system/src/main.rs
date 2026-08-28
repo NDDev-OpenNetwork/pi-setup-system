@@ -134,6 +134,57 @@ mod tests {
     /// really break — `join("/")` is the only reason these keys are usable on
     /// Windows, and a path built with the platform separator would still look
     /// perfectly correct in the generated source.
+    /// The bytes this harness ships, pinned so they cannot change unseen.
+    ///
+    /// A setup's `definition_digest` is what makes two setups the same setup,
+    /// and it appears in `list`, in a plan and in provider state -- and until
+    /// this, nothing compared it to anything. A stray character in a setup file
+    /// changed what the estate installs and every test stayed green.
+    ///
+    /// One aggregate rather than one per setup, because the claim is about the
+    /// catalogue: sorted definition digests, joined by a newline, hashed. A
+    /// deliberate change to a setup updates the line in the baseline, which is
+    /// the point -- the peer calls this a golden and it earns itself the first
+    /// time a row moves without anyone meaning it to.
+    ///
+    /// **And it is the three-OS check nothing else makes.** The setups are
+    /// embedded with `include_bytes!`, so whatever the checkout holds is what
+    /// ships; `.gitattributes` pins `eol=lf` to keep a Windows checkout from
+    /// rewriting them, and this is the assertion that would notice if it ever
+    /// stopped working. The matrix runs it on all three systems, so a digest
+    /// that differed by platform could not stay hidden.
+    #[test]
+    fn the_catalogue_this_harness_ships_is_the_one_the_baseline_records() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let mut digests: Vec<String> = catalog
+            .list()
+            .unwrap()
+            .iter()
+            .map(|setup| setup.definition_digest.clone())
+            .collect();
+        digests.sort();
+        let joined = digests.join("\n");
+        let aggregate = harness_runtime::digest_of_bytes(&joined);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../references")
+            .join(format!("{TOOL}-baseline.json"));
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let recorded = baseline["setup_catalogue_digest"].as_str().unwrap_or("");
+        assert_eq!(
+            aggregate, recorded,
+            "the setups this binary ships are not the ones {TOOL}-baseline.json \
+             records; if the change was meant, put this digest there"
+        );
+    }
+
     #[test]
     fn the_catalog_this_binary_carries_is_the_one_in_the_tree() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

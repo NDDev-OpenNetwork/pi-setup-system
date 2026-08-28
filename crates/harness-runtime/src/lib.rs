@@ -41,6 +41,17 @@ pub use catalog::{Catalog, Setup};
 // true rather than widening seven dependency lists to reach past it.
 pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Foreign, Harness, Scoped};
 pub use setup_core::software::{Artifact, Delivery, Shape, Software};
+
+/// The kernel's content digest, re-exported for the seven binaries.
+///
+/// They depend on this crate and on `provider-v3`, not on `setup-core`, and a
+/// harness test that pins the bytes it ships needs the same hash the rest of
+/// the estate uses. Re-exporting is cheaper than a dependency and keeps one
+/// implementation.
+#[must_use]
+pub fn digest_of_bytes(bytes: &str) -> String {
+    setup_core::digest::of_bytes(bytes.as_bytes())
+}
 pub use wire::dispatch;
 
 use std::process::ExitCode;

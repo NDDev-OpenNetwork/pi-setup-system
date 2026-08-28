@@ -847,6 +847,60 @@ mod tests {
         }
     }
 
+    /// `build`, with one hand on the manifest before its digest is taken.
+    ///
+    /// Some refusals are about what a record *says* rather than about the bytes
+    /// beside it -- a record declaring itself a link, for instance -- and those
+    /// cannot be reached by choosing different files.
+    fn build_declaring(
+        files: &[(&str, &str, u32)],
+        bend: impl Fn(&mut serde_json::Value),
+    ) -> Built {
+        let plain = build(files);
+        let mut manifest: serde_json::Value = serde_json::from_slice(
+            &zip::read(&plain.bytes)
+                .unwrap()
+                .into_iter()
+                .find(|member| member.name == MANIFEST_MEMBER)
+                .unwrap()
+                .data,
+        )
+        .unwrap();
+        bend(&mut manifest);
+        // The digest is taken over the manifest without its own digest field,
+        // exactly as `build` takes it, or the bundle would fail for the wrong
+        // reason and the test would prove nothing.
+        manifest["bundle_digest"] = serde_json::Value::Null;
+        let mut without = manifest.clone();
+        without.as_object_mut().unwrap().remove("bundle_digest");
+        let bundle_digest = digest::of_domain_canonical_json(BUNDLE_DOMAIN, &without).unwrap();
+        manifest["bundle_digest"] = serde_json::json!(bundle_digest);
+        let manifest_bytes = setup_core::canonical::to_canonical_bytes(&manifest).unwrap();
+
+        let mut entries: Vec<Entry> = Vec::new();
+        for member in zip::read(&plain.bytes).unwrap() {
+            let data = if member.name == MANIFEST_MEMBER {
+                manifest_bytes.clone()
+            } else {
+                member.data
+            };
+            entries.push(Entry {
+                name: member.name,
+                data,
+                mode: member.mode.unwrap_or(0o644),
+            });
+        }
+        let bytes = write(&entries);
+        let artifact_digest = digest::of_bytes(&bytes);
+        let length = bytes.len() as u64;
+        Built {
+            bytes,
+            claim_digest: bundle_digest,
+            artifact_digest,
+            length,
+        }
+    }
+
     fn claim(built: &Built) -> Claim<'_> {
         Claim {
             bundle_format: BUNDLE_FORMAT,
@@ -1034,8 +1088,41 @@ mod tests {
 
     #[test]
     fn an_over_long_path_or_segment_is_refused() {
-        assert!(check_path(&"a".repeat(1025)).is_err());
-        assert!(check_path(&format!("dir/{}", "a".repeat(256))).is_err());
+        // By its reason, not merely by failing. A consumer decides from the
+        // reason alone, so a refusal for the wrong one is a wrong answer that
+        // an `is_err()` assertion calls correct -- and this test was that
+        // assertion until it was read back.
+        for path in [&"a".repeat(1025), &format!("dir/{}", "a".repeat(256))] {
+            let error = check_path(path).unwrap_err();
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::LimitExceeded),
+                "{}",
+                error.detail()
+            );
+        }
+    }
+
+    #[test]
+    fn two_paths_differing_only_in_case_are_a_duplicate() {
+        // On a case-insensitive filesystem -- Windows, and macOS by default --
+        // these are one file, so a bundle carrying both installs something
+        // different there than it does here. One digest is one installability,
+        // and this is that rule at the manifest rather than at the name.
+        let built = build(&[("skills/a.md", "one", 0o644), ("skills/A.md", "two", 0o644)]);
+        let error = Bundle::read(&built.bytes, claim(&built)).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::PathDuplicate), "{error}");
+    }
+
+    #[test]
+    fn a_manifest_record_that_is_a_link_is_refused_as_one() {
+        // A link is the entry that can point a write somewhere else, which is
+        // the whole reason this reader accepts regular files and nothing else.
+        let built = build_declaring(&[("AGENTS.md", "x", 0o644)], |manifest| {
+            manifest["files"][0]["kind"] = serde_json::json!("symlink");
+        });
+        let error = Bundle::read(&built.bytes, claim(&built)).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::LinkNotAllowed), "{error}");
     }
 
     #[test]

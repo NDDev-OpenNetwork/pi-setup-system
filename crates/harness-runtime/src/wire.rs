@@ -3017,6 +3017,60 @@ mod tests {
     }
 
     #[test]
+    fn validate_bundle_accepts_a_consistent_bundle_and_echoes_what_it_was_given() {
+        // `validate-bundle` is a declared command of the v3 contract and the
+        // only caller of its implementation was the dispatch: `Bundle::read` is
+        // tested thoroughly one crate down, and the envelope this command hands
+        // a consumer was tested nowhere. The envelope is the part a consumer
+        // parses.
+        let target = seeded("validate-ok");
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[("AGENTS.md", "# from a bundle\n", 0o644)]);
+        let path = target.join("..").join("valid.zip");
+        fs::write(&path, &bytes).unwrap();
+        let flags = bundle_flags(&path, &bundle_digest, &artifact, bytes.len());
+        let borrowed: Vec<&str> = flags.iter().map(String::as_str).collect();
+
+        let answer = run(args("validate-bundle", &target, &borrowed));
+        assert_eq!(answer["valid"], true, "{answer}");
+        // The echoes matter as much as the verdict: without them a consumer
+        // cannot tell whether the answer concerns the bytes it sent.
+        assert_eq!(answer["bundle_digest"], bundle_digest.as_str());
+        assert_eq!(answer["artifact_digest"], artifact.as_str());
+    }
+
+    #[test]
+    fn validate_bundle_refuses_with_a_reason_and_still_echoes_the_claim() {
+        let target = seeded("validate-bad");
+        let (bytes, bundle_digest, _) = bundle_bytes(&[("AGENTS.md", "# from a bundle\n", 0o644)]);
+        let path = target.join("..").join("wrong.zip");
+        fs::write(&path, &bytes).unwrap();
+        let lie = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let flags = bundle_flags(&path, &bundle_digest, lie, bytes.len());
+        let borrowed: Vec<&str> = flags.iter().map(String::as_str).collect();
+
+        let answer = run(args("validate-bundle", &target, &borrowed));
+        // A refusal carries `rejected: true` and no `valid` key at all, which
+        // is the shape every refusal on this wire uses -- and the shape the
+        // consumer reads: `answer.get("valid") is not True` for an acceptance,
+        // `answer.get("rejected") is not True` for a refusal. Asserting
+        // `valid: false` here failed, which is how the asymmetry got checked
+        // against their reader rather than assumed.
+        assert!(answer.get("valid").is_none(), "{answer}");
+        assert_eq!(answer["rejected"], true, "{answer}");
+        assert_eq!(answer["reason"], "digest_mismatch", "{answer}");
+        assert_eq!(
+            answer["artifact_digest"], lie,
+            "a refusal echoes the claim it was given, not the one it wished for"
+        );
+        assert!(
+            answer["detail"].as_str().is_some_and(|d| !d.is_empty()),
+            "a refusal carrying only a code says a bundle was wrong without \
+             saying which part: {answer}"
+        );
+    }
+
+    #[test]
     fn a_bundle_installs_over_the_wire_and_leaves_unowned_files_alone() {
         let target = seeded("bundle-install");
         let (bytes, bundle_digest, artifact) = bundle_bytes(&[

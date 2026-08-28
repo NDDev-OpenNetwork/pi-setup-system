@@ -458,6 +458,103 @@ pub fn round_trip(exe: &Path) -> Vec<String> {
     found
 }
 
+/// Prove two processes cannot write one target at once, on this system.
+///
+/// The lock is two layers: an in-process claim set, and `File::try_lock` under
+/// it. The first is unit-tested; the second is an operating-system primitive --
+/// `flock` on Unix, `LockFileEx` on Windows -- and a unit test in one process
+/// cannot reach it. So this drives real processes, which is what this module is
+/// for, and it does so on all three systems.
+///
+/// What it asserts is deliberately narrow: at most one of several concurrent
+/// installs applies, every refusal names the lock, and the target afterwards
+/// reports a setup with no drift. It does not assert that exactly one wins --
+/// a machine slow enough to serialise them would apply them one after another,
+/// which is correct behaviour and not what this is about.
+#[must_use]
+pub fn one_writer_at_a_time(exe: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(target) = scratch("one-writer") else {
+        found.push("no scratch directory for the concurrency check".to_owned());
+        return found;
+    };
+    let Ok(setups) = catalog(exe) else {
+        found.push("the catalog could not be read for the concurrency check".to_owned());
+        return found;
+    };
+    let Some(setup) = setups.first() else {
+        found.push("no setup to install concurrently".to_owned());
+        return found;
+    };
+
+    let mut children = Vec::new();
+    for _ in 0..4 {
+        match Command::new(exe)
+            .args([
+                OsStr::new("install"),
+                OsStr::new(setup),
+                OsStr::new("--target"),
+                target.as_os_str(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => children.push(child),
+            Err(error) => found.push(format!("a concurrent install could not start: {error}")),
+        }
+    }
+
+    let mut applied = 0_usize;
+    let mut refused_without_naming_the_lock = Vec::new();
+    for child in children {
+        match child.wait_with_output() {
+            Ok(output) => {
+                if output.status.success() {
+                    applied += 1;
+                } else {
+                    let said = String::from_utf8_lossy(&output.stderr).into_owned()
+                        + &String::from_utf8_lossy(&output.stdout);
+                    if !said.contains("target.lock") {
+                        refused_without_naming_the_lock.push(said.replace("\r\n", "\n"));
+                    }
+                }
+            }
+            Err(error) => found.push(format!(
+                "a concurrent install could not be waited on: {error}"
+            )),
+        }
+    }
+
+    if applied == 0 {
+        found.push("no concurrent install applied, so the target was never written".to_owned());
+    }
+    for said in refused_without_naming_the_lock {
+        found.push(format!(
+            "a concurrent install was refused without naming the lock:\n{said}"
+        ));
+    }
+
+    // Whatever the ordering, the target must be coherent afterwards.
+    let after = run(
+        exe,
+        &[
+            OsStr::new("diff"),
+            OsStr::new("--target"),
+            target.as_os_str(),
+        ],
+    );
+    if !after.ok || !after.out.contains("matches the setup recorded in it") {
+        found.push(format!(
+            "after concurrent installs the target does not match its own record:\n{}",
+            after.out
+        ));
+    }
+
+    let _ = std::fs::remove_dir_all(&target);
+    found
+}
+
 /// Prove a target this provider was never pointed at is refused, not guessed.
 #[must_use]
 pub fn refuses_a_target_it_should(exe: &Path) -> Vec<String> {

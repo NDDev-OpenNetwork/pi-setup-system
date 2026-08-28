@@ -234,8 +234,81 @@ def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> N
     print(f"-> {applied['version']} taken off, and the prefix says so")
 
 
+def run_the_probe(binary: str, target: Path, prefix: Path, probe: dict) -> None:
+    """Run the probe, or say why there is none -- measured, not implied."""
+    if not probe["argv"]:
+        print(f"reads -> not asked: {probe['absent']}")
+        return
+    the_product_reads_our_setup(
+        binary,
+        target,
+        prefix,
+        probe["argv"],
+        probe["kind"],
+        probe["baseline"],
+        probe["full_auto"],
+    )
+
+
+def the_product_reads_our_setup(
+    binary: str,
+    target: Path,
+    prefix: Path,
+    probe: list[str],
+    kind: str,
+    baseline: str,
+    full_auto: str,
+) -> None:
+    """Ask the product what configuration it resolved, and check our setup is in it.
+
+    Everything before this proves the product *starts*, pointed at our target.
+    That is not the same as the product *reading what we installed*, and the gap
+    is where every silently-wrong setup this estate has shipped lived: a
+    permission key of the wrong shape at a correctly-owned path, a plugin one
+    directory above where the product looks. Each installed, verified and
+    restored cleanly, and changed nothing about the product.
+
+    `postures` is the stronger form: the probe must say something *different*
+    with `full-auto` installed than with `baseline`, which no constant can do.
+    `reads` only asks the product to name our file at our target.
+    """
+    def ask(setup: str) -> str:
+        run_text([binary, "select", setup, "--target", str(target)])
+        started = subprocess.run(
+            [binary, "launch", "--target", str(target), "--prefix", str(prefix),
+             "--json", "--", *probe],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        return started.stdout + started.stderr
+
+    print("reads ", end="", flush=True)
+    said = ask("baseline")
+    if baseline not in said:
+        raise Failed(
+            f"with `baseline` installed the product did not report "
+            f"{baseline!r}; it said:\n{said[:600]}"
+        )
+    if kind != "postures":
+        print(f"-> the product named {baseline!r} from our target")
+        return
+    other = ask("full-auto")
+    if full_auto not in other:
+        raise Failed(
+            f"with `full-auto` installed the product did not report "
+            f"{full_auto!r}; it said:\n{other[:600]}"
+        )
+    if baseline in other:
+        raise Failed(
+            f"the product reported {baseline!r} under both postures, so this "
+            "probe cannot tell which setup is installed"
+        )
+    print(f"-> {baseline!r} under baseline, {full_auto!r} under full-auto")
+
+
 def software_lifecycle(
-    binary: str, harness: str, writes: list[str] | None, absent: str
+    binary: str, harness: str, writes: list[str] | None, absent: str, probe: dict
 ) -> None:
     control = Path(binary).name
     # Made and removed by hand rather than with `TemporaryDirectory`, for one
@@ -336,6 +409,7 @@ def software_lifecycle(
             # product, and printing a claim about the product here would
             # exonerate one that had simply been left out.
             print(f"write -> not exercised: {absent}")
+            run_the_probe(binary, target, prefix, probe)
             remove_the_program(binary, target, prefix, info)
             return
 
@@ -441,6 +515,7 @@ def software_lifecycle(
             )
         print(f"-> install {setup}, reinstall, restore {oldest} of {len(refs)}, byte-exact")
 
+        run_the_probe(binary, target, prefix, probe)
         remove_the_program(binary, target, prefix, info)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -450,6 +525,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--harness", required=True)
+    parser.add_argument("--probe", default="", help="argv that makes the product report its resolved configuration")
+    parser.add_argument("--probe-kind", default="", choices=["", "postures", "reads"])
+    parser.add_argument("--probe-baseline", default="", help="what the probe must say with `baseline` installed")
+    parser.add_argument("--probe-full-auto", default="", help="what it must say with `full-auto` installed, when the kind is `postures`")
+    parser.add_argument("--probe-absent", default="", help="the measured reason this product reports nothing without credentials")
     parser.add_argument(
         "--writes-absent",
         default="",
@@ -487,7 +567,17 @@ def main() -> int:
     print(f"== {args.harness} on {sys.platform} ==")
     try:
         software_lifecycle(
-            binary, args.harness, shlex.split(args.writes), args.writes_absent
+            binary,
+            args.harness,
+            shlex.split(args.writes),
+            args.writes_absent,
+            {
+                "argv": shlex.split(args.probe),
+                "kind": args.probe_kind,
+                "baseline": args.probe_baseline,
+                "full_auto": args.probe_full_auto,
+                "absent": args.probe_absent,
+            },
         )
     except NothingToProve as why:
         print(f"nothing to prove here: {why}")
