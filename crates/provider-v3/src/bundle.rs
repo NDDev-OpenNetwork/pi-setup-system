@@ -602,6 +602,116 @@ fn check_record(
 }
 
 /// Every rule a bundle path must satisfy, checked by shape rather than by trial.
+/// The device names the consumer's compiler refuses, and therefore these do too.
+///
+/// Taken verbatim from `ai-stp`'s `_RESERVED_STEMS` rather than from the vendor
+/// page, on purpose. A provider stricter than the compiler refuses bundles the
+/// platform has already blessed, and the person sees an install failure for a
+/// thing nothing warned them about -- the same asymmetry as a route that is a
+/// member of one side's list and not the other's, which cost this estate a
+/// release to open a window for.
+///
+/// The superscript forms are not decoration.
+/// `learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file`: *"Windows
+/// recognizes the 8-bit ISO/IEC 8859-1 superscript digits ¹, ², and ³ as digits
+/// and treats them as valid parts of COM# and LPT# device names, making them
+/// reserved in every directory. For example, `echo test > COM¹` fails to create
+/// a file."* They were raised with the consumer rather than shipped alone, and
+/// arrived on both sides in the same hour.
+const RESERVED_STEMS: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "com¹", "com²", "com³", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8",
+    "lpt9", "lpt¹", "lpt²", "lpt³",
+];
+
+/// Characters Windows reserves inside a name, beyond the separators.
+///
+/// The full reserved set on that page is `< > : " / \ | ? *`. `/` is the
+/// separator this format uses and `\` is already refused as a path shape, so
+/// these six and the colon are what remains for a segment.
+const RESERVED_IN_A_NAME: &[char] = &['<', '>', '"', '|', '?', '*'];
+
+/// Whether one path segment is a name Windows will not give to a file.
+///
+/// The test is the *stem* -- everything before the first period, lowercased --
+/// because the vendor is explicit that `NUL.txt` and `NUL.tar.gz` are both
+/// equivalent to `NUL`, and because a substring test would cost `console.md`,
+/// `connect.json`, `auxiliary.md`, `nullable`, `com10.txt`, `prnt.md` and
+/// `a.con`, every one of them a name somebody will legitimately want.
+fn names_a_device(segment: &str) -> Option<&'static str> {
+    let stem = segment.split_once('.').map_or(segment, |(head, _)| head);
+    let folded = stem.to_lowercase();
+    RESERVED_STEMS.iter().copied().find(|name| folded == *name)
+}
+
+/// Everything one path segment must not be, on any system that will read it.
+///
+/// Split out of `check_path` because that function grew past what one screen
+/// holds, not because the rules divide -- a segment is refused for what it is,
+/// and the caller is refused for what the whole path is.
+fn check_segment(path: &str, segment: &str) -> Result<()> {
+    if segment.is_empty() || segment == "." {
+        return Err(Error::refuse(
+            WireReason::PathNotRelative,
+            format!("{path:?} has an empty or bare-dot segment"),
+        ));
+    }
+    if segment == ".." {
+        return Err(Error::refuse(
+            WireReason::PathEscapesTarget,
+            format!("{path:?} climbs out of the target"),
+        ));
+    }
+    if segment.len() > 255 {
+        return Err(Error::refuse(
+            WireReason::LimitExceeded,
+            format!("{path:?} has a segment longer than 255 bytes"),
+        ));
+    }
+    // One digest is one installability. A bundle whose paths cannot be
+    // written on Windows is a bundle that installs on two systems out of
+    // three, and nothing in its digest says which two -- so it is refused
+    // here rather than discovered there.
+    if let Some(device) = names_a_device(segment) {
+        return Err(Error::refuse(
+            WireReason::PathNotRelative,
+            format!(
+                "{path:?} has the segment {segment:?}, which names the reserved device \
+                 {device} on Windows -- with or without an extension, and in any case"
+            ),
+        ));
+    }
+    if let Some(bad) = segment.chars().find(|c| RESERVED_IN_A_NAME.contains(c)) {
+        return Err(Error::refuse(
+            WireReason::PathNotRelative,
+            format!(
+                "{path:?} has the segment {segment:?}, which carries {bad:?}, one of the \
+                 characters Windows reserves inside a name"
+            ),
+        ));
+    }
+    if segment.contains(':') {
+        return Err(Error::refuse(
+            WireReason::PathNotRelative,
+            format!(
+                "{path:?} has the segment {segment:?}, which carries a colon; on Windows \
+                 that opens an alternate data stream rather than naming a file, wherever \
+                 in the segment it appears"
+            ),
+        ));
+    }
+    if segment.ends_with(' ') || segment.ends_with('.') {
+        return Err(Error::refuse(
+            WireReason::PathNotRelative,
+            format!(
+                "{path:?} has the segment {segment:?}, which ends in a space or a period; \
+                 Windows does not give a file or directory such a name"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn check_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(Error::refuse(
@@ -630,25 +740,9 @@ fn check_path(path: &str) -> Result<()> {
         ));
     }
     for segment in path.split('/') {
-        if segment.is_empty() || segment == "." {
-            return Err(Error::refuse(
-                WireReason::PathNotRelative,
-                format!("{path:?} has an empty or bare-dot segment"),
-            ));
-        }
-        if segment == ".." {
-            return Err(Error::refuse(
-                WireReason::PathEscapesTarget,
-                format!("{path:?} climbs out of the target"),
-            ));
-        }
-        if segment.len() > 255 {
-            return Err(Error::refuse(
-                WireReason::LimitExceeded,
-                format!("{path:?} has a segment longer than 255 bytes"),
-            ));
-        }
+        check_segment(path, segment)?;
     }
+
     if path.chars().any(char::is_control) {
         return Err(Error::refuse(
             WireReason::PathNotRelative,
@@ -857,6 +951,60 @@ mod tests {
         ] {
             let error = check_path(path).unwrap_err();
             assert_eq!(error.reason(), Some(reason), "{path:?} gave {error}");
+        }
+    }
+
+    #[test]
+    fn a_path_windows_cannot_write_is_refused_here_rather_than_discovered_there() {
+        // One digest is one installability. A bundle whose paths cannot be
+        // written on Windows installs on two systems out of three, and nothing
+        // in its digest says which two.
+        for path in [
+            "NUL",
+            "nul",
+            "CON.txt",
+            "nul.tar.gz",
+            "com9.md",
+            "LPT3",
+            "skills/aux/SKILL.md",
+            "commands/build./x.md",
+            "a ",
+            "plugins/a:b/c.md",
+            "stream.md:hidden",
+            "COM\u{b9}",
+            "lpt\u{b3}.txt",
+            "a<b.md",
+            "a>b.md",
+            "a\"b.md",
+            "a|b.md",
+            "a?b.md",
+            "a*b.md",
+        ] {
+            let error = check_path(path).unwrap_err();
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::PathNotRelative),
+                "{path:?} gave {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_merely_starts_like_a_device_is_kept() {
+        // The stem test rather than a substring test, and this is what it buys.
+        // A guard that cost these would be paid every day to prevent something
+        // rare -- the consumer chose the same seven, and they are the same
+        // seven here so that neither side refuses what the other allows.
+        for path in [
+            "console.md",
+            "commands/connect.json",
+            "auxiliary.md",
+            "skills/nullable/SKILL.md",
+            "com10.txt",
+            "prnt.md",
+            "a.con",
+        ] {
+            assert!(check_path(path).is_ok(), "{path:?} was refused");
         }
     }
 

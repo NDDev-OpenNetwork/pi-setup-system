@@ -113,7 +113,7 @@ def tree_digests(root: Path, skip: str) -> dict[str, str]:
     return found
 
 
-def plan_software_install(binary: str, target: Path, prefix: Path) -> dict:
+def plan(binary: str, target: Path, prefix: Path, operation: str, nonce: int) -> dict:
     info = run_json([binary, "provider-info"])
     answer = run_json(
         [
@@ -122,9 +122,9 @@ def plan_software_install(binary: str, target: Path, prefix: Path) -> dict:
             "--target", str(target),
             "--prefix", str(prefix),
             "--json",
-            "--operation", "software_install",
+            "--operation", operation,
             "--provider-release-digest", info["provider_build_digest"],
-            "--operation-id", OPERATION_ID,
+            "--operation-id", "operation_" + f"{nonce:024x}",
             "--expires-at", EXPIRES_AT,
         ]
     )
@@ -185,6 +185,55 @@ def fetch(url: str, into: Path, expect_bytes: int, expect_digest: str) -> None:
         )
 
 
+def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> None:
+    """Take the product back off, and prove the prefix says so.
+
+    `software_remove` is declared by every build here and had never met a real
+    vendor's bytes on any platform: the job installed and started a product and
+    then left it there. An operation that is declared and never exercised is a
+    promise nobody has read back.
+
+    `software_update` and `rollback` are not here, and the reason is a
+    measurement rather than an omission: each harness pins exactly one version,
+    so an update has no second version to reach and a rollback has no earlier
+    tree to point at. `rollback` answers honestly to both ends of that today --
+    *already runs 0.150.1; nothing to do* for the installed one, and a refusal
+    naming what the prefix holds for one that is not there -- but the path that
+    moves a command between two trees cannot be reached until a second version
+    is pinned.
+    """
+    print("remove", end="", flush=True)
+    planned = plan(binary, target, prefix, "software_remove", 2)
+    body = prefix.parent / "remove.json"
+    body.write_text(
+        json.dumps(planned["plan"], separators=(",", ":"), sort_keys=True),
+        encoding="utf-8",
+    )
+    applied = run_json(
+        [
+            binary,
+            "apply-operation",
+            "--target", str(target),
+            "--prefix", str(prefix),
+            "--json",
+            "--plan", str(body),
+            "--plan-digest", planned["plan_digest"],
+            "--provider-release-digest", info["provider_build_digest"],
+        ]
+    )
+    if applied.get("state") != "verified" or not applied.get("removed"):
+        raise Failed(
+            f"software_remove answered {applied.get('state')} removed="
+            f"{applied.get('removed')}: {applied.get('detail')}"
+        )
+    said = run_text([binary, "software", "--prefix", str(prefix)])
+    if "No version" not in said:
+        raise Failed(
+            f"the program was removed and `software` still reports one:\n{said}"
+        )
+    print(f"-> {applied['version']} taken off, and the prefix says so")
+
+
 def software_lifecycle(
     binary: str, harness: str, writes: list[str] | None, absent: str
 ) -> None:
@@ -204,7 +253,7 @@ def software_lifecycle(
         prefix.mkdir()
 
         print("plan  ", end="", flush=True)
-        planned = plan_software_install(binary, target, prefix)
+        planned = plan(binary, target, prefix, "software_install", 1)
         artifacts = planned["plan"]["software_artifacts"]
         if len(artifacts) != 1:
             raise Failed(
@@ -258,6 +307,7 @@ def software_lifecycle(
         if not launches:
             # Antigravity, and the refusal is the declaration keeping its word.
             print("launch -> not declared, so this build does not start a product")
+            remove_the_program(binary, target, prefix, info)
             return
 
         print("launch", end="", flush=True)
@@ -286,6 +336,7 @@ def software_lifecycle(
             # product, and printing a claim about the product here would
             # exonerate one that had simply been left out.
             print(f"write -> not exercised: {absent}")
+            remove_the_program(binary, target, prefix, info)
             return
 
         print("write ", end="", flush=True)
@@ -389,6 +440,8 @@ def software_lifecycle(
                 f"product wrote: {moved}"
             )
         print(f"-> install {setup}, reinstall, restore {oldest} of {len(refs)}, byte-exact")
+
+        remove_the_program(binary, target, prefix, info)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

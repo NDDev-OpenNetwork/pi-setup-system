@@ -11,6 +11,38 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-08-28
+
+The release that makes a convention's own root reachable, and the one
+where two validators stopped being two.
+
+- **`user_root`, and codex declares it.** Codex reads user-level skills from
+  `$HOME/.agents/skills` -- a *sibling* of `~/.codex`, not a child -- so nothing
+  declared against a product's configuration home could reach it. The kit at
+  `0.2.4` carries the scope; this build declares `skills` under `~/.agents`,
+  kind `skill`. The path is `skills` and not `.agents/skills`, because the root
+  is what the scope names.
+
+  `.agents` is named for being shared and an owned namespace is removed whole,
+  so this was weighed rather than assumed: measured across all seven baselines,
+  only Codex documents reading from the user-level root, and Antigravity's
+  `.agents` surfaces are workspace-level with its global configuration
+  elsewhere. The declaration says what to re-read if a second product adopts it.
+- **One digest is one installability.** A bundle whose paths cannot be written
+  on Windows installs on two systems out of three, and nothing in its digest
+  says which two. Refused now: a segment whose stem is a reserved device
+  (`NUL.tar.gz` is `NUL`, and so is `nul`), a trailing space or period on any
+  component, a colon anywhere in a segment, and the characters Windows reserves
+  inside a name. Taken from the consumer's own predicate rather than written
+  beside it -- a provider stricter than the compiler refuses bundles the
+  platform already blessed.
+- **`software_remove` is exercised.** Every build declares four software
+  operations and the evidence job ran two of them: it installed a real product
+  and left it there. It takes the program back off now, on every path, and asks
+  the prefix to agree. `software_update` and `rollback` stay unexercised for a
+  measured reason -- each harness pins exactly one version, so there is no
+  second tree to move a command between.
+
 ## [0.0.9] - 2026-08-28
 
 One product could not be installed on one platform, and the check
