@@ -356,6 +356,33 @@ impl<R: Read> Tar<R> {
                         .map_err(|_| refuse("a GNU long name is not valid UTF-8"))?;
                     long_name = Some(text.trim_end_matches('\0').to_owned());
                 }
+                b'x' | b'g' => {
+                    // A pax extended header is a record of metadata for the
+                    // entry that follows (`x`) or for every entry after it
+                    // (`g`). It creates nothing itself, so refusing it outright
+                    // was refusing a fact rather than an action -- and it made
+                    // whole ordinary archives unreadable. Measured: Cursor's
+                    // macOS package carries exactly two, holding Apple's
+                    // code-signing xattrs, and no `path` at all.
+                    //
+                    // What can redirect a write is a record that *overrides*
+                    // something this reader acts on, and those are still
+                    // refused by name. Everything else is metadata this reader
+                    // does not use, so it is skipped.
+                    let mut raw = Vec::new();
+                    self.copy_entry(&mut raw)?;
+                    for key in pax_keys(&raw)? {
+                        if OVERRIDES_A_WRITE.contains(&key.as_str())
+                            || key.starts_with("GNU.sparse.")
+                        {
+                            return Err(refuse(format!(
+                                "refusing a pax extended header carrying {key:?}: it would \
+                                 change what this reader writes or where, and extraction here \
+                                 acts only on the header fields it can see"
+                            )));
+                        }
+                    }
+                }
                 b'0' | b'\0' | b'5' => {
                     let path = match long_name.take() {
                         Some(name) => name,
@@ -460,6 +487,51 @@ impl<R: Read> Tar<R> {
     }
 }
 
+/// Pax keys this reader would have to honour, and therefore refuses.
+///
+/// `path` and `linkpath` name where an entry goes; `size` says how many bytes
+/// it has when the octal field cannot hold the number. Ignoring any of them
+/// would mean writing to a place, or reading a length, the archive did not
+/// say -- which is worse than refusing, because it would be silent.
+const OVERRIDES_A_WRITE: &[&str] = &["path", "linkpath", "size", "SCHILY.filetype"];
+
+/// The keys in one pax extended header, read the way the format defines them.
+///
+/// Each record is `"<len> <key>=<value>\n"`, where `<len>` is the decimal
+/// length of the whole record including its own digits, the space and the
+/// newline. Values are arbitrary bytes and routinely contain newlines -- the
+/// two in Cursor's macOS package hold DER-encoded code signatures -- so a
+/// parser that splits on newlines reads a different file than the one it was
+/// given. This one counts.
+fn pax_keys(payload: &[u8]) -> Result<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut rest = payload;
+    while !rest.is_empty() {
+        let space = rest
+            .iter()
+            .position(|byte| *byte == b' ')
+            .ok_or_else(|| refuse("a pax record has no length field"))?;
+        let digits = std::str::from_utf8(&rest[..space])
+            .map_err(|_| refuse("a pax record length is not text"))?;
+        let length: usize = digits
+            .parse()
+            .map_err(|_| refuse(format!("a pax record length {digits:?} is not a number")))?;
+        if length <= space + 1 || length > rest.len() {
+            return Err(refuse(format!(
+                "a pax record claims {length} bytes, which does not fit what remains"
+            )));
+        }
+        let record = &rest[space + 1..length];
+        let equals = record
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or_else(|| refuse("a pax record has no key"))?;
+        keys.push(String::from_utf8_lossy(&record[..equals]).into_owned());
+        rest = &rest[length..];
+    }
+    Ok(keys)
+}
+
 /// Why one type flag is refused, said in the terms that make it a decision.
 fn refusal_for(flag: u8) -> String {
     let what = match flag {
@@ -469,7 +541,6 @@ fn refusal_for(flag: u8) -> String {
         b'4' => "a block device",
         b'6' => "a FIFO",
         b'7' => "a contiguous file",
-        b'x' | b'g' => "a pax extended header",
         b'K' => "a GNU long link name",
         _ => "an entry type outside the format this reader accepts",
     };
@@ -984,6 +1055,131 @@ mod tests {
         gzip(&raw)
     }
 
+    /// One pax extended header block and its payload, uncompressed.
+    fn pax_block(records: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (key, value) in records {
+            // "<len> <key>=<value>\n", where <len> counts itself.
+            let without = key.len() + 1 + value.len() + 2;
+            // Settle the length, which depends on its own digit count.
+            let mut settled = without;
+            loop {
+                let candidate = without + settled.to_string().len();
+                if candidate == settled {
+                    break;
+                }
+                settled = candidate;
+            }
+            payload.extend_from_slice(settled.to_string().as_bytes());
+            payload.push(b' ');
+            payload.extend_from_slice(key.as_bytes());
+            payload.push(b'=');
+            payload.extend_from_slice(value);
+            payload.push(b'\n');
+        }
+        let mut header = [0_u8; BLOCK];
+        header[..10].copy_from_slice(b"PaxHeaders");
+        header[124..136].copy_from_slice(format!("{:011o}\0", payload.len()).as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[156] = b'x';
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        for byte in &mut header[148..156] {
+            *byte = b' ';
+        }
+        let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+
+        let mut raw = header.to_vec();
+        raw.extend_from_slice(&payload);
+        raw.resize(raw.len() + padding_for(payload.len() as u64), 0);
+        raw
+    }
+
+    /// A tar whose first entry is a pax extended header carrying `records`.
+    fn with_pax(records: &[(&str, &[u8])], items: &[Item<'_>]) -> Vec<u8> {
+        let mut raw = pax_block(records);
+        raw.extend_from_slice(&tar(items, Dialect::Posix));
+        gzip(&raw)
+    }
+
+    #[test]
+    fn a_pax_header_of_metadata_this_reader_does_not_use_is_skipped() {
+        // Cursor's macOS package carries exactly two of these, holding Apple's
+        // code-signing xattrs. Refusing them made the whole archive unreadable
+        // and the product uninstallable on that platform, for metadata that
+        // creates nothing.
+        let items = [Item::file("payload", b"real bytes", 0o644)];
+        let archive = with_pax(
+            &[
+                ("SCHILY.xattr.com.apple.cs.CodeDirectory", b"\x00\x01\x02"),
+                ("LIBARCHIVE.xattr.com.apple.cs.CodeSignature", b"\xfa\xde"),
+            ],
+            &items,
+        );
+        let into = scratch("pax-skipped");
+        let written = extract_gzip_tar(archive.as_slice(), &into, ROOMY).unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(read(&into, "payload"), b"real bytes");
+        fs::remove_dir_all(&into).unwrap();
+    }
+
+    #[test]
+    fn a_pax_value_carrying_newlines_is_read_by_length_not_by_line() {
+        // The two real ones hold DER, which is full of `\n` bytes. A parser
+        // that split on newlines would read a different archive than the one it
+        // was handed, and would do it quietly.
+        let items = [Item::file("payload", b"real bytes", 0o644)];
+        let archive = with_pax(&[("SCHILY.xattr.sig", b"one\ntwo\nthree")], &items);
+        let into = scratch("pax-newlines");
+        let written = extract_gzip_tar(archive.as_slice(), &into, ROOMY).unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(read(&into, "payload"), b"real bytes");
+        fs::remove_dir_all(&into).unwrap();
+    }
+
+    #[test]
+    fn a_long_name_survives_a_pax_header_standing_between_it_and_its_entry() {
+        // `long_name` lives outside the header loop, so it carries across the
+        // iteration a pax record consumes. That was true before this reader
+        // read pax headers at all, and adding a branch to a loop with state is
+        // exactly where it would stop being true without anyone noticing.
+        let long = "a/".repeat(60) + "deep.txt";
+        assert!(long.len() > 100, "the fixture must force a GNU long name");
+        let mut raw = Vec::new();
+        // The `L` header and its payload, then a pax record, then the entry.
+        let gnu = tar(&[Item::file(&long, b"deep bytes", 0o644)], Dialect::Gnu);
+        // The `L` header, then its NUL-terminated payload padded to a block.
+        let stored = long.len() + 1;
+        let split = BLOCK + stored + padding_for(stored as u64);
+        raw.extend_from_slice(&gnu[..split]);
+        raw.extend_from_slice(&pax_block(&[("SCHILY.xattr.note", b"between")]));
+        raw.extend_from_slice(&gnu[split..]);
+
+        let into = scratch("pax-after-long");
+        let written = extract_gzip_tar(gzip(&raw).as_slice(), &into, ROOMY).unwrap();
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert_eq!(read(&into, &long), b"deep bytes");
+        fs::remove_dir_all(&into).unwrap();
+    }
+
+    #[test]
+    fn a_pax_header_that_would_move_a_write_is_refused_by_the_key_it_carries() {
+        let items = [Item::file("payload", b"real bytes", 0o644)];
+        for key in ["path", "linkpath", "size", "GNU.sparse.name"] {
+            let archive = with_pax(&[(key, b"../escape")], &items);
+            let into = scratch(&format!("pax-{key}"));
+            let error = extract_gzip_tar(archive.as_slice(), &into, ROOMY).unwrap_err();
+            assert_eq!(error.reason(), ReasonCode::IntegrityMismatch);
+            assert!(
+                error.detail().contains(key),
+                "refusal for {key} does not name it: {}",
+                error.detail()
+            );
+            let _ = fs::remove_dir_all(&into);
+        }
+    }
+
     #[test]
     fn every_entry_type_outside_file_and_directory_is_refused_by_name() {
         let items = [Item::file("payload", b"x", 0o644)];
@@ -994,7 +1190,6 @@ mod tests {
             (b'4', "a block device"),
             (b'6', "a FIFO"),
             (b'7', "a contiguous file"),
-            (b'x', "a pax extended header"),
             (b'K', "a GNU long link name"),
         ] {
             let into = scratch(&format!("flag-{flag}"));
