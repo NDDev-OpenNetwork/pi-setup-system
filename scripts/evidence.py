@@ -319,14 +319,41 @@ def the_product_reads_our_setup(
 
     print("reads ", end="", flush=True)
     said = ask("baseline")
+    if kind != "postures":
+        # `reads` names a file, and a file name is not a string comparison on
+        # every filesystem this runs on.
+        #
+        # Grok accepts three spellings of its instruction document -- AGENTS.md,
+        # Agents.md and AGENT.md -- which `grok-baseline.json` has recorded from
+        # the vendor all along. On Linux the product must match the name on disk
+        # and prints ours. On macOS and Windows the filesystem folds case, so the
+        # product opens our AGENTS.md by searching for *its own* preferred
+        # spelling and then prints the spelling it searched for. It read our
+        # bytes on all three; only the rendering differed, and this assertion was
+        # reading the rendering.
+        #
+        # So fold case here -- and, because the docstring above has always
+        # claimed this checks the file is *at our target* while nothing checked
+        # it, check that too. Not the whole path: Windows printed
+        # `C:\Users\RUNNER~1\...`, the 8.3 short form, where the target here is
+        # `C:\Users\runneradmin\...`. An assertion on the full path would fail
+        # on one system for a reason that has nothing to do with the subject.
+        # The last two components survive that, and are what the claim needs.
+        folded = said.casefold()
+        wanted = baseline.casefold()
+        inside = f"{target.name}/{wanted}".casefold()
+        if inside not in folded.replace("\\", "/"):
+            raise Failed(
+                f"with `baseline` installed the product did not report "
+                f"{baseline!r} inside {target.name!r}; it said:\n{said[:600]}"
+            )
+        print(f"-> the product named {baseline!r} inside our target")
+        return
     if baseline not in said:
         raise Failed(
             f"with `baseline` installed the product did not report "
             f"{baseline!r}; it said:\n{said[:600]}"
         )
-    if kind != "postures":
-        print(f"-> the product named {baseline!r} from our target")
-        return
     other = ask("full-auto")
     if full_auto not in other:
         raise Failed(

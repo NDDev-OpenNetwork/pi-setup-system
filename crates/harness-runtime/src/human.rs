@@ -913,6 +913,24 @@ fn remove(harness: &Harness, target: &Path) -> Result<()> {
         harness.provider_id,
         target.display()
     );
+    // **Say what "owns" means, because the sentence above is true and is heard
+    // wrong.** A person reads "removed everything it owns" as "removed the
+    // files it installed". `remove_managed` walks `native_namespaces` and calls
+    // `remove_dir_all` on each, so a namespace goes whole -- including whatever
+    // the person put there themselves.
+    //
+    // It matters most where a declaration keeps a transition window open. Cursor
+    // owns `plugins` *and* `plugins/local`; the bytes this provider writes are
+    // all under the second, and `remove` takes the first, which is where a
+    // marketplace plugin lives. Nothing is lost -- the capture named below runs
+    // before the removal, over exactly these namespaces, and `restore` returns
+    // them byte-exact -- but "nothing is lost" is only true if the person knows
+    // to restore, and they only know if they are told what went.
+    println!(
+        "  taken whole, not file by file: {}",
+        harness.native_namespaces.join(", ")
+    );
+    println!("  anything you put under those went too, and is in the capture below");
     println!(
         "  previous state captured as {}",
         report_field(&report, "backup_ref")

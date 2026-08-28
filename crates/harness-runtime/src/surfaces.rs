@@ -415,6 +415,93 @@ fn shares_a_name_with_the_protocol(baseline: &Value, found: &mut Vec<String>) {
     }
 }
 
+/// A surface this provider's own setups write into, which routes no kind.
+///
+/// The declaration says which paths are owned; the baseline says which *kind*
+/// each owned path routes. Nothing compared either with the third fact -- where
+/// the bytes this provider ships actually land -- and a kind sitting one
+/// directory away from its own files is invisible to every check that does not
+/// make that comparison.
+///
+/// It was invisible twice, in the same shape:
+///
+/// - **cursor.** `0.0.8` moved the plugin from `plugins` to `plugins/local`,
+///   which is the path the vendor names -- *"Create a folder for your plugin:
+///   `~/.cursor/plugins/local/my-plugin`"* -- and left `kinds: ["plugin"]` on
+///   the parent. Twenty-six shipped files, two releases, no test.
+/// - **antigravity.** `kinds: ["plugin"]` sat on `antigravity-cli/plugins`
+///   while every shipped plugin file went to `config/plugins`. Measured against
+///   the pinned `1.1.22` bytes in a contained home: the product's own
+///   `plugin install` creates `config/plugins/<name>` and never the other, and
+///   `antigravity-cli/plugins` appears nowhere in the binary.
+///
+/// Both were declared, both were sourced, both routed a kind from *some* owned
+/// surface, so `check_within` and the surface guard passed on each. The
+/// consumer could not catch it either: a provider declaring both a right and a
+/// wrong namespace makes their cross-check against `provider-info` pass on the
+/// wrong row, which is how one of their routing rules stayed wrong for a month.
+///
+/// So this asks the question neither side was asking: **a path this provider
+/// writes must land on a surface that routes something.** A surface we write
+/// into and route nothing through is either a mis-recorded row or a write into
+/// a directory that means nothing, and both are worth a red.
+///
+/// The paths come from `embedded_setups`, which `build.rs` generates from the
+/// setups directory -- so this measures what the binary *ships*, not what a
+/// directory happened to hold when a test ran.
+fn writes_where_nothing_is_routed(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    let Some(rows) = baseline
+        .get(BLOCK)
+        .and_then(|block| block.get("surfaces"))
+        .and_then(Value::as_array)
+    else {
+        // Said rather than skipped: a missing block is already reported by the
+        // caller, and silently measuring nothing here would let this guard read
+        // as green on a baseline it never opened.
+        return;
+    };
+
+    for (embedded, _) in harness.embedded_setups {
+        // `<setup id>/home/<path the target receives>`.
+        let Some((_, relative)) = embedded.split_once("/home/") else {
+            continue;
+        };
+        let mut owner: Option<(&str, usize)> = None;
+        for row in rows {
+            let Some(path) = row.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let covered = relative == path
+                || relative
+                    .strip_prefix(path)
+                    .is_some_and(|rest| rest.starts_with('/'));
+            if covered && owner.is_none_or(|(_, len)| path.len() > len) {
+                owner = Some((path, path.len()));
+            }
+        }
+        let Some((path, _)) = owner else {
+            found.push(format!(
+                "the setup file {relative:?} lands on no surface {BLOCK} records, so \
+                 nothing says what it is or where it was read from"
+            ));
+            continue;
+        };
+        let routes = rows
+            .iter()
+            .find(|row| row.get("path").and_then(Value::as_str) == Some(path))
+            .and_then(|row| row.get("kinds"))
+            .and_then(Value::as_array)
+            .is_some_and(|kinds| !kinds.is_empty());
+        if !routes {
+            found.push(format!(
+                "the setup file {relative:?} lands in {path:?}, which routes no kind. Either \
+                 the kind belongs on this row rather than on a neighbour, or these bytes are \
+                 being written somewhere the product reads nothing from."
+            ));
+        }
+    }
+}
+
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
 /// Empty is the only passing answer. Each string names one disagreement and is
@@ -425,6 +512,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     let mut found = Vec::new();
     rooted_elsewhere(baseline, &mut found);
     shares_a_name_with_the_protocol(baseline, &mut found);
+    writes_where_nothing_is_routed(harness, baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
         found.push(format!(
