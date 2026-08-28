@@ -23,9 +23,9 @@ jobs:
   codeql:
     name: codeql
     permissions:
-      actions: read
+      actions: read # CodeQL reads the workflow definitions it analyses
       contents: read
-      security-events: write
+      security-events: write # CodeQL publishes its findings to code scanning
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-codeql.yml@dfdad5c71a5c9d1c952a7fb9472b7ecc8a28ed56
     with:
       languages: '["rust", "actions"]'
@@ -36,7 +36,7 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: write # writes the review it produces
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-dependency-review.yml@dfdad5c71a5c9d1c952a7fb9472b7ecc8a28ed56
     with:
       fail_on_severity: moderate
@@ -48,10 +48,10 @@ jobs:
       # A called workflow cannot request more than its caller granted, and the
       # run fails at startup rather than mid-job when it tries. Scorecard reads
       # workflow definitions, so actions: read is part of the set, not an extra.
-      actions: read
+      actions: read # Scorecard reads workflow definitions
       contents: read
-      id-token: write
-      security-events: write
+      id-token: write # mints the OIDC token Scorecard's publication is signed with
+      security-events: write # Scorecard publishes its findings to code scanning
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/public-scorecard.yml@dfdad5c71a5c9d1c952a7fb9472b7ecc8a28ed56
 
   osv:
@@ -63,9 +63,9 @@ jobs:
   zizmor:
     name: zizmor
     permissions:
-      actions: read
+      actions: read # the SARIF upload reads this run to attach its results
       contents: read
-      security-events: write
+      security-events: write # zizmor publishes its findings to code scanning
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/zizmor-sarif.yml@dfdad5c71a5c9d1c952a7fb9472b7ecc8a28ed56
 
   secret-scan:

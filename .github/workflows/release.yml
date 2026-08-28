@@ -113,11 +113,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write # creates the release and uploads its assets
       # Provenance is what replaces a trusted publisher here: it is minted by
       # GitHub for this run, and anyone can check it without knowing us.
-      id-token: write
-      attestations: write
+      id-token: write # mints the OIDC token the attestation is signed with
+      attestations: write # records the build attestation for the release assets
     defaults:
       run:
         shell: bash
@@ -186,9 +186,9 @@ jobs:
       contents: read
       # The only job here that may write a package, and it may not write the
       # release; `publish` may write the release and not a package.
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # the only job here that may write a package
+      id-token: write # mints the OIDC token the attestation is signed with
+      attestations: write # records the build attestation for the published package
     defaults:
       run:
         shell: bash

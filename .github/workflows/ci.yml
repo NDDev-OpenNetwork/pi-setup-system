@@ -66,8 +66,8 @@ jobs:
       # The labeler applies labels and the stale bot closes threads. Their jobs
       # declare these statically, so the grant is required even when the toggle
       # that would use them is off.
-      issues: write
-      pull-requests: write
+      issues: write # the stale bot closes threads
+      pull-requests: write # the labeler applies labels
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@dfdad5c71a5c9d1c952a7fb9472b7ecc8a28ed56
 
 

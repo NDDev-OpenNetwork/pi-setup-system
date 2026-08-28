@@ -355,6 +355,66 @@ fn rooted_elsewhere(baseline: &Value, found: &mut Vec<String>) {
     }
 }
 
+/// Baseline keys that share a name with a `provider-info` field.
+///
+/// A baseline records what a *vendor* does; `provider-info` declares what this
+/// *provider* does. They are different axes, and a word on both is a trap --
+/// `permission_profiles` was one. In `codex-baseline.json` it held the Codex
+/// product's own beta permissions feature (`status`, `configuration_key`,
+/// `minimum_codex_version_ref`); in `provider-info` it is the protocol's
+/// profile list, `["default"]` on all seven. Nothing read the baseline key, so
+/// nothing was wrong yet -- which is exactly when a name collision is cheapest
+/// to remove and hardest to notice.
+///
+/// The estate met this pattern once before, from the other side: the consumer's
+/// `projection_capabilities` and the kit's `projection_kinds` overlapped in one
+/// token and disagreed everywhere else. The conclusion recorded then was that
+/// **the shared name is the trap and no amount of documentation survives the
+/// next reader**, and the consumer renamed rather than annotated. This is that
+/// conclusion enforced rather than remembered.
+///
+/// The forbidden names are read from the kit's own schema, not listed here. A
+/// list here would be a second copy of the contract, drifting the moment the
+/// contract gained a field -- and a guard that has to be updated by hand to
+/// keep catching things is a guard that stops catching things.
+fn shares_a_name_with_the_protocol(baseline: &Value, found: &mut Vec<String>) {
+    // The bytes this program verifies against `SHA256SUMS` before reading, so
+    // the forbidden names are the contract's own rather than a copy of them.
+    const SCHEMA: &str = include_str!("../../../provider-kit/v3/provider-info.schema.json");
+
+    let Ok(schema) = serde_json::from_str::<Value>(SCHEMA) else {
+        found.push(
+            "the kit's provider-info schema is unreadable, so no baseline name could be \
+             checked against it -- this guard measured nothing"
+                .to_owned(),
+        );
+        return;
+    };
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        found.push(
+            "the kit's provider-info schema has no properties object, so no name could be \
+             checked against it -- this guard measured nothing"
+                .to_owned(),
+        );
+        return;
+    };
+    let Some(keys) = baseline.as_object() else {
+        found.push("the baseline is not an object, so its keys could not be read".to_owned());
+        return;
+    };
+    for name in keys.keys() {
+        if properties.contains_key(name) {
+            found.push(format!(
+                "the baseline key {name:?} is also a provider-info field. A baseline records \
+                 what the vendor does and provider-info declares what this provider does, so \
+                 one word on two axes will be bound together by somebody. Rename the baseline \
+                 key -- product_{name} reads correctly -- rather than documenting the \
+                 collision."
+            ));
+        }
+    }
+}
+
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
 /// Empty is the only passing answer. Each string names one disagreement and is
@@ -364,6 +424,7 @@ fn rooted_elsewhere(baseline: &Value, found: &mut Vec<String>) {
 pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     let mut found = Vec::new();
     rooted_elsewhere(baseline, &mut found);
+    shares_a_name_with_the_protocol(baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
         found.push(format!(

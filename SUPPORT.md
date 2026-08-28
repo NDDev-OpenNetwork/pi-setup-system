@@ -65,12 +65,28 @@ suspecting this build**.
 
 The v3 capability schema is compared as an exact field set, so a provider that
 declares a field the checker predates is reported as malformed rather than as
-newer. `scoped_projection_profiles` (`ADR-0125`) is the field this applies to
-today: it is omitted entirely when empty, so most of these builds satisfy an
-older checker by accident, and the one that genuinely declares a project scope
-does not. Measured against `ai-stp-cli` 0.0.3, six of the seven pass and
-Antigravity reports `conforms=false`; against a checker that carries the field,
-all seven pass every case.
+newer. `scoped_projection_profiles` (`ADR-0125`) is the field this applies to,
+and it is omitted entirely when empty -- so a build that declares no scope
+satisfies an older checker by accident, and a build that declares one does not.
+
+Two versions, two different answers, both measured:
+
+| checker | result |
+| --- | --- |
+| `ai-stp-cli` 0.0.3 | five pass; Codex and Antigravity report `conforms=false`, detail *fields differ from the closed v3 schema* |
+| `ai-stp-cli` 0.0.7 | six pass 23 of 23; Codex reports `conforms=false`, detail *a scoped projection profile names an unknown target scope* |
+
+The remaining one is not a defect in this build. `0.0.7` carries the field but
+its scope enum is `["project"]` alone, while the provider kit this program
+vendors and verifies byte-for-byte -- kit `0.2.4`,
+`provider-info.schema.json` -- gives `["project", "user_root"]`. The kit is the
+artifact a provider is told to build against, so a build that declares
+`user_root` is right by the document it was handed and wrong by the checker
+shipped beside it. Raised with the consumer, who owns both.
+
+Which is the general rule this section exists for: **check the version of the
+checker before suspecting this build**, and prefer the newest, because an older
+one reports a wider failure than the one it found.
 
 ## What `status` reports, and what it does not
 
