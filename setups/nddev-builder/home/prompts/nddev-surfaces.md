@@ -2,8 +2,10 @@
 
 Report what this harness owns, what it declines, and what decided each row.
 
-Read `references/surfaces.md` if the toolkit is installed. Otherwise ask the
-binary directly:
+Read `references/surfaces.md` if the toolkit's skill is installed;
+it is generated from the baseline and cannot go stale. Otherwise:
+
+Ask the binary directly:
 
 ```bash
 pi-setup-system provider-info

@@ -343,6 +343,26 @@ mod tests {
     /// every other guard passed it: the files are documents, so `unsourced`
     /// exempts them, and there is no `SKILL.md`, so `undescribed` has nothing
     /// to check.
+    /// Nothing shipped sends a reader to a file this setup does not carry.
+    ///
+    /// A routing table naming `references/surfaces.md` in a setup that ships no
+    /// such file sends the reader nowhere -- and the reader is a model, which
+    /// will not say so. The generator here did exactly that: it pointed every
+    /// harness's agent at that path, and codex ships no skill at all.
+    #[test]
+    fn nothing_shipped_names_a_document_it_does_not_carry() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let catalog = harness_runtime::Catalog::at(&root);
+        let problems = harness_runtime::catalog::dangling_references(&catalog.list().unwrap());
+        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
     #[test]
     fn every_reference_folder_has_an_entry_point() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

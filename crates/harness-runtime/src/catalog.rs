@@ -316,6 +316,114 @@ pub fn undescribed(setups: &[Setup]) -> Vec<String> {
     found
 }
 
+/// A shipped instruction naming a sibling file the setup does not carry.
+///
+/// A skill's routing table sends a reader to `references/surfaces.md`; an agent
+/// names the document beside it. If the setup does not ship that file, the
+/// instruction sends the reader nowhere -- and the reader is a model, which
+/// will not say so.
+///
+/// **Written because this repository's generator did it.** The agent template
+/// pointed every harness at `references/surfaces.md`, and codex ships no skill
+/// at all -- its `skill` kind routes only under `target_scope: user_root`, so a
+/// setup aimed at its own home carries no `references/` directory. The
+/// instruction was correct for six harnesses and false for the seventh, which
+/// is the shape this estate keeps finding: a statement true of the thing
+/// measured and false of the thing declared.
+///
+/// Only **relative** paths with a document extension are checked, and only
+/// inside a backtick. A URL is somebody else's to serve, an absolute path is
+/// not this setup's to carry, and prose that happens to contain a slash is not
+/// an instruction -- the same distinction [`misdirecting`] draws for commands,
+/// and for the same reason.
+#[must_use]
+pub fn dangling_references(setups: &[Setup]) -> Vec<String> {
+    let mut found = Vec::new();
+    for setup in setups {
+        let files = files_under(&setup.payload);
+        for (relative, path) in files_by_path(&setup.payload) {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let here = relative.rsplit_once('/').map_or("", |(dir, _)| dir);
+            for quoted in text.split('`').skip(1).step_by(2) {
+                let named = quoted.trim();
+                let is_document = std::path::Path::new(named)
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+                if !is_document || !named.contains('/') || named.starts_with('/') {
+                    continue;
+                }
+                if named.contains("://") || named.contains(' ') {
+                    continue;
+                }
+                // Describing where a product reads is not naming a file to
+                // open, and the difference is visible in the path itself. A
+                // glob or a placeholder names a *class* of file; a `~`-rooted
+                // path is outside this setup; a leading dot-directory is the
+                // product's own home, not a document shipped here.
+                //
+                // Cursor's references are full of all three -- `~/.cursor/
+                // skills/<skill>/SKILL.md`, `<plugin>/agents/*.md`,
+                // `.cursor/rules/*.mdc` -- and the first version of this guard
+                // called every one of them a dangling reference. That is the
+                // same distinction `misdirecting` draws between an invocation
+                // and prose, applied to paths instead of verbs.
+                if named.contains('*')
+                    || named.contains('<')
+                    || named.contains('>')
+                    || named.starts_with('~')
+                    || named.starts_with('.')
+                {
+                    continue;
+                }
+                // An environment variable as the first segment is a root this
+                // setup does not contain: `CURSOR_CONFIG_DIR/AGENTS.md` says
+                // where a product looks, not what is shipped here.
+                let root = named.split('/').next().unwrap_or_default();
+                if !root.is_empty()
+                    && root
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+                {
+                    continue;
+                }
+                // Matched as a **suffix**, anywhere in the setup, and the
+                // weakness is deliberate.
+                //
+                // A relative reference does not resolve the same way in every
+                // product: antigravity's plugin rule names
+                // `skills/antigravity-surfaces/SKILL.md` relative to the
+                // *plugin root*, while a skill's own routing table names
+                // `references/surfaces.md` relative to itself. A guard that
+                // picked one convention would call the other broken -- it did,
+                // on the first run, and the file it named was shipped.
+                //
+                // So this asks the question it can answer without guessing a
+                // convention: **is this document in the setup at all?** That
+                // catches the defect the guard exists for -- an instruction
+                // naming a file nothing ships -- and stays silent about where
+                // a product resolves from, which is not this build's to assert.
+                let _ = here;
+                if !files
+                    .iter()
+                    .any(|f| f == named || f.ends_with(&format!("/{named}")))
+                {
+                    found.push(format!(
+                        "{} ships {relative:?}, which sends a reader to {named:?}, and this \
+                         setup carries no such file",
+                        setup.manifest.id
+                    ));
+                }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// A `references/` directory no entry point reaches.
 ///
 /// [`undescribed`] requires an entry point to describe itself; this requires
