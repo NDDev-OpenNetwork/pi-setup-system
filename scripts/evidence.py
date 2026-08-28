@@ -56,6 +56,39 @@ EXPIRES_AT = "2099-01-01T00:00:00.000Z"
 OPERATION_ID = "operation_" + "0" * 23 + "1"
 
 
+def contained(room: Path) -> dict[str, str]:
+    """The environment a launched product gets, with nowhere to write but here.
+
+    A product started through `launch` is pointed at `--target` by the variable
+    its own documentation names. That governs where it *reads* its
+    configuration; it does not govern everything it writes. Measured: opencode
+    reads from the target and writes the global
+    `~/.config/opencode/opencode.json` whatever the variable says, and creates a
+    `.gitignore` in that directory on start.
+
+    In CI the home is an ephemeral runner and none of that matters. Run on the
+    machine of whoever is developing this, it reaches into their real
+    configuration -- which it did, repeatedly, before this existed. A tool that
+    verifies a provider must not be the thing that edits your home.
+
+    So the product gets a `HOME` of its own, and the two variables the XDG
+    convention uses, all inside the scratch directory this run already deletes.
+    """
+    home = room / "home"
+    (home / ".config").mkdir(parents=True, exist_ok=True)
+    (home / ".local" / "share").mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+        }
+    )
+    return environment
+
+
 class Failed(Exception):
     """One step did not do what it said. The message is the report."""
 
@@ -280,6 +313,7 @@ def the_product_reads_our_setup(
             capture_output=True,
             text=True,
             timeout=180,
+            env=contained(target.parent),
         )
         return started.stdout + started.stderr
 
@@ -394,6 +428,7 @@ def software_lifecycle(
             capture_output=True,
             text=True,
             timeout=180,
+            env=contained(room),
         )
         if started.returncode != 0:
             raise Failed(
@@ -424,6 +459,7 @@ def software_lifecycle(
             capture_output=True,
             text=True,
             timeout=180,
+            env=contained(room),
         )
         if wrote.returncode != 0:
             raise Failed(
