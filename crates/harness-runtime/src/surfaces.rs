@@ -191,6 +191,55 @@ fn credentials_are_disclaimed(harness: &Harness, baseline: &Value, found: &mut V
 /// who asked about two of the three in the same message.
 ///
 /// So: routing nothing is allowed, and being silent about it is not.
+/// An administrator's policy, or the signature over one, must not be owned.
+///
+/// Owning a namespace does three things and only one of them is a benefit here:
+/// a backup captures it, an identity hashes it, and **`remove_managed` deletes
+/// it**. For a signed policy the third is the one that decides.
+///
+/// Measured 2026-08-28 on the shipped `grok-setup-system 0.0.11`, against a
+/// target holding a managed grok home: `install` removed `managed_config.toml`
+/// and `requirements.toml` and **kept** `managed_config.sig.json`,
+/// `managed_identity.sig.json` and `managed_config_cache.json`. That is exactly
+/// the state the product's own gate refuses -- *"refusing session -- the signed
+/// is-managed claim requires an authentic policy sidecar and none is present"*.
+/// A `restore` brings the policy back, but the person's next run happens first.
+///
+/// **Matched on the path, never on the row's prose**, for the reason
+/// [`credentials_are_disclaimed`] gives at length: a guard that reads how a
+/// thing was described measures the description. A row whose *reason* explains
+/// why something is *not* a policy would fire a prose matcher immediately.
+///
+/// **And this list is a heuristic, said rather than implied.** It catches
+/// anything named `managed*` and anything ending `.sig.json`. It does not catch
+/// grok's `requirements.toml`, which is an org-enforced fail-closed clamp named
+/// after none of that; that one is disclaimed because a person read the page.
+/// A floor under attention, not a replacement for it.
+fn policy_is_not_owned(harness: &Harness, found: &mut Vec<String>) {
+    let owned: Vec<&str> = harness
+        .native_namespaces
+        .iter()
+        .copied()
+        .chain(
+            harness
+                .scoped_projections
+                .iter()
+                .flat_map(|scope| scope.native_namespaces.iter().copied()),
+        )
+        .collect();
+    for name in owned {
+        let leaf = name.rsplit('/').next().unwrap_or(name);
+        if leaf.starts_with("managed") || leaf.ends_with(".sig.json") {
+            found.push(format!(
+                "{name:?} is declared in native_namespaces and reads as an \
+                 administrator's policy or the signature over one; owning it \
+                 means `remove` deletes it, which on a managed machine leaves \
+                 a signature with nothing to verify"
+            ));
+        }
+    }
+}
+
 fn silent_about_routing_nothing(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
     let Some(rows) = baseline
         .get(BLOCK)
@@ -659,6 +708,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     rooted_elsewhere(baseline, &mut found);
     shares_a_name_with_the_protocol(baseline, &mut found);
     credentials_are_disclaimed(harness, baseline, &mut found);
+    policy_is_not_owned(harness, &mut found);
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
 
@@ -1029,5 +1079,51 @@ mod tests {
             problems.iter().any(|line| line.contains("config_home")),
             "{problems:?}"
         );
+    }
+
+    /// A signed policy in the owned set is refused, by its name.
+    ///
+    /// The defect this is written against shipped: `grok-setup-system 0.0.11`
+    /// owned `managed_config.toml`, so `install` deleted an administrator's
+    /// signed policy and kept its signature sidecars -- the state the product's
+    /// own gate refuses. Measured on the shipped binary before the guard
+    /// existed.
+    #[test]
+    fn an_administrators_policy_in_the_owned_set_is_refused() {
+        let mut found = Vec::new();
+        let mut harness = TEST;
+        harness.native_namespaces = &["settings.json", "managed_config.toml"];
+        policy_is_not_owned(&harness, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("managed_config.toml"), "{found:?}");
+        assert!(found[0].contains("signature"), "{found:?}");
+
+        // The signature over one is refused on the same ground, and so is a
+        // nested path whose leaf carries the name.
+        //
+        // `policy.sig.json` is here because the first version of this test
+        // could not tell the two branches apart: every signature it named also
+        // began with `managed`, so deleting the suffix branch left the test
+        // green. A case only the suffix can catch is what makes it a test of
+        // two rules rather than of one.
+        for owned in [
+            &["settings.json", "managed_identity.sig.json"][..],
+            &["settings.json", "policy.sig.json"][..],
+            &["settings.json", "config/managed_config_cache.json"][..],
+        ] {
+            let mut nested = Vec::new();
+            let mut probe = TEST;
+            probe.native_namespaces = owned;
+            policy_is_not_owned(&probe, &mut nested);
+            assert_eq!(nested.len(), 1, "{owned:?} -> {nested:?}");
+        }
+
+        // And a name that merely begins like one is kept: the guard reads the
+        // leaf, and `manage.json` is not a policy.
+        let mut kept = Vec::new();
+        let mut ordinary = TEST;
+        ordinary.native_namespaces = &["settings.json", "manage.json", "signals.json"];
+        policy_is_not_owned(&ordinary, &mut kept);
+        assert!(kept.is_empty(), "{kept:?}");
     }
 }

@@ -66,7 +66,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "harness-runtime"
-version = "0.0.11"
+version = "0.0.13"
 dependencies = [
  "provider-v3",
  "serde",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "pi-setup-system"
-version = "0.0.11"
+version = "0.0.13"
 dependencies = [
  "harness-runtime",
  "provider-v3",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "provider-v3"
-version = "0.0.11"
+version = "0.0.13"
 dependencies = [
  "serde",
  "serde_json",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "setup-core"
-version = "0.0.11"
+version = "0.0.13"
 dependencies = [
  "miniz_oxide",
  "serde",

@@ -24,7 +24,7 @@ use crate::error::{Error, ReasonCode, Result};
 use crate::lock;
 
 /// The schema this kernel writes.
-pub const STATE_SCHEMA: u32 = 3;
+pub const STATE_SCHEMA: u32 = 4;
 
 /// The exact provenance field names, in the manifest's order.
 ///
@@ -53,6 +53,7 @@ pub const PROVENANCE_FIELDS: &[&str] = &[
     "operation_id",
     "target_precondition_digest",
     "native_ownership",
+    "written_paths",
     "backup_ref",
     "previous_verified_identity",
     "drift_state",
@@ -117,6 +118,26 @@ pub struct ProviderState {
     pub target_precondition_digest: String,
     /// The native files and surfaces this provider owns in the target.
     pub native_ownership: Vec<String>,
+    /// The files this operation actually put on the target.
+    ///
+    /// A different question from [`Self::native_ownership`], and the gap
+    /// between them is the point rather than a redundancy. Ownership names
+    /// *namespaces* -- what a backup captures and what a `remove` takes -- and
+    /// under a shared root such as `~/.agents` those namespaces are read by
+    /// several products at once. Measured on a real codex install: five owned
+    /// namespaces, two written files.
+    ///
+    /// So this is what makes a per-file removal expressible at all. Nothing
+    /// consumes it yet; it is stated because a consumer cannot ask for what a
+    /// provider never said.
+    ///
+    /// **Absence has three readings and the schema bump is what keeps them
+    /// apart.** An older record cannot be read as an empty list, because
+    /// [`STATE_SCHEMA`] moved with the field and a record at the previous
+    /// schema is refused whole rather than read as one that wrote nothing.
+    /// Present-and-empty therefore means *this operation wrote no files*, and
+    /// only that.
+    pub written_paths: Vec<String>,
     /// The backup captured before the operation.
     pub backup_ref: Option<String>,
     /// The identity verified before this one.
@@ -261,6 +282,7 @@ mod tests {
             operation_id: "op_test".to_owned(),
             target_precondition_digest: "sha256:before".to_owned(),
             native_ownership: vec!["settings.json".to_owned()],
+            written_paths: vec!["settings.json".to_owned()],
             backup_ref: Some("slot-000000000001".to_owned()),
             previous_verified_identity: None,
             drift_state: DriftState::Clean,

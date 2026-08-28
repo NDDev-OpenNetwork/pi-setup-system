@@ -40,7 +40,7 @@ pub use catalog::{Catalog, Setup};
 // artifact table and depends only on this crate. Re-exported so that stays
 // true rather than widening seven dependency lists to reach past it.
 pub use facts::{BACKUP_SLOTS, BUNDLE_FORMAT, Foreign, Harness, Scoped};
-pub use setup_core::software::{Artifact, Delivery, Shape, Software};
+pub use setup_core::software::{Artifact, Delivery, Previous, Shape, Software};
 
 /// The kernel's content digest, re-exported for the seven binaries.
 ///

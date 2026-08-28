@@ -11,6 +11,116 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-28
+
+A defect that could stop the product from starting, found by running
+this build against a machine an administrator manages.
+
+- **An install deleted an administrator's signed policy and kept its
+  signature.** Measured on the shipped `0.0.12` binary, against a grok target
+  holding a managed home: `install` removed `managed_config.toml` and
+  `requirements.toml` and **kept** `managed_config.sig.json`,
+  `managed_identity.sig.json` and `managed_config_cache.json`.
+
+  That is exactly the state the product's own gate refuses -- its
+  `managed_cache` carries *"refusing session -- the signed is-managed claim
+  requires an authentic policy sidecar and none is present"* and *"refusing
+  session on tamper evidence"*. A `restore` brings the policy back, measured;
+  the person's next run happens before that.
+
+  The harm was the **split**: the policy was owned and its proof was not, so an
+  operation took one and left the other. All five names are in `never_touch`
+  now -- not deleted, not captured into a backup slot, not hashed into an
+  identity. An organisation's signed policy in a backup slot is the same shape
+  as a credential in one.
+
+  **The previous reason for owning it was circular** and is worth stating
+  because it read as careful: *owned so a backup returns it byte-exact after an
+  operation touches the home* -- when the only reason an operation touched it
+  was that it was owned.
+
+  Held by a guard that refuses to own anything whose name reads as an
+  administrator's policy or the signature over one, matched on the path and
+  never on the row's prose.
+
+- **Three products write outside their configuration home, and only one was
+  recorded.** Measured by running each in a clean `HOME` with the XDG variables
+  cleared: opencode creates `~/.local/share/opencode`, `~/.local/state/opencode`
+  and `~/.cache/opencode/bin`; cursor creates `~/.cache/cursor-compile-cache`.
+  Neither had a row anywhere. Recorded as prose, because every recorded path is
+  relative to the target and these are not.
+
+- **Cursor's configuration home has two overrides, and the second renames the
+  leaf.** `CURSOR_CONFIG_DIR`, then `XDG_CONFIG_HOME` -- which resolves to
+  `$XDG_CONFIG_HOME/cursor`, not `.cursor`. The variable this build sets is the
+  first branch of that resolver, so a launch still wins; the record now says the
+  whole thing rather than a third of it.
+
+- **An enterprise policy layer can silently defeat a posture**, on claude and on
+  grok. `managed-settings.json` sits at three per-OS system paths and *"cannot
+  be overridden"*; `full-auto` writes correct keys at a correct path that a
+  higher layer outranks, so on a managed machine it installs, verifies and
+  restores cleanly and changes nothing. Nothing to own and nothing to check --
+  written down where a person reads the posture.
+
+## [0.0.12] - 2026-08-28
+
+Two operations that were declared and had never run, and two kinds a
+run corrected in opposite directions.
+
+- **A second software pin, so `software_update` and `rollback` can be
+  exercised.** A build pinning one version has nothing for an update to move
+  *from* and nothing for a rollback to return *to*, and this repository recorded
+  that as a measured absence rather than testing them against a fixture.
+
+  The second pin is not a second choice: a bump assigns `previous = current` and
+  then sets `current`, so one value still moves per bump and the pair is always
+  two consecutive real releases -- differing in whatever the vendor actually
+  changed, which is the transition a person really performs.
+
+  Run end to end against opencode's own bytes: `1.18.24` installed, updated to
+  `1.18.25`, rolled back, and forward again, both trees kept throughout. The
+  evidence job crosses the pair on every run on all three operating systems, and
+  prints a reason and skips for a harness not yet bumped.
+
+  `apply` resolves which release the bytes are from **the digest of the file it
+  was handed**, not from a flag, so a relabelled argument cannot install one
+  version under another version's name.
+
+- **`written_paths` in provider state, and a shared root's removal scoped to
+  it.** `native_ownership` records namespaces -- what a backup captures and what
+  a remove takes -- and under a root several products read, those namespaces are
+  several products' worth. Measured on a real install of each: `grok-build` owns
+  twelve namespaces and wrote two files; `antigravity` owns nine and wrote one.
+
+  So `remove` under `target_scope user_root` now takes the files this provider
+  recorded writing and leaves everything else, including a neighbour's file
+  inside an owned namespace. Directories are left standing. The refusal stays
+  for a state file that is absent or at an older schema -- *this build does not
+  know what it wrote* -- because widening to the namespace there is exactly the
+  removal the branch prevents. The state schema moves to 4 with the field, so a
+  record from before it cannot be read as one that wrote nothing.
+
+- **grok's `command` kind withdrawn, one week after it was declared.** A file at
+  `~/.grok/commands/<name>.md` is loaded and `grok inspect` lists it under
+  **Skills**; a file under a directory nothing routes to is not listed, and
+  removing this one removes the entry. The product's own reference puts
+  `skills/` and `commands/` in one row, *"Personal skills for all projects"*.
+  The namespace stays owned because it is read; what comes out is the promise
+  that a component routed there stays a command.
+
+- **cursor's `skill` kind declared.** It had been declined on a vendor page
+  about the plugin-manifest key that does not mention the directory. The
+  product's bundle carries a skill-root table joining `.cursor/skills` to the
+  home directory at user scope, and its own ignore file calls it *"User's
+  personal skills"*. `skills-cursor` and `cloud-skills` are recorded as declined
+  instead -- the first is the product's own built-in set, the second is filled
+  from the account.
+
+Both corrections have one shape: **a declaration can refute a route and cannot
+confirm one.** Reading found the directories; only running said what they were
+read *as*.
+
 ## [0.0.11] - 2026-08-28
 
 The release where seven products were read rather than their pages,
