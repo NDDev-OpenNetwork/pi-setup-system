@@ -668,6 +668,25 @@ fn check_segment(path: &str, segment: &str) -> Result<()> {
             format!("{path:?} has a segment longer than 255 bytes"),
         ));
     }
+    // **A limit Windows keeps that this does not, recorded rather than enforced
+    // alone.** Microsoft's naming page and `MoveFileExW` both say it: a path is
+    // limited to `MAX_PATH`, 260 characters, unless it is prefixed `\\?\` or the
+    // machine opted out -- which needs Windows 10 1607 and a registry key or a
+    // manifest. A bundle path may be 1024 bytes here, so one of 300 characters
+    // installs on two systems out of three, which is the thing the rules just
+    // below exist to prevent, one limit further out.
+    //
+    // Not refused, for the reason the reserved-name list gives: a provider
+    // stricter than the compiler refuses bundles the platform has already
+    // blessed. And a bound here could not be exact anyway -- `MAX_PATH` counts
+    // the target root, which validation does not know, so any number chosen
+    // here would be a guess at somebody's home directory. Raised with the
+    // consumer, whose compiler is where it would have to be agreed.
+    //
+    // Measured for what this estate ships: the deepest relative path in any
+    // setup is 85 bytes. `catalog.rs` does the same arithmetic for the
+    // directory it materialises; this is that care one layer out, where the
+    // path is the consumer's rather than ours.
     // One digest is one installability. A bundle whose paths cannot be
     // written on Windows is a bundle that installs on two systems out of
     // three, and nothing in its digest says which two -- so it is refused
