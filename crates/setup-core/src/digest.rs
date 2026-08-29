@@ -377,16 +377,67 @@ fn describe(
     Ok(true)
 }
 
+/// How many times an open may be retried before the failure is believed.
+///
+/// Small on purpose. A genuine `PermissionDenied` pays this once per unreadable
+/// file and then refuses; a file caught mid-replace is readable again well
+/// inside it.
+const ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL: u8 = 8;
+
 /// [`of_file`], answering `None` for a file that is no longer there.
 ///
 /// See [`vanished_under_us`]: the error kind alone is the Unix half of the
-/// question, and this one is asked on every platform.
+/// question. **Asking the path is the other half, and it has its own race.**
+///
+/// The fifth defect of this shape, and the first where the *check* was wrong
+/// rather than the condition. A writer that deletes and immediately recreates a
+/// file — which is what replacing one looks like — leaves the walk holding an
+/// error about one instant and a `symlink_metadata` about a later one. The open
+/// fails with `PermissionDenied` while the delete is pending, the path is asked
+/// after the recreate, the answer is *"it is there"*, and a walk that was racing
+/// a replacement refuses as though it had been denied. Measured, not reasoned:
+/// `cannot open …\skills\0.md` on `windows-latest`, from the race test written
+/// for the previous two, on one of seven identical trees — because it needs the
+/// race to be lost on exactly that file.
+///
+/// So the failure is retried rather than interrogated. The distinction the
+/// previous fix protects is kept and is now enforced by time instead of by a
+/// second syscall: *"it is gone"* answers `None` immediately, and *"I am not
+/// allowed"* survives every attempt and is still a refusal. A file being
+/// replaced stops being either within a few attempts.
+///
+/// Retrying rather than widening the tolerated error kind is the point. Treating
+/// `PermissionDenied` as *gone* would hash a target as smaller than it is on any
+/// machine with a locked file in it, which is the failure this whole family
+/// exists to prevent.
 fn of_file_if_present(path: &Path) -> Result<Option<String>> {
-    match of_file(path) {
-        Ok(digest) => Ok(Some(digest)),
-        Err(error) if error.is_missing_path() || fs::symlink_metadata(path).is_err() => Ok(None),
-        Err(error) => Err(error),
+    for attempt in 0..ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+        match of_file(path) {
+            Ok(digest) => return Ok(Some(digest)),
+            Err(error) => {
+                if error.is_missing_path() || fs::symlink_metadata(path).is_err() {
+                    return Ok(None);
+                }
+                if attempt + 1 == ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+                    return Err(error);
+                }
+                // Yield first: a delete-pending window closes when the other
+                // handle does, which is usually the next scheduling slot.
+                if attempt == 0 {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
     }
+    // The loop returns on its last attempt; this is unreachable and is written
+    // as a refusal rather than a panic because a digest that cannot be taken is
+    // never a reason to abort the process.
+    Err(Error::new(
+        ReasonCode::StateUnavailable,
+        format!("cannot open {}", path.display()),
+    ))
 }
 
 fn collect(
@@ -696,5 +747,51 @@ mod tests {
             refusals.is_empty(),
             "a walk racing a writer refused instead of skipping: {refusals:?}"
         );
+    }
+
+    /// A file this process may not read is still a refusal, after the retry.
+    ///
+    /// The control for `of_file_if_present`. Retrying an open makes a walk
+    /// tolerate a file being replaced; it must not make one tolerate a file it
+    /// is genuinely denied, because a walk that skipped those would hash a
+    /// target as smaller than it is and call the result a match.
+    ///
+    /// Unix only, and it establishes that this caller *can* be denied rather
+    /// than assuming it: root reads a mode-000 file regardless, and the
+    /// assertion would then be measuring the runner instead of the code. Asked
+    /// by trying the read, which is the same question the walk asks.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_this_process_may_not_read_is_still_a_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("denied-not-vanished");
+        fs::create_dir_all(root.join("skills")).unwrap();
+        let denied = root.join("skills").join("locked.md");
+        fs::write(&denied, b"secret").unwrap();
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).unwrap();
+
+        if fs::File::open(&denied).is_ok() {
+            // This caller cannot be denied, so there is no refusal to observe.
+            fs::set_permissions(&denied, fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+
+        let walked = of_owned(&root, &["skills"], &[]);
+
+        // Restored before asserting, so a failure does not leave an unreadable
+        // file in the scratch tree for the next run to trip over.
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o644)).unwrap();
+
+        match walked {
+            Ok(digest) => panic!(
+                "a file that cannot be read was skipped rather than refused, \
+                 and the walk reported a digest for a target it did not read: {digest}"
+            ),
+            Err(error) => assert!(
+                error.to_string().contains("cannot open"),
+                "the refusal should name the open that failed: {error}"
+            ),
+        }
     }
 }

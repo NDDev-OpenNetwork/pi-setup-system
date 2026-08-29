@@ -373,6 +373,17 @@ pub fn dangling_references(setups: &[Setup]) -> Vec<String> {
                 if named.contains('*')
                     || named.contains('<')
                     || named.contains('>')
+                    // Braces are a placeholder too, and this list was one
+                    // vendor's convention short. Antigravity writes its path
+                    // templates as `{workspace}/.agents/skills/{skill_name}/
+                    // SKILL.md`, quoted verbatim from the product's own bytes
+                    // into a generated reference -- a *class* of file exactly as
+                    // `<name>` is, and refused here because the spelling
+                    // differed. Rewording the citation would have been the
+                    // wrong repair: it is the product's string, and a quotation
+                    // that has been tidied is no longer evidence.
+                    || named.contains('{')
+                    || named.contains('}')
                     || named.starts_with('~')
                     || named.starts_with('.')
                 {
@@ -1064,6 +1075,50 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    /// A path template names a class of file; a relative one names a document.
+    ///
+    /// `dangling_references` had no unit test at all -- it was exercised only
+    /// through each leaf crate against the real setups, which means a change to
+    /// its exemption list was checked by whatever the setups happened to
+    /// contain that day. It cost a false refusal the day a generated reference
+    /// quoted antigravity's own `{workspace}/.agents/skills/{skill_name}/
+    /// SKILL.md`: braces are that vendor's placeholder spelling and the list
+    /// knew only `<>` and `*`.
+    ///
+    /// Both directions, because an exemption that swallows the real case is
+    /// worse than the refusal it replaced.
+    #[test]
+    fn a_placeholder_names_a_class_of_file_and_a_relative_path_names_a_document() {
+        let root = scratch("dangling-placeholders");
+        write_setup(
+            &root,
+            "templates",
+            &[(
+                "notes.md",
+                "See `{workspace}/.agents/skills/{skill_name}/SKILL.md`, \
+                 `<plugin>/agents/*.md` and `~/.cursor/skills/x/SKILL.md`.",
+            )],
+        );
+        let listed = Catalog::at(&root).list().unwrap();
+        assert_eq!(
+            dangling_references(&listed),
+            Vec::<String>::new(),
+            "a placeholder or an out-of-setup root is not a document this setup carries"
+        );
+
+        // The control: a plain relative path, with nothing at the other end.
+        let root = scratch("dangling-real");
+        write_setup(
+            &root,
+            "broken",
+            &[("notes.md", "Read `references/gone.md`.")],
+        );
+        let listed = Catalog::at(&root).list().unwrap();
+        let found = dangling_references(&listed);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("references/gone.md"), "{found:?}");
     }
 
     fn write_setup(root: &Path, id: &str, files: &[(&str, &str)]) {
