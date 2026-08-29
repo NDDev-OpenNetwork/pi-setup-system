@@ -11,6 +11,56 @@ including claims a later release made false.
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-08-29
+
+A field this build has accepted for a month is now declared, because
+the consumer's released runner finally accepts it too -- and a second thing
+went green with no change here at all.
+
+**The one that changed nothing.** One harness's scoped profile has reported a
+conformance failure since it was declared, and the cause was never on this
+side: the vocabulary the consumer publishes for providers to build against
+allowed the value, and the runner it released did not. The declaration was
+correct throughout. It now reports twenty-seven of twenty-seven against a
+release this build does not touch.
+
+Withdrawing it to make a lagging checker print green would have meant
+re-declaring it today and publishing a corpus in between that said something
+false. That is the fourth time this ordering has settled a question between the
+two projects, and the rule it produced is worth more than any of the four
+occasions: **a published vocabulary blessing a field is permission to build
+against it; a released runner accepting it is permission to emit it.** A key
+that is merely recorded needs the first. A key the runner compares for exact
+equality needs both.
+
+**The one that took a line.** With the field declared against the previous
+runner, all seven harnesses failed conformance to buy one -- so the constant and
+the type sat in place and the declaration stayed empty. It ships now, and all
+seven conform with it: twenty-seven to twenty-nine cases each, no failures.
+
+**Two tests had to become more precise rather than looser**, and both had been
+asking a narrower question than they looked like:
+
+- One compared the published member set to the schema's required list for
+  **equality**. That answers two questions at once -- are all required members
+  present, and is every present member permitted -- but only while the build
+  declares nothing optional. The new field is permitted and deliberately not
+  required, so the equality broke the moment something legitimate was added. It
+  asks both separately now, which is stricter: it was observed catching an
+  injected member the closed schema does not allow, which the old form could not
+  have told apart from a legitimate optional one.
+- The other asserted that a declaration carrying no second scope contains no
+  trace of a certain name, by searching the rendered text. **The new field's
+  value is that name.** So the test found the thing it is about inside a field
+  it is not about. It asks the structure now, and was observed failing when the
+  scoped array is made to serialise unconditionally.
+
+Neither was relaxed to pass, and the second is the near-miss worth recording:
+the cheap repair is to delete the assertion, and deleting it would have silently
+dropped the guarantee that adding a field does not move an existing profile's
+digest. The wrong fix was cheaper than the right one and would have looked
+identical in a diff.
+
 ## [0.0.23] - 2026-08-29
 
 One vendor shipped Windows support and this estate had not noticed,

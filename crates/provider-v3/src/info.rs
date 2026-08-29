@@ -365,23 +365,24 @@ impl ProviderInfo {
                 .collect(),
             projection_profile: declaration.projection_profile,
             scoped_projection_profiles: declaration.scoped_projection_profiles,
-            // **Held, not absent.** Every build here accepts `--target-scope`
-            // and would declare it as `[TargetScope::REQUEST_FIELD]` -- the
-            // vendored kit blesses the field, and the type below is ready for
-            // it.
+            // **Declared since 2026-08-29**, and it was held for a month
+            // before that because the kit blessed the field and the released
+            // runner did not know it. With it declared, `ai-stp-cli 0.0.7`
+            // refused **all seven** with `provider-info fields differ from the
+            // closed v3 schema`; trading one conformance failure for seven was
+            // not a trade, so the constant and the type sat here and the
+            // declaration stayed empty.
             //
-            // What it waits on is a *released* checker. Measured 2026-08-28:
-            // with the field declared, `ai-stp-cli 0.0.7` refuses **all seven**
-            // with `provider-info fields differ from the closed v3 schema`,
-            // because the released runner predates the regenerated kit. Trading
-            // one conformance failure for seven is not a trade.
-            //
-            // This is the third time the kit and its runner have disagreed and
-            // the second time in this direction. The rule that comes out of it:
-            // a kit blessing a field is permission to *build* against it, and a
-            // released runner accepting it is permission to *emit* it. One line
-            // changes when the CLI ships.
-            plan_request_fields: Vec::new(),
+            // `0.0.8` ships `PLAN_REQUEST_FIELDS = {"target_scope"}`, read out
+            // of the installed package rather than off a release note, and all
+            // seven conform against it. The rule the wait produced is worth
+            // more than the field: **a kit blessing a field is permission to
+            // *build* against it; a released runner accepting it is permission
+            // to *emit* it.** A state key needs only the first -- that is why
+            // `written_paths` shipped the day the kit named it -- and a
+            // `provider-info` field needs both, because the field set is
+            // compared for exact equality.
+            plan_request_fields: vec![TargetScope::REQUEST_FIELD.to_owned()],
         })
     }
 
@@ -598,7 +599,38 @@ mod tests {
             .map(|v| v.as_str().unwrap().to_owned())
             .collect();
         required.sort();
-        assert_eq!(present, required);
+
+        // Two questions, and this used to ask one of them by asking for
+        // equality: *are the required members all present* and *is every member
+        // present one the schema allows*. Equality answered both only while
+        // this build declared nothing optional, and it stopped being able to on
+        // the day `plan_request_fields` was declared -- a member the schema
+        // carries in `properties` and deliberately not in `required`.
+        //
+        // Asked separately now, and the pair is **stricter** than the equality
+        // was: under `additionalProperties: false` the consumer compares the
+        // field set exactly, so a member outside `properties` is refused by the
+        // runner. The old assertion could not have caught that; it would have
+        // failed on any optional member, allowed or not, which is a different
+        // complaint that happens to fire at the same time.
+        for member in &required {
+            assert!(
+                present.contains(&member.as_str()),
+                "the schema requires {member} and this answer omits it"
+            );
+        }
+        let allowed = schema["properties"].as_object().unwrap();
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::Value::Bool(false),
+            "this test's second half only means something while the schema is closed"
+        );
+        for member in &present {
+            assert!(
+                allowed.contains_key(*member),
+                "this answer publishes {member}, which the closed schema does not allow"
+            );
+        }
     }
 
     #[test]
@@ -679,12 +711,26 @@ mod tests {
     /// twice.
     #[test]
     fn a_single_scope_declaration_publishes_no_trace_of_the_field() {
-        let rendered =
-            serde_json::to_string(&info(Command::ALL, Operation::CORE).unwrap()).unwrap();
-        assert!(!rendered.contains("target_scope"), "{rendered}");
+        let encoded = serde_json::to_value(info(Command::ALL, Operation::CORE).unwrap()).unwrap();
+        let object = encoded.as_object().unwrap();
+
+        // Asked of the structure rather than of the rendered string, and the
+        // reason is a false positive this test produced the day
+        // `plan_request_fields` was declared: its value **is** the string
+        // `target_scope`, so a substring search found the field this test is
+        // about in a field it is not about. The property has not changed --
+        // a declaration with no second scope still carries neither key -- but
+        // the question has to be asked of keys to mean that.
         assert!(
-            !rendered.contains("scoped_projection_profiles"),
-            "{rendered}"
+            !object.contains_key("scoped_projection_profiles"),
+            "{encoded}"
+        );
+        assert!(
+            !object["projection_profile"]
+                .as_object()
+                .unwrap()
+                .contains_key("target_scope"),
+            "{encoded}"
         );
     }
 
