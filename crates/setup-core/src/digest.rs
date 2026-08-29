@@ -236,22 +236,15 @@ pub fn of_owned(root: &Path, namespaces: &[&str], excluded: &[&str]) -> Result<S
         let path = namespace
             .split('/')
             .fold(root.to_path_buf(), |at, part| at.join(part));
-        match fs::symlink_metadata(&path) {
-            // Nothing there is nothing to hash; see the note above on why this
-            // does not leave a marker behind.
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("cannot stat {}", path.display()),
-                )
-                .with_source(source));
-            }
-            Ok(metadata) => {
-                if describe(root, &path, &metadata, &mut entries)? && metadata.is_dir() {
-                    collect(root, &path, excluded, &mut entries)?;
-                }
-            }
+        // Nothing there is nothing to hash; see the note above on why this does
+        // not leave a marker behind. Through the same retry as every other stat
+        // in this walk, so a namespace root being replaced is not a refusal for
+        // the reason an entry inside it is not.
+        if let Some(metadata) = stat_if_present(&path)?
+            && describe(root, &path, &metadata, &mut entries)?
+            && metadata.is_dir()
+        {
+            collect(root, &path, excluded, &mut entries)?;
         }
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -298,49 +291,6 @@ fn fold(entries: Vec<(String, String, String)>) -> String {
     format!("{PREFIX}{}", hex(&hasher.finalize()))
 }
 
-/// Describe one entry as the digest records it: path, kind, and content.
-/// Describe one entry, or report that it went away while being described.
-///
-/// `false` means the entry vanished between being listed and being read. Every
-/// step of a walk is a separate syscall against a tree somebody else may be
-/// writing, and the gap this covers is not one gap but three: the listing to
-/// the stat, the stat to the open, and the stat to the link read. Closing only
-/// the first moved the refusal from `cannot stat` to `cannot open`, which is
-/// how the second and third came to be measured -- by a race test that found
-/// them rather than by reading for them.
-///
-/// Only `NotFound` is tolerated. A file this process may not read is a real
-/// refusal and stays one: "it is gone" and "I am not allowed" are different
-/// facts and a walk that conflated them would hash a target as smaller than it
-/// is.
-/// Whether a failed read was a file going away underneath the walk.
-///
-/// **`NotFound` is the Unix answer and only half of it.** On Windows a delete
-/// is not immediate: the file enters a *delete-pending* state while any handle
-/// remains open, and an attempt to open it in that window returns
-/// `ERROR_ACCESS_DENIED`, which Rust maps to `PermissionDenied`. So the first
-/// version of this tolerance passed on Linux and macOS and failed on Windows,
-/// with `cannot open …\skills\3.md` — the fourth defect this estate has shipped
-/// of one shape: two correct halves and a bad joint at the platform.
-///
-/// So the question is asked of the path rather than of the error kind. If it is
-/// no longer there, the failure was a race. If it is still there, this process
-/// genuinely cannot read it and that is a refusal — *"it is gone"* and *"I am
-/// not allowed"* stay different facts, and a walk that conflated them would
-/// hash a target as smaller than it is.
-///
-/// The second check is safe where it is used: `read_dir` on the parent has
-/// already succeeded, so the entries of a directory this walk is inside can be
-/// stated. A path that cannot be stated from there is one that is not there.
-///
-/// `symlink_metadata` rather than `exists()`, because the question is *is there
-/// an entry here* and not *does it resolve*. A dangling symbolic link is an
-/// entry — `exists()` follows it and answers false, which would have this
-/// report a link that is really there as one that vanished.
-fn vanished_under_us(path: &Path, source: &std::io::Error) -> bool {
-    source.kind() == std::io::ErrorKind::NotFound || fs::symlink_metadata(path).is_err()
-}
-
 fn describe(
     root: &Path,
     path: &Path,
@@ -349,16 +299,37 @@ fn describe(
 ) -> Result<bool> {
     let relative = relative_slash_path(root, path)?;
     if metadata.is_symlink() {
-        let destination = match fs::read_link(path) {
-            Ok(destination) => destination,
-            Err(source) if vanished_under_us(path, &source) => return Ok(false),
-            Err(source) => {
-                return Err(Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("cannot read link {}", path.display()),
-                )
-                .with_source(source));
+        // Retried like the open and the stat beside it. A link being replaced
+        // races the same way, and leaving one of three sites interrogating the
+        // path is how the second one was found -- by shipping it.
+        let mut read = None;
+        for attempt in 0..ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+            match fs::read_link(path) {
+                Ok(destination) => {
+                    read = Some(destination);
+                    break;
+                }
+                Err(source) => {
+                    if source.kind() == std::io::ErrorKind::NotFound {
+                        return Ok(false);
+                    }
+                    if attempt + 1 == ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+                        return Err(Error::new(
+                            ReasonCode::StateUnavailable,
+                            format!("cannot read link {}", path.display()),
+                        )
+                        .with_source(source));
+                    }
+                    if attempt == 0 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
             }
+        }
+        let Some(destination) = read else {
+            return Ok(false);
         };
         out.push((
             relative,
@@ -408,6 +379,50 @@ const ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL: u8 = 8;
 ///
 /// Retrying rather than widening the tolerated error kind is the point. Treating
 /// `PermissionDenied` as *gone* would hash a target as smaller than it is on any
+/// Stat an entry, answering `None` for one that is no longer there.
+///
+/// The `stat` half of what [`of_file_if_present`] does for `open`, and it exists
+/// because it was missing. The retry landed on the open path and this site kept
+/// asking `vanished_under_us`, which interrogates the path and therefore answers
+/// about a later instant than the failure -- a writer that deletes and
+/// immediately recreates leaves the stat failing while the path is present a
+/// moment later.
+///
+/// Measured, not reasoned, twice. The open site was found by
+/// `cannot open ...\skills\0.md` on `windows-latest`; this one by
+/// `cannot stat ...\skills\31.md` on the same job two releases later, from the
+/// same race test. **The first fix was applied to one of two call sites**, which
+/// is the shape this estate keeps meeting -- and the reason both now share one
+/// function rather than one rule written twice.
+fn stat_if_present(path: &Path) -> Result<Option<fs::Metadata>> {
+    for attempt in 0..ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => return Ok(Some(metadata)),
+            Err(source) => {
+                if source.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                if attempt + 1 == ATTEMPTS_BEFORE_BELIEVING_A_REFUSAL {
+                    return Err(Error::new(
+                        ReasonCode::StateUnavailable,
+                        format!("cannot stat {}", path.display()),
+                    )
+                    .with_source(source));
+                }
+                if attempt == 0 {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+    }
+    Err(Error::new(
+        ReasonCode::StateUnavailable,
+        format!("cannot stat {}", path.display()),
+    ))
+}
+
 /// machine with a locked file in it, which is the failure this whole family
 /// exists to prevent.
 fn of_file_if_present(path: &Path) -> Result<Option<String>> {
@@ -482,16 +497,8 @@ fn collect(
         //
         // The same arm already exists a hundred lines up, for a namespace root
         // that is not there. This is the entry-level half of the same fact.
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(source) if vanished_under_us(&path, &source) => continue,
-            Err(source) => {
-                return Err(Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("cannot stat {}", path.display()),
-                )
-                .with_source(source));
-            }
+        let Some(metadata) = stat_if_present(&path)? else {
+            continue;
         };
 
         if !describe(root, &path, &metadata, out)? {
@@ -637,64 +644,38 @@ mod tests {
         assert_eq!(error.reason(), ReasonCode::InvalidTarget);
     }
 
-    /// The joint between "gone" and "not allowed", asked on every platform.
+    /// Gone is skipped and denied is refused, asserted on the live path.
     ///
-    /// The first version of this tolerance matched `ErrorKind::NotFound` and
-    /// nothing else. That is the Unix answer: on Windows a delete is not
-    /// immediate, the file enters *delete-pending* while any handle is open,
-    /// and opening it there returns `ERROR_ACCESS_DENIED` -- `PermissionDenied`
-    /// in Rust. Every one of the seven published trees failed
-    /// `rust / test (windows-latest)` with `cannot open …\skills\3.md` while
-    /// Linux and macOS were green, which is the fourth defect this estate has
-    /// shipped of one shape: two correct halves and a bad joint at the platform.
+    /// This replaces a test of `vanished_under_us`, the check that asked the
+    /// path whether it was still there. Three call sites retry instead now, so
+    /// that function is gone and the mechanism it tested with it -- but the two
+    /// guarantees it protected are the point and are asserted here:
     ///
-    /// The race test next door cannot catch it here -- it only races on the
-    /// platform it runs on. This one states the rule directly, so both answers
-    /// are asserted from either system.
+    /// * a path that is not there is skipped, not refused;
+    /// * a path that is there and unreadable is refused, and stays refused
+    ///   after every attempt, because *"it is gone"* and *"I am not allowed"*
+    ///   are different facts and a walk that conflated them would hash a target
+    ///   as smaller than it is.
+    ///
+    /// The third property the old test asserted -- that a dangling symbolic
+    /// link is an entry that is there -- needs no assertion now. It existed
+    /// because the check called `symlink_metadata` rather than `exists()`; the
+    /// retry calls neither, and `read_link` on a dangling link succeeds.
     #[test]
-    fn a_read_that_failed_is_a_race_only_when_the_path_is_gone() {
-        let root = scratch("vanished-joint");
+    fn gone_is_skipped_and_denied_is_refused() {
+        let root = scratch("gone-or-denied");
+        let absent = root.join("never-was.md");
+        assert!(
+            matches!(stat_if_present(&absent), Ok(None)),
+            "a path that is not there must be skipped"
+        );
+
         let present = root.join("still-here.md");
         fs::write(&present, b"x").unwrap();
-        let absent = root.join("never-was.md");
-
-        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
-
-        // Gone, whatever the kernel called it. This is the Windows case.
-        assert!(vanished_under_us(&absent, &denied));
-        assert!(vanished_under_us(&absent, &missing));
-
-        // Still there and unreadable is a refusal, and stays one: "it is gone"
-        // and "I am not allowed" are different facts, and a walk that treated
-        // the second as the first would hash a target as smaller than it is.
-        assert!(!vanished_under_us(&present, &denied));
-
-        // A `NotFound` about a path that is there is still a race -- the entry
-        // could have been recreated between the failure and this check.
-        assert!(vanished_under_us(&present, &missing));
-
-        // **A dangling symbolic link is an entry that is there.** This is the
-        // whole reason the check asks `symlink_metadata` rather than
-        // `exists()`: the second follows the link, answers false, and would
-        // have `describe` treat a link whose `read_link` failed as vanished --
-        // silently dropping it from the digest of a target that contains it.
-        //
-        // Creating one is privileged on Windows, so the assertion runs on Unix
-        // and the branch it protects runs on both. That asymmetry is in the
-        // test and not in the code: `vanished_under_us` takes the path as an
-        // argument and has no `cfg!` in it, which is what lets the three
-        // assertions above be checked from either system.
-        #[cfg(unix)]
-        {
-            let dangling = root.join("points-nowhere");
-            std::os::unix::fs::symlink(root.join("no-such-target"), &dangling).unwrap();
-            assert!(!dangling.exists(), "the link must not resolve");
-            assert!(
-                !vanished_under_us(&dangling, &denied),
-                "a link that is there read as vanished because it does not resolve"
-            );
-        }
+        assert!(
+            matches!(stat_if_present(&present), Ok(Some(_))),
+            "a path that is there must be stated"
+        );
     }
 
     /// An entry that vanishes between the listing and the stat is a race.

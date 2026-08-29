@@ -20,6 +20,43 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-08-29
+
+Four things that were wrong while every file was valid.
+
+A pass across all seven of these systems, asking each the same questions rather
+than reading each on its own: does the builder toolkit teach every kind its
+harness declares, is every file in the shape that product reads, do the three
+postures mean one thing, and does each say what it does. Nothing here was
+failing, and no guard could have caught any of it.
+
+**A shipped instruction told a model not to create two things this build
+declares.** The rule a model reads while working on Pi Coding Agent said the product
+documents no global instruction file and no global command, and to create
+neither. Both had been corrected in the declaration and not in the document. An
+entire section of the primary skill said the same at greater length and ended
+*"that is a fact about the product, not a gap to fill"* -- which is how a claim
+stops being re-examined. The evidence against it was inside an artifact this
+repository already pins and had already downloaded.
+
+**A toolkit taught nothing about a kind its harness had just gained.** The
+declaration landed and the document that exists to explain declarations did not
+follow.
+
+**A posture described itself in a neighbour's vocabulary.** One product has no
+permission model at all -- its own documentation says so -- and its baseline
+promised "conservative settings" while writing an enablement, because that is
+the sentence the other six use.
+
+**And one builder dropped a floor the other six carry.** Six take the same
+working floor from their baseline into their builder setup, byte-identical
+across all of them. The seventh replaced it. Both documents were real and
+correctly shaped; the difference is only visible by asking the seven one
+question and noticing one answers differently.
+
+The shape they share: **a negative taken from the pages you happened to read,
+and a sentence that survives because it reads as settled.**
+
 ## [0.0.32] - 2026-08-29
 
 Two package families this program could not deliver, withdrawn.
