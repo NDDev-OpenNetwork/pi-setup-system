@@ -20,6 +20,40 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.31] - 2026-08-29
+
+Three guards, each found by using this program rather than reading it.
+
+**A walk written when a surface held one kind.** Pi Coding Agent's table gained a
+second kind on one directory in `0.0.30`, and two checks here were keyed on that
+directory believing everything under it was the first kind. One reported a
+plugin as a component that had lost its entry point; the other never asked a
+plugin to name itself, so a component with nothing to describe it would have
+shipped unremarked. Both are the same cause arriving as a false positive and as
+a gap, and a consumer of this protocol found the mirror of the first in its own
+code the same afternoon.
+
+The discriminator is the products' own: a manifest, not a location. Matched on
+its suffix rather than against a list of the vendors met so far, so a vendor
+nobody has seen yet works instead of being a silent miss.
+
+**Two of the six harnesses that offer plugins have no manifest at all** — one
+ships a module file exporting functions, another a package — and the comment
+here claimed the manifest shapes covered every product. They cover four of
+seven. Answering *no* for the other two is correct rather than a hole, and the
+claim survived being written because no setup ships a plugin for those products,
+so nothing could contradict it.
+
+**And an absence with nothing behind it.** Driving the full software lifecycle
+against a vendor's real bytes printed `reads -> not asked:` with an empty reason.
+One of two neighbouring arguments required a measured reason for its absence and
+the other defaulted to the empty string. The rendered workflow always supplies
+one, so this was reachable only by hand — and that script documents itself as
+runnable by hand.
+
+The shape all three share: **a rule applied to one of two cases, and the check
+written before the second kept answering for the first.**
+
 ## [0.0.30] - 2026-08-29
 
 A plugin this provider can host in a surface it already owns.

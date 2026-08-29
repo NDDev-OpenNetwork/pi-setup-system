@@ -312,8 +312,74 @@ pub fn undescribed(setups: &[Setup]) -> Vec<String> {
                 }
             }
         }
+        // A plugin manifest is the same obligation in a different file format,
+        // and it escaped this check entirely until `skills` began routing two
+        // kinds: before that every entry under a skills directory was a skill,
+        // so every entry had a `SKILL.md` and every one was read. A plugin has
+        // no frontmatter and was therefore no entry point, and a component with
+        // nothing to describe it is what this function exists to refuse.
+        for name in files_under(&setup.payload) {
+            if !is_a_plugin_manifest(&name) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(setup.payload.join(&name)) else {
+                found.push(format!("{} cannot read {name:?}", setup.manifest.id));
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
+                found.push(format!(
+                    "{} ships {name:?} and it is not JSON",
+                    setup.manifest.id
+                ));
+                continue;
+            };
+            for key in ["name", "description"] {
+                let named = manifest
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty());
+                if !named {
+                    found.push(format!(
+                        "{} ships {name:?} with no `{key}`, and a component the product \
+                         cannot describe is one the model cannot choose",
+                        setup.manifest.id
+                    ));
+                }
+            }
+        }
     }
     found
+}
+
+/// Whether a path is a plugin manifest, in the two shapes that have one.
+///
+/// The same two arms as [`is_a_plugin_root`], reading a file rather than
+/// deciding about its directory: `<name>/plugin.json` for Antigravity and Grok,
+/// and `<name>/.<vendor>-plugin/plugin.json` for Claude Code, Cursor and Codex.
+/// Matched on the suffix so a fifth vendor works rather than being a silent
+/// miss.
+///
+/// **Two of the six that declare `plugin` have no manifest at all, and saying
+/// "the rest" was wrong.** An OpenCode plugin is a JavaScript or TypeScript
+/// module — `plugins/<name>.js`, one file exporting functions — and a Pi
+/// extension is a package. Neither carries `name` or `description` for a
+/// product to read, so there is nothing here to check and no arm to add: a
+/// module's identity is its filename and its behaviour is its exports.
+///
+/// That is a real difference rather than a gap, and it is written down because
+/// the first version of this comment claimed the manifest shapes covered every
+/// product. They cover four of seven. No setup in this repository ships a
+/// plugin for OpenCode, Grok or Pi today — only documentation about authoring
+/// one — so nothing has ever tested the claim, which is why it survived being
+/// written.
+fn is_a_plugin_manifest(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let vendor_prefixed = matches!(
+        parts.as_slice(),
+        [.., directory, "plugin.json"]
+            if directory.starts_with('.') && directory.ends_with("-plugin")
+    );
+    vendor_prefixed || parts.last().is_some_and(|leaf| *leaf == "plugin.json")
 }
 
 /// A shipped instruction naming a sibling file the setup does not carry.
@@ -435,6 +501,44 @@ pub fn dangling_references(setups: &[Setup]) -> Vec<String> {
     found
 }
 
+/// Whether a directory is a plugin root rather than a skill.
+///
+/// **The products that use a manifest discriminate by it, not by location.**
+/// Claude Code: *"Any folder under a skills directory that contains a
+/// `.claude-plugin/plugin.json` manifest is loaded as a plugin named
+/// `<name>@skills-dir`"* — the same directory holds both kinds and the manifest
+/// says which. Cursor and Codex carry the same shape under their own vendor
+/// prefix; Antigravity and Grok put `plugin.json` at the plugin root.
+///
+/// OpenCode and Pi are not directories with manifests — a module file and a
+/// package — so this answers `false` for them and correctly: neither can hold a
+/// `references/` directory that a walk would then demand a `SKILL.md` beside.
+/// See [`is_a_plugin_manifest`] for the same distinction on the file.
+///
+/// Written because [`unreachable_references`] was one directory, one kind. It
+/// reported a plugin folder as a skill that had lost its `SKILL.md`, which is
+/// the mirror of a misclassification the consumer session found in its own
+/// discovery walk on the same afternoon — both from the same cause, a walk
+/// written when the surface routed a single kind.
+fn is_a_plugin_root(files: &[String], owner: &str) -> bool {
+    files.iter().any(|name| {
+        let Some(rest) = name.strip_prefix(&format!("{owner}/")) else {
+            return false;
+        };
+        match rest.split('/').collect::<Vec<_>>().as_slice() {
+            // Antigravity's shape: the manifest at the plugin root.
+            ["plugin.json"] => true,
+            // The vendor-prefixed shape: `.claude-plugin/`, `.cursor-plugin/`,
+            // `.codex-plugin/`. Matched on the suffix rather than a list, so a
+            // vendor this estate has not met yet is not a silent miss.
+            [directory, "plugin.json"] => {
+                directory.starts_with('.') && directory.ends_with("-plugin")
+            }
+            _ => false,
+        }
+    })
+}
+
 /// A `references/` directory no entry point reaches.
 ///
 /// [`undescribed`] requires an entry point to describe itself; this requires
@@ -463,6 +567,9 @@ pub fn unreachable_references(setups: &[Setup]) -> Vec<String> {
                 continue;
             }
             let owner = parts[..at].join("/");
+            if is_a_plugin_root(&files, &owner) {
+                continue;
+            }
             let entry = format!("{owner}/SKILL.md");
             if !files.iter().any(|other| other.eq_ignore_ascii_case(&entry)) {
                 found.push(format!(
@@ -1119,6 +1226,157 @@ mod tests {
         let found = dangling_references(&listed);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("references/gone.md"), "{found:?}");
+    }
+
+    /// A plugin with no manifest is neither checked nor mis-reported.
+    ///
+    /// Two of the six harnesses that declare `plugin` have no manifest at all:
+    /// an OpenCode plugin is a module file exporting functions, and a Pi
+    /// extension is a package. The manifest guards answer `false` for both, and
+    /// this asserts that answering `false` is harmless rather than a hole —
+    /// a module file cannot hold a `references/` directory, so no walk demands
+    /// a `SKILL.md` beside it, and it carries no `name` field for `undescribed`
+    /// to want.
+    ///
+    /// Written because the comment on those guards claimed the manifest shapes
+    /// covered every product, and no setup here ships a plugin for OpenCode,
+    /// Grok or Pi, so nothing had ever exercised the claim.
+    #[test]
+    fn a_plugin_that_is_a_module_file_needs_neither_guard() {
+        let root = scratch("plugin-as-module");
+        write_setup(
+            &root,
+            "module-plugin",
+            &[(
+                "plugins/nddev-builder.js",
+                "export const hooks = () => ({});\n",
+            )],
+        );
+        let listed = Catalog::at(&root).list().unwrap();
+
+        assert!(
+            undescribed(&listed).is_empty(),
+            "a module plugin was asked for fields it does not have: {:?}",
+            undescribed(&listed)
+        );
+        assert!(
+            unreachable_references(&listed).is_empty(),
+            "a module plugin was walked as though it were a skill: {:?}",
+            unreachable_references(&listed)
+        );
+    }
+
+    /// A plugin manifest has to name itself, like every other entry point.
+    ///
+    /// `undescribed` requires a `SKILL.md` and an agent file to carry `name`
+    /// and `description`, because a component the product names after its
+    /// directory gives a model nothing to choose on. A plugin manifest carries
+    /// the same two fields for the same reason -- the product shows
+    /// `description` when browsing one.
+    ///
+    /// It escaped the check entirely until `skills` began routing two kinds.
+    /// Before that every entry under a skills directory was a skill, so every
+    /// entry had frontmatter and every one was read; a plugin has none, so it
+    /// was no entry point and nothing looked at it. Recorded first as an
+    /// observation that passed, then turned into this when the gap closed.
+    ///
+    /// Both directions, and both shapes: a manifest that names nothing is
+    /// caught under the vendor-prefixed path and under Antigravity's root
+    /// `plugin.json`, and one that names both is not.
+    #[test]
+    fn a_plugin_manifest_has_to_name_itself() {
+        let root = scratch("plugin-describes-itself");
+        write_setup(
+            &root,
+            "silent-plugin",
+            &[(
+                "skills/tool/.claude-plugin/plugin.json",
+                "{\"name\": \"tool\", \"version\": \"1.0.0\"}",
+            )],
+        );
+        write_setup(
+            &root,
+            "silent-at-the-root",
+            &[("plugins/tool/plugin.json", "{\"version\": \"1.0.0\"}")],
+        );
+        write_setup(
+            &root,
+            "speaking-plugin",
+            &[(
+                "skills/tool/.claude-plugin/plugin.json",
+                "{\"name\": \"tool\", \"description\": \"what it is for\"}",
+            )],
+        );
+
+        let listed = Catalog::at(&root).list().unwrap();
+        let found = undescribed(&listed);
+
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("silent-plugin") && p.contains("description")),
+            "a manifest with no description was not caught: {found:?}"
+        );
+        assert!(
+            found.iter().any(|p| p.contains("silent-at-the-root")),
+            "the root-manifest shape was not checked: {found:?}"
+        );
+        assert!(
+            found.iter().all(|p| !p.contains("speaking-plugin")),
+            "a manifest naming both fields was reported anyway: {found:?}"
+        );
+    }
+
+    /// A plugin folder is not a skill missing its entry point.
+    ///
+    /// `unreachable_references` was written when one directory held one kind.
+    /// Claude Code loads a folder under `skills/` as a *plugin* when it carries
+    /// `.claude-plugin/plugin.json`, and as a skill when it carries `SKILL.md`
+    /// -- the product's own discriminator is the manifest, not the location. So
+    /// a walk that assumes every entry under a skills path is a skill reports
+    /// the plugin as one missing its entry point.
+    ///
+    /// Observed before it was fixed: the same tree, with and without the
+    /// manifest, and the assertion is that only the second is a problem. The
+    /// first is the case that had no name until `skills` began routing two
+    /// kinds.
+    #[test]
+    fn a_plugin_folder_is_not_a_skill_that_lost_its_entry_point() {
+        let root = scratch("plugin-under-skills");
+        write_setup(
+            &root,
+            "with-manifest",
+            &[
+                (
+                    "skills/tool/.claude-plugin/plugin.json",
+                    "{\"name\": \"tool\", \"version\": \"1.0.0\"}",
+                ),
+                ("skills/tool/references/notes.md", "supporting prose"),
+            ],
+        );
+        // The control: the same shape with no manifest is a skill, and a skill
+        // with references and no SKILL.md is the defect this guard exists for.
+        write_setup(
+            &root,
+            "without-manifest",
+            &[("skills/tool/references/notes.md", "supporting prose")],
+        );
+
+        let listed = Catalog::at(&root).list().unwrap();
+        let found = unreachable_references(&listed);
+
+        assert!(
+            found
+                .iter()
+                .all(|problem| !problem.contains("with-manifest")),
+            "a plugin folder was reported as a skill missing SKILL.md: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|problem| problem.contains("without-manifest")),
+            "the guard stopped catching a skill with no entry point: {found:?}"
+        );
     }
 
     fn write_setup(root: &Path, id: &str, files: &[(&str, &str)]) {
