@@ -82,7 +82,7 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
 ///
 /// Every refusal here happens before the lock is taken, let alone before
 /// anything is written: a bundle is either wholly acceptable or not applied.
-fn verified_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<Bundle> {
+fn verified_bundle(harness: &Harness, bundle: &ArgvBundle, surface: Surface) -> Result<Bundle> {
     let bytes = fs::read(&bundle.path).map_err(|source| {
         Error::refuse(
             WireReason::DigestMismatch,
@@ -102,7 +102,7 @@ fn verified_bundle(harness: &Harness, bundle: &ArgvBundle) -> Result<Bundle> {
             harness_id: harness.harness_id,
         },
     )?;
-    check_within_surface(harness, verified.files.keys())?;
+    check_within_surface(harness, verified.files.keys(), surface)?;
     check_declared_kinds(harness, &verified)?;
     Ok(verified)
 }
@@ -141,12 +141,32 @@ fn check_declared_kinds(harness: &Harness, bundle: &Bundle) -> Result<()> {
 /// A file outside the declared surface would be installed here and then left
 /// behind by `remove`, and unaccounted for by `status`. Ownership and effect are
 /// the same set or they are nothing.
+/// Which surface a bundle is being checked against.
+///
+/// `validate-bundle` is handed a bundle and a target and no scope, so the
+/// question it can answer is whether *any* target this provider declares could
+/// hold the bundle. Plan and apply are told the scope and ask about that one.
+/// Answering the second question with the first is how a scope a provider
+/// declares became a scope nothing could be installed into.
+#[derive(Debug, Clone, Copy)]
+enum Surface {
+    /// Any target this provider declares. `validate-bundle`, which has no scope.
+    AnyDeclared,
+    /// Exactly the target this scope names.
+    At(Option<provider_v3::TargetScope>),
+}
+
 fn check_within_surface<'a>(
     harness: &Harness,
     paths: impl Iterator<Item = &'a String>,
+    surface: Surface,
 ) -> Result<()> {
     for path in paths {
-        if !harness.owns(path) {
+        let owned = match surface {
+            Surface::AnyDeclared => harness.owns_anywhere(path),
+            Surface::At(scope) => harness.owns_at(path, scope),
+        };
+        if !owned {
             return Err(Error::refuse(
                 WireReason::UnsupportedNativeSurface,
                 format!(
@@ -189,8 +209,11 @@ fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathB
 /// no counter, no ordering that depends on a directory walk.
 fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let (resolved, control, pool) = observe(harness, target)?;
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
+    // `status` is handed a target and nothing else, so the scope has to come
+    // from the target. It is already written down: see `scope_recorded_at`.
+    let scope = scope_recorded_at(harness, &resolved);
+    let owned = owned_here(harness, &resolved, scope)?;
+    let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
 
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
@@ -365,7 +388,7 @@ fn provenance_of(
 /// what `validate-bundle` means.
 fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> serde_json::Value {
     // There is no error path out of here, and the signature says so.
-    match verified_bundle(harness, bundle) {
+    match verified_bundle(harness, bundle, Surface::AnyDeclared) {
         Ok(_) => provider_v3::plan::bundle_accepted(&bundle.binding),
         Err(error) => {
             // A refusal always names a reason. A declaration defect in this
@@ -386,6 +409,35 @@ fn validate_bundle(harness: &Harness, bundle: &ArgvBundle) -> serde_json::Value 
 /// plan that could never be applied -- and a refusal deferred to apply time
 /// arrives after the consumer has stored the plan, scheduled it, and come back.
 fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
+    // A scope this provider never published is refused before anything is
+    // planned against it. `provider-info` carries one profile per declared
+    // scope and nothing else, so a request naming another one is asking for a
+    // target this provider has made no statement about -- and the old
+    // behaviour was worse than accepting it: the runtime keyed its scoped
+    // handling off the *request*, so a provider declaring no scope at all still
+    // behaved as though it had one for `user_root` and as though it had none
+    // for every other. The declaration decides, here as everywhere.
+    if let Some(named) = request.target_scope
+        && harness.scoped_for(Some(named)).is_none()
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "--target-scope {named} names a target this provider publishes no \
+                 projection profile for; it declares {}",
+                if harness.scoped_projections.is_empty() {
+                    "only the global one".to_owned()
+                } else {
+                    harness
+                        .scoped_projections
+                        .iter()
+                        .map(|scoped| scoped.target_scope.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ),
+        ));
+    }
     // A flag that means nothing to this operation is refused rather than
     // dropped: silently ignoring it would report success for a request that was
     // only partly understood, which is the rule the argv parser already keeps.
@@ -465,7 +517,7 @@ fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String
             ),
         ));
     };
-    let verified = verified_bundle(harness, named)?;
+    let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
     let mut effects = vec![
         "capture the current target into a new backup slot".to_owned(),
         format!(
@@ -493,8 +545,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
 
     honourable(harness, request)?;
 
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
+    let owned = owned_here(harness, &resolved, request.target_scope)?;
+    let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     let profile = harness.projection_profile()?;
     let build_digest = harness.build_digest()?;
 
@@ -509,8 +561,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         request.operation,
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove
     ) {
-        refuse_a_neighbours_home(harness, &resolved)?;
-        refuse_uncapturable(harness, &resolved)?;
+        refuse_a_neighbours_home(harness, &resolved, request.target_scope)?;
+        refuse_uncapturable(&resolved, &owned)?;
     }
 
     let mut software_artifacts = Vec::new();
@@ -801,25 +853,18 @@ fn apply(
             };
             // Re-read and re-verify: the plan authorized an identity, not a file
             // that might have changed on disk since.
-            verified = Some(verified_bundle(harness, named)?);
+            verified = Some(verified_bundle(
+                harness,
+                named,
+                Surface::At(scope_of(&artifact)),
+            )?);
             let Some(ready) = verified.as_ref() else {
                 return Err(Error::refuse(
                     WireReason::ProviderUnavailable,
                     "bundle vanished",
                 ));
             };
-            applied.bundle_format = Some(named.binding.bundle_format.clone());
-            applied.bundle_digest = Some(named.binding.bundle_digest.clone());
-            applied.artifact_digest = Some(named.binding.artifact_digest.clone());
-            // Two provenance fields the contract names and the passport
-            // states. They were null for every bundle install, because the
-            // passport was a required member that nothing read.
-            if !ready.passport.stable_id.is_empty() {
-                applied.setup_id = Some(ready.passport.stable_id.clone());
-            }
-            if !ready.passport.version.is_empty() {
-                applied.setup_version = Some(ready.passport.version.clone());
-            }
+            record_bundle_provenance(&mut applied, named, ready);
             applied.component_refs = ready
                 .manifest
                 .conversion_report
@@ -873,8 +918,8 @@ pub(crate) fn perform(
     ))?;
 
     // Re-check after the lock: everything observed before it could have moved.
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
+    let owned = owned_here(harness, &resolved, mutation.target_scope)?;
+    let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     if identity != mutation.expected_target_digest {
         return Err(Error::refuse(
             WireReason::Stale,
@@ -889,21 +934,16 @@ pub(crate) fn perform(
 
     let operation_id = mutation.operation_id.clone();
     let operation_name = mutation.operation.as_str().to_owned();
-    let (previous_setup, previous_definition) =
-        match ProviderState::read(resolved.root(), harness.state_file)? {
-            StateReading::Current(current) => {
-                (current.setup_stable_id, current.setup_definition_digest)
-            }
-            _ => (None, None),
-        };
+    let (previous_setup, previous_definition, previous_written) =
+        what_the_target_already_says(harness, &resolved)?;
     // Before the slot exists, not while it is being filled. A capture that met
     // an entry it could not take used to stop halfway, leaving a partial
     // operation and control artifacts for a target shape that was knowable for
     // free -- reported from a Windows target whose owned `config/skills` held
     // four Junctions.
-    refuse_a_neighbours_home(harness, &resolved)?;
-    refuse_uncapturable(harness, &resolved)?;
-    let captured = pool.capture(resolved.root(), harness.native_namespaces, |backup_ref| {
+    refuse_a_neighbours_home(harness, &resolved, mutation.target_scope)?;
+    refuse_uncapturable(&resolved, &owned)?;
+    let captured = pool.capture(resolved.root(), &as_paths(&owned), |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
             backup_ref,
@@ -923,6 +963,7 @@ pub(crate) fn perform(
         plan_digest: mutation.plan_digest.clone(),
         target_precondition_digest: identity.clone(),
         backup_ref: Some(captured.backup_ref.as_str().to_owned()),
+        target_scope: mutation.target_scope.map(|scope| scope.as_str().to_owned()),
     }
     .publish_prepared(&control)?;
 
@@ -930,8 +971,16 @@ pub(crate) fn perform(
     // restores; every other effect was told at plan time.
     let mut applied = mutation.applied.clone();
     let outcome = match &mutation.effect {
-        // The capture above *is* the effect. Nothing else is written.
-        Effect::Backup => Ok(vec![]),
+        // The capture above *is* the effect. Nothing else is written -- and
+        // *nothing written* is not *nothing owned*. This used to record an
+        // empty list, which globally cost nothing because a removal reads the
+        // namespaces; under a scope the record **is** the inventory, so a
+        // backup would have erased the answer `remove` depends on and the next
+        // removal would have taken nothing while reporting success. The field
+        // means "the files this provider has written at this target", not "the
+        // files this operation wrote", and an operation that writes none leaves
+        // it as it found it.
+        Effect::Backup => Ok(previous_written.clone()),
         Effect::Restore { backup_ref } => {
             let record = chosen_backup(&pool, backup_ref.as_deref())?;
             let payload = pool.payload_of(&record.backup_ref)?;
@@ -942,22 +991,27 @@ pub(crate) fn perform(
             applied
                 .setup_definition_digest
                 .clone_from(&record.setup_definition_digest);
-            replace_managed_from(harness, &resolved, &payload)
+            replace_managed_from(harness, &resolved, &payload, mutation.target_scope)
         }
-        // Removal and backup put nothing on the target, and an empty list is
-        // the true answer rather than a missing one -- which is exactly the
-        // distinction the schema bump beside this field exists to keep.
+        // Removal puts nothing on the target and leaves nothing of ours there,
+        // so an empty list is the true answer rather than a missing one --
+        // which is exactly the distinction the schema bump beside this field
+        // exists to keep.
         Effect::Remove => {
             remove_managed(harness, &resolved, mutation.target_scope).map(|()| vec![])
         }
         Effect::Materialize { setup } => {
             setup.check_within(harness)?;
-            replace_managed_from(harness, &resolved, &setup.payload)
+            replace_managed_from(harness, &resolved, &setup.payload, mutation.target_scope)
         }
-        Effect::MaterializeBundle { files } => write_bundle_files(harness, &resolved, files),
+        Effect::MaterializeBundle { files } => {
+            write_bundle_files(harness, &resolved, files, mutation.target_scope)
+        }
+        // Keeping a predecessor's stamp aside writes nothing to the target, so
+        // the inventory is what it was. Same reason as `Backup` above.
         Effect::Adopt { stamp } => {
             crate::adopt::keep_aside(&control, stamp, harness.predecessor_state_file)
-                .map(|_| vec![])
+                .map(|_| previous_written.clone())
         }
     };
 
@@ -965,8 +1019,15 @@ pub(crate) fn perform(
     // interruption legible: recovery restores the captured pre-operation target.
     applied.written_paths = outcome?;
 
-    let after =
-        resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?;
+    // The inventory *after* the effect, which under a scope is the list the
+    // effect just returned rather than one re-read from a state file this
+    // operation has not written yet.
+    let after_owned = if harness.scoped_for(mutation.target_scope).is_some() {
+        applied.written_paths.clone()
+    } else {
+        owned.clone()
+    };
+    let after = resolved.identity_of_owned(&as_paths(&after_owned), &harness.not_our_identity())?;
     write_state(
         harness, &resolved, mutation, &identity, &after, &captured, &applied,
     )?;
@@ -984,6 +1045,45 @@ pub(crate) fn perform(
     }))
 }
 
+/// What the target's own state says before this operation touches it.
+///
+/// The setup it names, the definition digest that setup had, and the files this
+/// provider recorded writing. The third is not bookkeeping: under a scope it is
+/// the inventory every verb acts on, and an operation that writes nothing has
+/// to hand it back unchanged rather than record an empty list.
+fn what_the_target_already_says(
+    harness: &Harness,
+    resolved: &Target,
+) -> Result<(Option<String>, Option<String>, Vec<String>)> {
+    Ok(
+        match ProviderState::read(resolved.root(), harness.state_file)? {
+            StateReading::Current(current) => (
+                current.setup_stable_id,
+                current.setup_definition_digest,
+                current.written_paths,
+            ),
+            _ => (None, None, Vec::new()),
+        },
+    )
+}
+
+/// What a bundle says about itself, copied into the state the operation writes.
+///
+/// Lifted out of `apply` rather than inlined: two of these were null for every
+/// bundle install because the passport was a required member nothing read, and
+/// a block with its own name is a block somebody can look at.
+fn record_bundle_provenance(applied: &mut Applied, named: &ArgvBundle, ready: &Bundle) {
+    applied.bundle_format = Some(named.binding.bundle_format.clone());
+    applied.bundle_digest = Some(named.binding.bundle_digest.clone());
+    applied.artifact_digest = Some(named.binding.artifact_digest.clone());
+    if !ready.passport.stable_id.is_empty() {
+        applied.setup_id = Some(ready.passport.stable_id.clone());
+    }
+    if !ready.passport.version.is_empty() {
+        applied.setup_version = Some(ready.passport.version.clone());
+    }
+}
+
 /// Resolve an interrupted operation from its journal.
 fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let (resolved, control, pool) = open(harness, target)?;
@@ -997,6 +1097,16 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
         }));
     };
 
+    // The only place a scope can reach a recovery: `recover-operation` takes no
+    // arguments, so the interrupted operation had to write down which target it
+    // was acting on. A journal from a build that had no scope to act on carries
+    // none, and absent means global -- which is what that build did.
+    let scope = journal
+        .target_scope
+        .as_deref()
+        .and_then(provider_v3::TargetScope::parse);
+    let owned = owned_here(harness, &resolved, scope)?;
+
     match journal.phase {
         Phase::Prepared => {
             // The effect may be partial. Return the exact pre-operation target.
@@ -1008,14 +1118,14 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             };
             let backup_ref = BackupRef::parse(reference)?;
             let payload = pool.payload_of(&backup_ref)?;
-            replace_managed_from(harness, &resolved, &payload)?;
+            replace_managed_from(harness, &resolved, &payload, scope)?;
             Journal::clear(&control)?;
             Ok(serde_json::json!({
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Prepared.as_str(),
                 "restored_from": reference,
-                "target_identity_digest": resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?,
+                "target_identity_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
             }))
         }
         Phase::Committed => {
@@ -1025,7 +1135,7 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Committed.as_str(),
-                "target_identity_digest": resolved.identity_of_owned(harness.owned_projection(), &harness.not_our_identity())?,
+                "target_identity_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
             }))
         }
     }
@@ -1037,7 +1147,15 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
 /// overlay the product or the owner put in the target survives, because a
 /// restore that also reverted files this provider never wrote would be undoing
 /// someone else's work.
-fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> Result<Vec<String>> {
+fn replace_managed_from(
+    harness: &Harness,
+    target: &Target,
+    payload: &Path,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<Vec<String>> {
+    if harness.scoped_for(scope).is_some() {
+        return replace_recorded_from(harness, target, payload, scope);
+    }
     let mut written = Vec::new();
     for namespace in harness.native_namespaces {
         let destination = target.root().join(namespace);
@@ -1059,6 +1177,84 @@ fn replace_managed_from(harness: &Harness, target: &Target, payload: &Path) -> R
             })?;
             lock::atomic_write(&destination, &bytes)?;
             written.push((*namespace).to_owned());
+        }
+    }
+    written.sort();
+    Ok(written)
+}
+
+/// Put a captured tree back under a named scope, file by file.
+///
+/// The header above says a restore must not revert files this provider never
+/// wrote. Under a scope that sentence needs a different mechanism, not a
+/// different rule: the namespace is shared, so clearing it whole and copying
+/// the payload over it would revert every neighbour's file to what it was when
+/// the slot was taken. The person restoring a codex setup did not ask to move
+/// pi's skills back a week.
+///
+/// So the clear is scoped to this provider's own inventory and the write is the
+/// payload's own contents — the payload *is* the record of what was captured,
+/// which is why this needs no second list to consult. Copying merges into an
+/// existing directory rather than replacing it, so a neighbour's file inside a
+/// namespace we write into survives untouched.
+fn replace_recorded_from(
+    harness: &Harness,
+    target: &Target,
+    payload: &Path,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<Vec<String>> {
+    for relative in &owned_here(harness, target, scope)? {
+        remove_path(&target.root().join(relative))?;
+    }
+    let mut written = Vec::new();
+    let entries = fs::read_dir(payload).map_err(|error| {
+        setup_core::Error::new(
+            setup_core::ReasonCode::StateUnavailable,
+            format!("cannot list {}", payload.display()),
+        )
+        .with_source(error)
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!("cannot read an entry of {}", payload.display()),
+            )
+            .with_source(error)
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return Err(Error::from(setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!(
+                    "{} has a name this kernel cannot represent",
+                    entry.path().display()
+                ),
+            )));
+        };
+        let source = entry.path();
+        let destination = target.root().join(&name);
+        if source.is_dir() {
+            setup_core::backup::copy_tree(&source, &destination, &[])?;
+            written.extend(files_under(&destination, &name)?);
+        } else {
+            let bytes = fs::read(&source).map_err(|error| {
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot read {}", source.display()),
+                )
+                .with_source(error)
+            })?;
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    setup_core::Error::new(
+                        setup_core::ReasonCode::StateUnavailable,
+                        format!("cannot create {}", parent.display()),
+                    )
+                    .with_source(error)
+                })?;
+            }
+            lock::atomic_write(&destination, &bytes)?;
+            written.push(name);
         }
     }
     written.sort();
@@ -1112,13 +1308,24 @@ fn write_bundle_files(
     harness: &Harness,
     target: &Target,
     files: &BTreeMap<String, (Vec<u8>, u32)>,
+    scope: Option<provider_v3::TargetScope>,
 ) -> Result<Vec<String>> {
-    // `None`: a bundle install clears the namespaces it is about to fill, and
-    // that is a `global` act by construction -- nothing routes a bundle to a
-    // shared root, and the refusal above would be the wrong answer here even if
-    // something did, because these bytes are about to be replaced rather than
-    // withdrawn.
-    remove_managed(harness, target, None)?;
+    // The clear before the fill, scoped the way everything else here is. This
+    // said `None` and explained that "nothing routes a bundle to a shared root"
+    // -- which the consumer does, and the day it did the install would have
+    // cleared this provider's *global* namespaces at a shared root instead.
+    //
+    // Under a scope it also cannot be `remove_managed`, which refuses when no
+    // record exists: no record is exactly the state of a first install, and
+    // refusing there would make the scope uninstallable rather than safe. The
+    // inventory answers `empty` for that case, which is what it means.
+    if harness.scoped_for(scope).is_some() {
+        for relative in &owned_here(harness, target, scope)? {
+            remove_path(&target.root().join(relative))?;
+        }
+    } else {
+        remove_managed(harness, target, None)?;
+    }
     for (relative, (bytes, mode)) in files {
         // `atomic_write` creates the parent; this used to do it here, and the
         // catalog path next door did not, which is how they came apart.
@@ -1183,12 +1390,102 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 /// narrower and more honest case: a state file that is absent or at an older
 /// schema means this build does not know what it wrote, and widening to the
 /// namespace there would be exactly the removal this branch exists to prevent.
+/// What this provider owns at the target an operation names, as relative paths.
+///
+/// Two different questions wear one name, and answering the second with the
+/// first is the defect [`Harness::owned_projection`] records:
+///
+/// * **Globally** this provider owns its declared namespaces whole. A file
+///   somebody hand-added inside one sits inside a namespace this provider
+///   replaces, so it counts — that is what makes drift visible.
+/// * **Under a named scope** the root belongs to a convention rather than to
+///   this product. Five of the seven read `~/.agents/skills`; a workspace
+///   `.agents` is read by more. There the namespace is the *permission* — it
+///   bounds what a bundle may write — and the files this provider recorded
+///   writing are the *inventory*. Only the inventory may be captured, restored
+///   over or removed, because capturing the namespace whole puts a neighbour's
+///   files in our slot and restoring it reverts their work, which is the one
+///   thing `replace_managed_from` says in its own header that it must not do.
+///
+/// A record this build cannot read is a refusal rather than a widening, exactly
+/// as `remove` has refused since `written_paths` shipped: a state file at a
+/// schema this build does not write means *it does not know what it wrote*.
+/// **Absent is a different fact** and means nothing was written here, so an
+/// empty inventory is the true answer and not a refusal — the distinction the
+/// state schema's own `Absent` / `ForeignSchema` split exists to keep.
+fn owned_here(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<Vec<String>> {
+    let Some(scoped) = harness.scoped_for(scope) else {
+        return Ok(harness
+            .native_namespaces
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect());
+    };
+    match ProviderState::read(target.root(), harness.state_file)? {
+        StateReading::Current(state) => Ok(state.written_paths),
+        StateReading::Absent => Ok(Vec::new()),
+        StateReading::ForeignSchema { .. } => Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "an operation under target_scope {} acts on the files this provider \
+                 recorded writing, and {} holds a state file written before this build \
+                 recorded them. Refused rather than widened to {} whole, which under this \
+                 scope is a root several products read. Reinstall to establish a record, \
+                 or point --target at this product's own configuration home.",
+                scoped.target_scope.as_str(),
+                target.root().display(),
+                scoped.native_namespaces.join(", ")
+            ),
+        )),
+    }
+}
+
+/// Borrow an inventory for the `&[&str]` every walker takes.
+fn as_paths(owned: &[String]) -> Vec<&str> {
+    owned.iter().map(String::as_str).collect()
+}
+
+/// Which scope a target was operated under, read back from the state it carries.
+///
+/// `status` is handed a target and nothing else — that is the argv contract, and
+/// it is also why the consumer may call it twice and require the two answers to
+/// be identical. So the scope has to come from the target, and it is already
+/// written down: `native_ownership` records the namespaces this provider owns
+/// *here*, which under a scope is that scope's set and otherwise the global
+/// block. This only has to recognise which.
+///
+/// An unreadable or absent state answers `None`, which is right rather than
+/// merely safe: a target carrying no state of ours is not a target we operated
+/// under any scope.
+fn scope_recorded_at(harness: &Harness, target: &Target) -> Option<provider_v3::TargetScope> {
+    let StateReading::Current(state) =
+        ProviderState::read(target.root(), harness.state_file).ok()?
+    else {
+        return None;
+    };
+    harness
+        .scoped_projections
+        .iter()
+        .find(|scoped| {
+            scoped.native_namespaces.len() == state.native_ownership.len()
+                && scoped
+                    .native_namespaces
+                    .iter()
+                    .all(|name| state.native_ownership.iter().any(|owned| owned == name))
+        })
+        .map(|scoped| scoped.target_scope)
+}
+
 fn remove_managed(
     harness: &Harness,
     target: &Target,
     scope: Option<provider_v3::TargetScope>,
 ) -> Result<()> {
-    if scope == Some(provider_v3::TargetScope::UserRoot) {
+    if let Some(scoped) = harness.scoped_for(scope) {
         // A root several products read, so taking a namespace whole would take
         // a neighbour's content: five of the seven read `~/.agents/skills`
         // (codex documents it, grok scans it at every tier, opencode lists it
@@ -1214,15 +1511,16 @@ fn remove_managed(
                 return Err(Error::refuse(
                     WireReason::UnsupportedOperation,
                     format!(
-                        "remove under target_scope user_root is scoped to the files this \
+                        "remove under target_scope {} is scoped to the files this \
                          provider recorded writing, and {} holds no readable record of them \
                          -- no state file, or one written before this build recorded them. \
-                         Refused rather than widened to {} whole, which is a root five of \
-                         the seven products read. Reinstall to establish a record, remove \
-                         the components through the consumer, or point --target at this \
-                         product's own configuration home.",
+                         Refused rather than widened to {} whole, which under this scope is \
+                         a root several products read. Reinstall to establish a record, \
+                         remove the components through the consumer, or point --target at \
+                         this product's own configuration home.",
+                        scoped.target_scope.as_str(),
                         target.root().display(),
-                        harness.native_namespaces.join(", ")
+                        scoped.native_namespaces.join(", ")
                     ),
                 ));
             }
@@ -1284,7 +1582,11 @@ fn remove_path(path: &Path) -> Result<()> {
 ///   `settings.json` is Pi's whatever else is beside it;
 /// - the target is not already managed by this provider, which settles it
 ///   outright.
-fn refuse_a_neighbours_home(harness: &Harness, resolved: &Target) -> Result<()> {
+fn refuse_a_neighbours_home(
+    harness: &Harness,
+    resolved: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<()> {
     if harness.foreign_homes.is_empty() {
         return Ok(());
     }
@@ -1296,8 +1598,11 @@ fn refuse_a_neighbours_home(harness: &Harness, resolved: &Target) -> Result<()> 
         return Ok(());
     }
     // Ours by content, even without our state -- an adopted or hand-made home.
+    // The question is asked of the namespaces *this scope* owns: under a scope
+    // the global block names nothing that would ever be here, so asking with it
+    // would report every scoped target as somebody else's.
     if harness
-        .native_namespaces
+        .owned_projection(scope)
         .iter()
         .any(|name| resolved.root().join(name).exists())
     {
@@ -1340,8 +1645,8 @@ fn refuse_a_neighbours_home(harness: &Harness, resolved: &Target) -> Result<()> 
 /// Named rather than counted, and all of them rather than the first: a caller
 /// fixing them one refusal at a time is the same defect as an argv that
 /// surfaces one missing flag at a time.
-fn refuse_uncapturable(harness: &Harness, resolved: &Target) -> Result<()> {
-    let refused = setup_core::backup::uncapturable(resolved.root(), harness.native_namespaces)?;
+fn refuse_uncapturable(resolved: &Target, owned: &[String]) -> Result<()> {
+    let refused = setup_core::backup::uncapturable(resolved.root(), &as_paths(owned))?;
     if refused.is_empty() {
         return Ok(());
     }
@@ -1423,8 +1728,14 @@ fn write_state(
         provider_plan_digest: Some(mutation.plan_digest.clone()),
         operation_id: string_field(artifact, "operation_id")?,
         target_precondition_digest: before.to_owned(),
+        // The namespaces owned *at this target*, which under a scope is that
+        // scope's set. Recording the global block here was the sixth face of
+        // the same defect and the one that made it hard to see from outside:
+        // a scoped target's state described namespaces that were never there.
+        // It is also what `scope_recorded_at` reads, so a wrong value here
+        // would have made `status` answer under the wrong scope.
         native_ownership: harness
-            .native_namespaces
+            .owned_projection(mutation.target_scope)
             .iter()
             .map(|n| (*n).to_owned())
             .collect(),
@@ -1600,7 +1911,24 @@ pub(crate) mod tests_support {
             ComponentKind::Setting,
         ],
         projection_kinds: &[ProjectionKind::NativeFiles],
-        scoped_projections: &[],
+        // A second target, shaped like codex's: a convention root several
+        // products read, owning one namespace inside it. It is here because the
+        // scoped tests below drove `--target-scope user_root` through a harness
+        // that declared no scope at all -- the runtime keyed its behaviour off
+        // the *request* rather than off the declaration, so the tests proved
+        // the behaviour of a provider that could not exist.
+        scoped_projections: &[crate::facts::Scoped {
+            target_scope: provider_v3::TargetScope::UserRoot,
+            profile_id: "test/native-files/user-root/1",
+            component_kinds: &[ComponentKind::Skill],
+            projection_kinds: &[ProjectionKind::NativeFiles],
+            // Deliberately not `skills`, which this harness owns globally: a
+            // filesystem does not know about scopes, so one name in both blocks
+            // is two declarations of one path and the surfaces guard refuses it
+            // by name. Codex avoids the same collision by declining `skills`
+            // under its global home.
+            native_namespaces: &["shared"],
+        }],
         max_files: 4096,
         max_bytes: 64 * 1024 * 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,
@@ -1731,7 +2059,7 @@ mod tests {
         ));
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
         let said = error.to_string();
-        for wanted in ["user_root", "no readable record", "five of the seven"] {
+        for wanted in ["user_root", "no readable record", "shared"] {
             assert!(said.contains(wanted), "{said}");
         }
 
@@ -1816,6 +2144,272 @@ mod tests {
             !target.join("AGENTS.md").exists(),
             "the removal left a file this build did write"
         );
+    }
+
+    /// A backup under a scope captures something, and a neighbour's file is
+    /// not it.
+    ///
+    /// **The defect this is written from, measured on the shipped `0.0.27`:**
+    /// `owned_projection` answered with the *global* namespaces whatever scope
+    /// an operation named, so under `user_root` every verb looked for files
+    /// that were never at that root. A `~/.agents` holding skills planned a
+    /// backup whose `expected_target_digest` was the digest of the empty string
+    /// and applied it into a slot holding `slot.json` and no payload — a backup
+    /// that reports success and captures nothing, and therefore a restore that
+    /// silently puts nothing back.
+    ///
+    /// Both halves are asserted, because fixing the first without the second is
+    /// what a shared root makes easy: capturing the namespace whole would fill
+    /// the slot and revert a neighbour's file on the way back out.
+    #[test]
+    fn a_backup_under_a_scope_captures_the_files_this_build_wrote_and_no_others() {
+        let target = seeded("scoped-capture");
+        install_scoped(&target, "cap", "ours", "# ours\n");
+
+        // A neighbour writes into the same shared namespace afterwards. Under a
+        // convention root that is the ordinary case, not an intrusion.
+        let theirs = target.join("shared").join("someone-elses");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("SKILL.md"), b"another product's skill\n").unwrap();
+
+        let planned = scoped_plan(&target, "backup", "operation_01SCOPEDCAP");
+        assert_ne!(
+            planned["expected_target_digest"].as_str().unwrap(),
+            EMPTY_TREE,
+            "a target holding this provider's own files read as empty"
+        );
+        let done = scoped_apply(&target, &planned, "cap-backup");
+        assert_eq!(done["state"], "verified", "{done}");
+
+        let payload = target
+            .join(TEST.control_directory)
+            .join("backups")
+            .join(done["backup_ref"].as_str().unwrap())
+            .join("payload");
+        assert!(
+            payload
+                .join("shared")
+                .join("ours")
+                .join("SKILL.md")
+                .exists(),
+            "the capture took nothing this provider had written"
+        );
+        assert!(
+            !payload.join("shared").join("someone-elses").exists(),
+            "the capture took a neighbour's file into this provider's slot"
+        );
+    }
+
+    /// A restore under a scope leaves a neighbour's file exactly as it was.
+    ///
+    /// `replace_managed_from` says in its own header that a restore must not
+    /// revert files this provider never wrote. Under a shared root that needs a
+    /// different mechanism, not a different rule: clearing the namespace and
+    /// copying the payload over it would move every neighbour's file back to
+    /// what it was when the slot was taken.
+    #[test]
+    fn a_restore_under_a_scope_does_not_revert_a_neighbours_file() {
+        let target = seeded("scoped-restore");
+        install_scoped(&target, "res", "ours", "# ours\n");
+
+        let theirs = target.join("shared").join("someone-elses");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("SKILL.md"), b"before\n").unwrap();
+
+        let planned = scoped_plan(&target, "backup", "operation_01SCOPEDB");
+        let captured = scoped_apply(&target, &planned, "res-backup");
+        assert_eq!(captured["state"], "verified", "{captured}");
+
+        // The neighbour moves on after the slot was taken, and this provider's
+        // own file is damaged.
+        fs::write(theirs.join("SKILL.md"), b"after\n").unwrap();
+        fs::write(
+            target.join("shared").join("ours").join("SKILL.md"),
+            b"# damaged\n",
+        )
+        .unwrap();
+
+        let planned = scoped_plan(&target, "restore", "operation_01SCOPEDR");
+        let done = scoped_apply(&target, &planned, "res-restore");
+        assert_eq!(done["state"], "verified", "{done}");
+        assert_eq!(
+            fs::read_to_string(target.join("shared").join("ours").join("SKILL.md")).unwrap(),
+            "# ours\n",
+            "the restore did not return this provider's own file"
+        );
+        assert_eq!(
+            fs::read_to_string(theirs.join("SKILL.md")).unwrap(),
+            "after\n",
+            "the restore reverted a file this provider never wrote"
+        );
+    }
+
+    /// A backup writes nothing, so it must not erase the record of what was
+    /// written.
+    ///
+    /// Globally this cost nothing, because a removal reads the namespaces. Under
+    /// a scope the record *is* the inventory, so a backup that reset it to the
+    /// empty list left the next removal taking nothing while reporting success.
+    #[test]
+    fn a_backup_leaves_the_inventory_it_found() {
+        let target = seeded("inventory-survives-backup");
+        install_scoped(&target, "inv", "ours", "# ours\n");
+        let before = recorded_written(&target);
+        assert!(!before.is_empty(), "the install recorded nothing");
+
+        let planned = scoped_plan(&target, "backup", "operation_01INVENTORY");
+        let done = scoped_apply(&target, &planned, "inv-backup");
+        assert_eq!(done["state"], "verified", "{done}");
+        assert_eq!(
+            recorded_written(&target),
+            before,
+            "the backup erased the record of what this provider had written"
+        );
+    }
+
+    /// A scope this provider publishes no profile for is refused at plan time.
+    ///
+    /// The runtime used to key its scoped handling off the *request*: a harness
+    /// declaring no scope at all still behaved as though it had one for
+    /// `user_root`, and as though it had none for any other name. The
+    /// declaration decides, here as everywhere.
+    #[test]
+    fn a_scope_this_provider_never_declared_is_refused() {
+        let target = seeded("undeclared-scope");
+        let mut harness = TEST;
+        harness.scoped_projections = &[];
+        let error = dispatch(
+            &harness,
+            argv::parse(args(
+                "plan-operation",
+                &target,
+                &[
+                    "--operation",
+                    "backup",
+                    "--provider-release-digest",
+                    RELEASE,
+                    "--operation-id",
+                    "operation_01UNDECLARED",
+                    "--expires-at",
+                    far_future(),
+                    "--target-scope",
+                    "user_root",
+                ],
+            ))
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        let said = error.to_string();
+        for wanted in ["user_root", "only the global one"] {
+            assert!(said.contains(wanted), "{said}");
+        }
+    }
+
+    /// The digest of nothing, which is what every scoped reading used to be.
+    const EMPTY_TREE: &str =
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    /// Plan one operation under `user_root`.
+    fn scoped_plan(target: &Path, operation: &str, operation_id: &str) -> serde_json::Value {
+        let planned = run(args(
+            "plan-operation",
+            target,
+            &[
+                "--operation",
+                operation,
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                operation_id,
+                "--expires-at",
+                far_future(),
+                "--target-scope",
+                "user_root",
+            ],
+        ));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        planned
+    }
+
+    /// Apply a plan produced by [`scoped_plan`], with its own plan file.
+    fn scoped_apply(target: &Path, planned: &serde_json::Value, tag: &str) -> serde_json::Value {
+        let plan_path = target.join("..").join(format!("plan-scoped-{tag}.json"));
+        fs::write(&plan_path, serde_json::to_vec(&planned["plan"]).unwrap()).unwrap();
+        run(args(
+            "apply-operation",
+            target,
+            &[
+                "--plan",
+                plan_path.to_str().unwrap(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ))
+    }
+
+    /// Install one skill into the scoped namespace, the way a consumer would.
+    ///
+    /// The inventory these tests are about has to be *established under the
+    /// scope*, not inherited from a global operation: a test whose recorded
+    /// files all live in the global namespaces cannot tell a scoped clear from
+    /// a global one, and the first version of these three could not.
+    fn install_scoped(target: &Path, tag: &str, name: &str, body: &str) {
+        let relative = format!("shared/{name}/SKILL.md");
+        let (bytes, bundle_digest, artifact) = bundle_bytes(&[(&relative, body, 0o644)]);
+        let artifact_path = target.join("..").join(format!("scoped-{tag}.zip"));
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            format!("operation_01SCOPEDIN{}", tag.to_uppercase()),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "user_root".to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+
+        let plan_path = target.join("..").join(format!("scoped-{tag}-plan.json"));
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", target, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+    }
+
+    /// The files this provider's state records writing at a target.
+    fn recorded_written(target: &Path) -> Vec<String> {
+        let bytes = fs::read(target.join(TEST.state_file)).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["written_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap().to_owned())
+            .collect()
     }
 
     /// Without a scope the removal is the one it always was.
@@ -3070,6 +3664,7 @@ mod tests {
             plan_digest: RELEASE.to_owned(),
             target_precondition_digest: RELEASE.to_owned(),
             backup_ref: None,
+            target_scope: None,
         }
         .publish_prepared(&control)
         .unwrap();
@@ -3111,6 +3706,7 @@ mod tests {
             plan_digest: RELEASE.to_owned(),
             target_precondition_digest: RELEASE.to_owned(),
             backup_ref: Some(reference.clone()),
+            target_scope: None,
         }
         .publish_prepared(&control)
         .unwrap();
@@ -3494,6 +4090,86 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join(".credentials.json")).unwrap(),
             "SECRET"
+        );
+    }
+
+    /// A bundle routed to a scope installs into that scope's namespace.
+    ///
+    /// **The defect, and it made the scope unusable end to end:** ownership was
+    /// asked of the *global* namespaces whatever scope an operation named. A
+    /// consumer routing a skill to codex under `user_root` writes
+    /// `skills/<name>` — and codex declines `skills` under its own home, so
+    /// the install was refused as writing outside the surface. A scope this
+    /// provider declares, publishes a profile for, and could not be installed
+    /// into.
+    ///
+    /// The seeded global files are asserted untouched afterwards, which is the
+    /// other half: the clear before the fill used to take the global namespaces
+    /// whatever scope it was under.
+    #[test]
+    fn a_bundle_routed_to_a_scope_installs_into_that_scopes_namespace() {
+        let target = seeded("bundle-scoped");
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[("shared/review/SKILL.md", "# review\n", 0o644)]);
+        let artifact_path = target.join("..").join("scoped-bundle.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01SCOPEDBUNDLE".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "user_root".to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", &target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+
+        let plan_path = target.join("..").join("scoped-bundle-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", &target, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+        assert_eq!(
+            fs::read_to_string(target.join("shared").join("review").join("SKILL.md")).unwrap(),
+            "# review\n"
+        );
+
+        // The global namespaces belong to the other target and this operation
+        // did not name it.
+        assert!(
+            target.join("AGENTS.md").exists(),
+            "an install under a scope cleared the global target's files"
+        );
+        assert!(target.join("settings.json").exists());
+
+        // And the state records the namespaces owned *here*.
+        let recorded: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join(TEST.state_file)).unwrap()).unwrap();
+        assert_eq!(
+            recorded["native_ownership"],
+            serde_json::json!(["shared"]),
+            "the state described the global namespaces at a scoped target"
         );
     }
 

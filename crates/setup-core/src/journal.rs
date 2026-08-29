@@ -70,6 +70,22 @@ pub struct Journal {
     pub target_precondition_digest: String,
     /// The target-bound backup captured before the first write, when one exists.
     pub backup_ref: Option<String>,
+    /// The scope the interrupted operation named, when it named one.
+    ///
+    /// `recover-operation` takes no arguments — that is the argv contract — so
+    /// the only place a scope can reach a recovery is the record the operation
+    /// left behind. Without it a recovery of a scoped operation would put the
+    /// payload back over the *global* namespaces, which under `~/.agents` or a
+    /// workspace names nothing and silently restores nothing.
+    ///
+    /// Additive and defaulted rather than a schema bump: a journal written by
+    /// an older build carries no scope because that build had no scope to act
+    /// on, so absent means global and says something true. Bumping the schema
+    /// would instead make every in-flight journal from the previous release
+    /// unrecoverable, which is a worse answer to a question that has a right
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_scope: Option<String>,
 }
 
 impl Journal {
@@ -250,6 +266,7 @@ mod tests {
             plan_digest: "sha256:plan".to_owned(),
             target_precondition_digest: "sha256:target".to_owned(),
             backup_ref: Some("backup_1".to_owned()),
+            target_scope: None,
         }
     }
 

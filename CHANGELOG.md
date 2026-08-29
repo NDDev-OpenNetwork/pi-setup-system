@@ -20,6 +20,64 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-08-29
+
+A second target this program declared and could not operate.
+
+Pi Coding Agent's provider publishes a projection profile per *scope* -- a second
+target that is not the product's configuration home. The consumer gained the
+request field that names one, so a scope could finally be asked for, and asking
+for one found that every verb here answered about the **global** target
+whatever scope it was handed.
+
+Measured rather than read: a root holding two skills planned a backup whose
+expected target digest was the digest of the empty string, and applying it
+produced a backup slot with a record and no payload. **A backup that reports
+success and captures nothing**, and therefore a restore that puts nothing back.
+
+Seven places asked the same question and six had the wrong answer: the target
+identity, the capture, the replace, the pre-flight that refuses what a capture
+could not take, the ownership written into provider state, and the check that
+decides whether a bundle writes inside the declared surface -- which refused a
+component routed to a scope as *outside the surface*, so the scope this program
+published could not be installed into. Recovery had no scope at all, because
+`recover-operation` takes no arguments and nothing had written one down.
+
+Two more the fixing turned up. A `backup` recorded an empty list of written
+paths: globally harmless, because a removal reads the declared namespaces, and
+under a scope destructive, because there the record *is* the inventory a later
+removal acts on. And a scope this program declares no profile for was accepted
+and silently treated as the global target; it is refused by name now, saying
+which scopes are declared.
+
+**Under a scope the namespace is the permission and the recorded files are the
+inventory.** A root like `~/.agents` is read by several products at once, so the
+capture takes this provider's own files and a restore leaves a neighbour's
+exactly as they were. Taking the namespace whole would put somebody else's work
+in this program's backup slot and revert it on the way out.
+
+**Five of the seven setup systems declare that root now, where one did.** Each
+measured against its own pinned product with the digest checked first, three of
+them by running the product with a probe placed at the root and a control placed
+at a sibling root no document names -- because a positive without a control
+cannot be told from a program that scans everything. The four that had not
+declared it were refusing on a sentence that was true when it was written and
+had been false since the record of written paths shipped.
+
+**Five readers in this repository had never seen that second target**, all of
+them written before one existed: two checks that grade how a surface was
+measured, the toolkit that teaches an author where a component goes, this
+program's own support page, and the lifecycle probe. Repairing the first two
+found six surface rows in shipped records that said nothing at all about what
+had exercised them, under a check that had been green for weeks because it was
+green about the rows it looked at.
+
+A tree walk also stopped refusing when a file vanished between being listed and
+being read. Two programs writing one target is ordinary; the second is refused
+by a lock, and the reading that happens before that lock could meet a name that
+was already gone. It said so by naming a filesystem instead of naming the lock,
+and the race written to reproduce it found two further gaps of the same kind.
+
 ## [0.0.27] - 2026-08-29
 
 A check that reports into an issue rather than failing had its

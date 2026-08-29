@@ -248,8 +248,7 @@ pub fn of_owned(root: &Path, namespaces: &[&str], excluded: &[&str]) -> Result<S
                 .with_source(source));
             }
             Ok(metadata) => {
-                describe(root, &path, &metadata, &mut entries)?;
-                if metadata.is_dir() {
+                if describe(root, &path, &metadata, &mut entries)? && metadata.is_dir() {
                     collect(root, &path, excluded, &mut entries)?;
                 }
             }
@@ -300,21 +299,67 @@ fn fold(entries: Vec<(String, String, String)>) -> String {
 }
 
 /// Describe one entry as the digest records it: path, kind, and content.
+/// Describe one entry, or report that it went away while being described.
+///
+/// `false` means the entry vanished between being listed and being read. Every
+/// step of a walk is a separate syscall against a tree somebody else may be
+/// writing, and the gap this covers is not one gap but three: the listing to
+/// the stat, the stat to the open, and the stat to the link read. Closing only
+/// the first moved the refusal from `cannot stat` to `cannot open`, which is
+/// how the second and third came to be measured -- by a race test that found
+/// them rather than by reading for them.
+///
+/// Only `NotFound` is tolerated. A file this process may not read is a real
+/// refusal and stays one: "it is gone" and "I am not allowed" are different
+/// facts and a walk that conflated them would hash a target as smaller than it
+/// is.
+/// Whether a failed read was a file going away underneath the walk.
+///
+/// **`NotFound` is the Unix answer and only half of it.** On Windows a delete
+/// is not immediate: the file enters a *delete-pending* state while any handle
+/// remains open, and an attempt to open it in that window returns
+/// `ERROR_ACCESS_DENIED`, which Rust maps to `PermissionDenied`. So the first
+/// version of this tolerance passed on Linux and macOS and failed on Windows,
+/// with `cannot open …\skills\3.md` — the fourth defect this estate has shipped
+/// of one shape: two correct halves and a bad joint at the platform.
+///
+/// So the question is asked of the path rather than of the error kind. If it is
+/// no longer there, the failure was a race. If it is still there, this process
+/// genuinely cannot read it and that is a refusal — *"it is gone"* and *"I am
+/// not allowed"* stay different facts, and a walk that conflated them would
+/// hash a target as smaller than it is.
+///
+/// The second check is safe where it is used: `read_dir` on the parent has
+/// already succeeded, so the entries of a directory this walk is inside can be
+/// stated. A path that cannot be stated from there is one that is not there.
+///
+/// `symlink_metadata` rather than `exists()`, because the question is *is there
+/// an entry here* and not *does it resolve*. A dangling symbolic link is an
+/// entry — `exists()` follows it and answers false, which would have this
+/// report a link that is really there as one that vanished.
+fn vanished_under_us(path: &Path, source: &std::io::Error) -> bool {
+    source.kind() == std::io::ErrorKind::NotFound || fs::symlink_metadata(path).is_err()
+}
+
 fn describe(
     root: &Path,
     path: &Path,
     metadata: &fs::Metadata,
     out: &mut Vec<(String, String, String)>,
-) -> Result<()> {
+) -> Result<bool> {
     let relative = relative_slash_path(root, path)?;
     if metadata.is_symlink() {
-        let destination = fs::read_link(path).map_err(|source| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!("cannot read link {}", path.display()),
-            )
-            .with_source(source)
-        })?;
+        let destination = match fs::read_link(path) {
+            Ok(destination) => destination,
+            Err(source) if vanished_under_us(path, &source) => return Ok(false),
+            Err(source) => {
+                return Err(Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("cannot read link {}", path.display()),
+                )
+                .with_source(source));
+            }
+        };
         out.push((
             relative,
             "link".to_owned(),
@@ -323,11 +368,25 @@ fn describe(
     } else if metadata.is_dir() {
         out.push((relative, "dir".to_owned(), String::new()));
     } else {
-        let content = of_file(path)?;
+        let Some(content) = of_file_if_present(path)? else {
+            return Ok(false);
+        };
         let executable = if is_executable(metadata) { "x" } else { "-" };
         out.push((relative, format!("file:{executable}"), content));
     }
-    Ok(())
+    Ok(true)
+}
+
+/// [`of_file`], answering `None` for a file that is no longer there.
+///
+/// See [`vanished_under_us`]: the error kind alone is the Unix half of the
+/// question, and this one is asked on every platform.
+fn of_file_if_present(path: &Path) -> Result<Option<String>> {
+    match of_file(path) {
+        Ok(digest) => Ok(Some(digest)),
+        Err(error) if error.is_missing_path() || fs::symlink_metadata(path).is_err() => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn collect(
@@ -356,15 +415,37 @@ fn collect(
         if current == root && excluded_top_level.contains(&relative.as_str()) {
             continue;
         }
-        let metadata = fs::symlink_metadata(&path).map_err(|source| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!("cannot stat {}", path.display()),
-            )
-            .with_source(source)
-        })?;
+        // An entry named by `read_dir` and gone by the time it is stated is a
+        // *race*, not a failure of the target. Two processes on one target is
+        // an ordinary state -- the second is refused by the lock -- and its
+        // identity walk runs before that lock is taken. It read as
+        // `provider_unavailable: cannot stat <path>`, so a concurrent install
+        // was correctly refused with a reason that named a filesystem instead
+        // of naming the lock, once in roughly forty runs.
+        //
+        // Skipped rather than refused, and the digest is then a snapshot of a
+        // target that was moving. That is the honest answer: taken before the
+        // lock it is advisory and a plan built on it goes stale, which is
+        // exactly what should happen. Under the lock nothing else is writing,
+        // so nothing here can vanish and the digest is exact.
+        //
+        // The same arm already exists a hundred lines up, for a namespace root
+        // that is not there. This is the entry-level half of the same fact.
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(source) if vanished_under_us(&path, &source) => continue,
+            Err(source) => {
+                return Err(Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("cannot stat {}", path.display()),
+                )
+                .with_source(source));
+            }
+        };
 
-        describe(root, &path, &metadata, out)?;
+        if !describe(root, &path, &metadata, out)? {
+            continue;
+        }
         if metadata.is_dir() && !metadata.is_symlink() {
             collect(root, &path, excluded_top_level, out)?;
         }
@@ -503,5 +584,117 @@ mod tests {
     fn a_missing_root_is_an_invalid_target_not_an_io_error() {
         let error = of_tree(std::path::Path::new("/definitely/not/here")).unwrap_err();
         assert_eq!(error.reason(), ReasonCode::InvalidTarget);
+    }
+
+    /// The joint between "gone" and "not allowed", asked on every platform.
+    ///
+    /// The first version of this tolerance matched `ErrorKind::NotFound` and
+    /// nothing else. That is the Unix answer: on Windows a delete is not
+    /// immediate, the file enters *delete-pending* while any handle is open,
+    /// and opening it there returns `ERROR_ACCESS_DENIED` -- `PermissionDenied`
+    /// in Rust. Every one of the seven published trees failed
+    /// `rust / test (windows-latest)` with `cannot open …\skills\3.md` while
+    /// Linux and macOS were green, which is the fourth defect this estate has
+    /// shipped of one shape: two correct halves and a bad joint at the platform.
+    ///
+    /// The race test next door cannot catch it here -- it only races on the
+    /// platform it runs on. This one states the rule directly, so both answers
+    /// are asserted from either system.
+    #[test]
+    fn a_read_that_failed_is_a_race_only_when_the_path_is_gone() {
+        let root = scratch("vanished-joint");
+        let present = root.join("still-here.md");
+        fs::write(&present, b"x").unwrap();
+        let absent = root.join("never-was.md");
+
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        // Gone, whatever the kernel called it. This is the Windows case.
+        assert!(vanished_under_us(&absent, &denied));
+        assert!(vanished_under_us(&absent, &missing));
+
+        // Still there and unreadable is a refusal, and stays one: "it is gone"
+        // and "I am not allowed" are different facts, and a walk that treated
+        // the second as the first would hash a target as smaller than it is.
+        assert!(!vanished_under_us(&present, &denied));
+
+        // A `NotFound` about a path that is there is still a race -- the entry
+        // could have been recreated between the failure and this check.
+        assert!(vanished_under_us(&present, &missing));
+
+        // **A dangling symbolic link is an entry that is there.** This is the
+        // whole reason the check asks `symlink_metadata` rather than
+        // `exists()`: the second follows the link, answers false, and would
+        // have `describe` treat a link whose `read_link` failed as vanished --
+        // silently dropping it from the digest of a target that contains it.
+        //
+        // Creating one is privileged on Windows, so the assertion runs on Unix
+        // and the branch it protects runs on both. That asymmetry is in the
+        // test and not in the code: `vanished_under_us` takes the path as an
+        // argument and has no `cfg!` in it, which is what lets the three
+        // assertions above be checked from either system.
+        #[cfg(unix)]
+        {
+            let dangling = root.join("points-nowhere");
+            std::os::unix::fs::symlink(root.join("no-such-target"), &dangling).unwrap();
+            assert!(!dangling.exists(), "the link must not resolve");
+            assert!(
+                !vanished_under_us(&dangling, &denied),
+                "a link that is there read as vanished because it does not resolve"
+            );
+        }
+    }
+
+    /// An entry that vanishes between the listing and the stat is a race.
+    ///
+    /// Two processes on one target is an ordinary state: the second is refused
+    /// by the lock, and its identity walk runs *before* that lock is taken. So
+    /// the walk can list a name the other process is deleting, and it refused
+    /// with `provider_unavailable: cannot stat <path>` -- a concurrent install
+    /// correctly refused with a reason that named a filesystem rather than the
+    /// lock. Seen in the cursor lifecycle probe, roughly once in forty runs.
+    ///
+    /// Raced rather than mocked, because the defect is a race and a mock of one
+    /// proves the mock. The writer churns while the reader walks; before the
+    /// fix this reached `cannot stat` within a few hundred passes, and it is
+    /// asserted here that *no* pass refuses. A pass that finds nothing to skip
+    /// is not a failure of the test -- the assertion is that the walk never
+    /// refuses, which is true whether or not the race is hit on a given run.
+    #[test]
+    fn a_walk_racing_a_writer_skips_what_vanishes_rather_than_refusing() {
+        let root = scratch("racing-writer");
+        fs::create_dir_all(root.join("skills")).unwrap();
+        for index in 0..64 {
+            fs::write(root.join("skills").join(format!("{index}.md")), b"x").unwrap();
+        }
+
+        let churn = root.join("skills");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                for index in 0..64 {
+                    let path = churn.join(format!("{index}.md"));
+                    let _ = fs::remove_file(&path);
+                    let _ = fs::write(&path, b"x");
+                }
+            }
+        });
+
+        let mut refusals = Vec::new();
+        for _ in 0..200 {
+            if let Err(error) = of_owned(&root, &["skills"], &[]) {
+                refusals.push(error.to_string());
+                break;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+
+        assert!(
+            refusals.is_empty(),
+            "a walk racing a writer refused instead of skipping: {refusals:?}"
+        );
     }
 }
