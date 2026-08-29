@@ -524,6 +524,125 @@ def the_product_reads_our_setup(
     print(f"-> {baseline!r} under baseline, {full_auto!r} under full-auto")
 
 
+
+def owned_surfaces_named_by_the_product(binary: str, prefix: Path, info: dict) -> None:
+    """Report which owned namespaces the installed product names in its own bytes.
+
+    Every row in a baseline's `native_surfaces` carries an `evidence` value
+    saying what exercised it -- `ran`, `bytes`, or `page` alone. A `page` row is
+    not suspicious; it is **unfalsifiable from inside the repository**, which is
+    a worse property, and this estate has shipped exactly one wrong fact of that
+    kind: a manifest filename that had a citation, sat beside correct rows, and
+    passed every check here.
+
+    Thirty-one rows were moved off `page` by a person opening each artifact by
+    hand, once per harness. This is that pass, mechanised, so it reruns on a
+    schedule against the bytes actually installed instead of being redone.
+
+    **It reports and never promotes.** Writing an `evidence` value still takes
+    somebody recording what they measured, and `tools/derive_evidence.py --check`
+    refuses a value stronger than a row's own prose supports. Two instruments
+    with one opinion between them would be one instrument.
+
+    **Both inputs are asked of their owner rather than copied.** The namespaces
+    come from `provider-info` and the configuration home from the binary's own
+    first lines -- so a declaration that moves cannot leave this measuring the
+    old one. There is no baseline read here at all.
+
+    **The control is not optional.** A namespace no product could own is
+    searched for alongside the real ones. If it is found, the search is matching
+    something other than what it means to and every hit in the run is worthless;
+    if the real ones are all absent *and* the control is absent, that is a
+    reading rather than a broken instrument. Without it, "everything was found"
+    and "the search matches everything" look identical.
+    """
+    profile = info.get("projection_profile") or {}
+    namespaces = list(profile.get("native_namespaces") or [])
+    if not namespaces:
+        print("surfaces -> this build declares none, so there is nothing to look for")
+        return
+
+    said = subprocess.run(
+        [binary], capture_output=True, text=True, timeout=60, check=False
+    ).stdout
+    leaf = ""
+    for line in said.splitlines():
+        if "configuration home" in line.lower():
+            # `Documented configuration home: ~/.claude (CLAUDE_CONFIG_DIR)`
+            home = line.split(":", 1)[1].strip().split(" ")[0]
+            leaf = home.rstrip("/").rsplit("/", 1)[-1]
+            break
+
+    # A name nothing can own, shaped like the others so it is searched the same
+    # way. If this is ever found the run says so and reports nothing else.
+    control = "nddev-no-product-owns-this"
+    wanted: dict[str, list[str]] = {}
+    for namespace in namespaces + [control]:
+        forms = [f"{leaf}/{namespace}"] if leaf else []
+        forms.append(namespace)
+        wanted[namespace] = forms
+
+    counts = {namespace: {form: 0 for form in forms} for namespace, forms in wanted.items()}
+    needles = [
+        (namespace, form, form.encode("utf-8"))
+        for namespace, forms in wanted.items()
+        for form in forms
+    ]
+    scanned = 0
+    for path in sorted(prefix.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            blob = path.read_bytes()
+        except OSError:
+            continue
+        scanned += 1
+        for namespace, form, needle in needles:
+            found = blob.count(needle)
+            if found:
+                counts[namespace][form] += found
+
+    if any(counts[control].values()):
+        print(
+            f"surfaces -> REFUSED: the control {control!r} was found, so this "
+            "search is matching something other than a path and every count in "
+            "it is worthless"
+        )
+        return
+
+    print(
+        f"surfaces -> {scanned} files scanned under {leaf or 'no documented home'}, "
+        "control absent as it must be"
+    )
+    anchored_found = 0
+    for namespace in namespaces:
+        anchor = f"{leaf}/{namespace}" if leaf else ""
+        if anchor and counts[namespace].get(anchor):
+            anchored_found += 1
+            print(f"   {namespace:34} {counts[namespace][anchor]:6} x {anchor}")
+            continue
+        bare = counts[namespace].get(namespace, 0)
+        if bare:
+            # Deliberately not a count. `agents` appears 1649 times in one
+            # product's bundle as identifiers, keys and prose, and printing that
+            # number beside an anchored 89 invites reading the larger as the
+            # stronger. A bare name is **not evidence of a route**: it is a
+            # common word that happens to match, and the honest report of it is
+            # that the anchored form was not found.
+            print(
+                f"   {namespace:34} only the bare name, which proves nothing: "
+                "the product may join this to a directory at runtime, in which "
+                "case no literal exists to find"
+            )
+        else:
+            print(f"   {namespace:34} named nowhere in the installed bytes")
+    print(
+        f"   {anchored_found} of {len(namespaces)} anchored. Recording one as "
+        "`bytes` still takes writing down what was measured; this says only what "
+        "is there, and an absence argues nothing in either direction."
+    )
+
+
 def software_lifecycle(
     binary: str, harness: str, writes: list[str] | None, absent: str, probe: dict
 ) -> None:
@@ -584,6 +703,8 @@ def software_lifecycle(
                 f"{applied.get('reason')} {applied.get('detail')}"
             )
         print(f"-> verified, {applied['version']}, {applied['files']} files")
+
+        owned_surfaces_named_by_the_product(binary, prefix, info)
 
         print("read  ", end="", flush=True)
         said = run_text([binary, "software", "--prefix", str(prefix)])
