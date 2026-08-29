@@ -562,6 +562,32 @@ def owned_surfaces_named_by_the_product(binary: str, prefix: Path, info: dict) -
         print("surfaces -> this build declares none, so there is nothing to look for")
         return
 
+    # The second target, if this build declares one. This read the global
+    # profile alone -- the fifth reader in this estate written before a scope
+    # existed and not revisited when one did.
+    #
+    # A scoped namespace is `skills`, which as a literal means nothing: it is in
+    # every product that has skills at all. What is searchable is the namespace
+    # *anchored to its root*, and the root is not a per-profile field -- it is
+    # what the scope's name means. The consumer says so in its own routing
+    # table: *"the path is right only together with the root it hangs off, and
+    # the root is what `target_scope` names. Under `user_root` the provider's
+    # target is `~/.agents`."* So the leaf below is a contract fact, cited, and
+    # not a guess about where a person keeps their files.
+    scope_roots = {"user_root": ".agents"}
+    scoped: list[tuple[str, str, str]] = []
+    for scope in info.get("scoped_projection_profiles") or []:
+        named = str(scope.get("target_scope", ""))
+        root = scope_roots.get(named)
+        if root is None:
+            # A scope this file has no documented root for. Said rather than
+            # skipped: an unmeasured surface that prints nothing is
+            # indistinguishable from one that was measured and found.
+            print(f"surfaces -> {named} has no documented root here; not searched")
+            continue
+        for namespace in scope.get("native_namespaces") or []:
+            scoped.append((named, root, namespace))
+
     said = subprocess.run(
         [binary], capture_output=True, text=True, timeout=60, check=False
     ).stdout
@@ -581,6 +607,11 @@ def owned_surfaces_named_by_the_product(binary: str, prefix: Path, info: dict) -
         forms = [f"{leaf}/{namespace}"] if leaf else []
         forms.append(namespace)
         wanted[namespace] = forms
+
+    # Each scoped namespace is searched only in its anchored form, for the
+    # reason above: the bare name is not evidence about a root.
+    for _, root, namespace in scoped:
+        wanted[f"{root}/{namespace}"] = [f"{root}/{namespace}"]
 
     counts = {namespace: {form: 0 for form in forms} for namespace, forms in wanted.items()}
     needles = [
@@ -614,6 +645,12 @@ def owned_surfaces_named_by_the_product(binary: str, prefix: Path, info: dict) -
         f"surfaces -> {scanned} files scanned under {leaf or 'no documented home'}, "
         "control absent as it must be"
     )
+    for named, root, namespace in scoped:
+        anchor = f"{root}/{namespace}"
+        hits = counts[anchor][anchor]
+        verdict = f"{hits:6} x {anchor}" if hits else f"       not named as {anchor}"
+        print(f"   {named + '/' + namespace:34} {verdict}")
+
     anchored_found = 0
     for namespace in namespaces:
         anchor = f"{leaf}/{namespace}" if leaf else ""

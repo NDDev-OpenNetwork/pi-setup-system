@@ -75,14 +75,20 @@ Two versions, two different answers, both measured:
 | --- | --- |
 | `ai-stp-cli` 0.0.3 | five pass; Codex and Antigravity report `conforms=false`, detail *fields differ from the closed v3 schema* |
 | `ai-stp-cli` 0.0.7 | six pass 23 of 23; Codex reports `conforms=false`, detail *a scoped projection profile names an unknown target scope* |
+| `ai-stp-cli` 0.0.8 | **all seven pass**, 27 to 29 cases each |
 
-The remaining one is not a defect in this build. `0.0.7` carries the field but
-its scope enum is `["project"]` alone, while the provider kit this program
-vendors and verifies byte-for-byte -- kit `0.2.4`,
-`provider-info.schema.json` -- gives `["project", "user_root"]`. The kit is the
-artifact a provider is told to build against, so a build that declares
-`user_root` is right by the document it was handed and wrong by the checker
-shipped beside it. Raised with the consumer, who owns both.
+The middle row was never a defect in this build, and the third row is how that
+was settled: **it closed with no change on this side.** `0.0.7` carried the
+field but its scope enum was `["project"]` alone, while the provider kit this
+program vendors and verifies byte-for-byte gave `["project", "user_root"]`. The
+kit is the artifact a provider is told to build against, so a build declaring
+`user_root` was right by the document it was handed and wrong by the checker
+shipped beside it. `0.0.8` shipped the enum, and a declaration that had been
+correct for a month started being read as correct.
+
+**Withdrawing a correct declaration to make a lagging instrument print green is
+never the answer here.** The three rows above are the argument for that, and
+they are also the argument for the rule this section exists for.
 
 Which is the general rule this section exists for: **check the version of the
 checker before suspecting this build**, and prefer the newest, because an older
@@ -170,14 +176,26 @@ Configuration home as the product documents it: `~/.pi/agent`.
 A path routing no component kind is owned so a setup can carry it;
 nothing compiles a component to it.
 
+### A second target: `target_scope: user_root`
+
+Rooted at `~/.agents`, which is not the configuration home
+above. A consumer reaches it by naming the scope on the request, and
+every path below is relative to that root.
+
+| Path | Component kinds routed here | Decided by |
+| --- | --- | --- |
+| `skills` | `skill` | measured from the product's own bytes |
+
+This root is read by several products at once, so under this scope
+`remove`, the backup and a restore act on the files this program
+recorded writing rather than on the directory whole. A neighbour's
+files are never captured into a backup slot here, and never reverted
+by a restore.
+
 ### Considered and not owned
 
 Everything named here is left exactly as it was found, like any
 other file beside a target.
-
-**`$HOME/.agents/skills`** -- Pi is a second product that reads the user-level convention root, and this is measured from the product rather than from a page. In the pinned 0.84.3 bundle, package/dist/core/package-manager.js:1976 builds `userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills")` and line 2017 loads from it: `addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), ...)`. Line 2012 names the root itself as `userAgentsBaseDir = dirname(userAgentsSkillsDir)`. A neighbouring use in trust-manager.js:160 *excludes* this directory while walking up for a project-scoped one, which is what a first reading of the variable name would have mistaken for the read -- so the line that matters is 2017, not 1976.
-
-Not declared as a user_root scoped profile, though Codex declares exactly that shape (codex/native-files/user-root/1, namespace `skills`, kind `skill`) for the same directory. Two providers owning one path is not two owners: `remove_managed` walks native_namespaces and calls remove_dir_all on each, so a namespace goes whole, and either provider's remove under this scope would take the other's skills. Recoverable -- the capture runs first and restore returns them byte-exact -- but a shared root wants one answer about who owns it, and that answer is the consumer's and the owner's rather than this provider's to assume. Raised. ([source](measured from the pinned 0.84.3 bundle (sha256:d07dc417...), package/dist/core/package-manager.js:1976,2012,2017))
 
 **`.pi-setup-system`** -- This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is. ([source](this provider's own contract; no vendor page is involved))
 

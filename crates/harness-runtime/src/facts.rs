@@ -205,7 +205,39 @@ impl Harness {
     /// once, and the catalog refused every setup the wire would have accepted.
     #[must_use]
     pub fn owns(&self, path: &str) -> bool {
-        self.native_namespaces.iter().any(|namespace| {
+        Self::within(self.native_namespaces, path)
+    }
+
+    /// Whether a path falls inside the namespaces the named scope owns.
+    ///
+    /// The check a bundle install has to make once a scope is known. `owns`
+    /// answers for the global target and answered for every target: a bundle
+    /// routing a skill to codex under `user_root` writes `skills/<name>`, codex
+    /// **declines** `skills` under its own home, and so the install was refused
+    /// as writing outside the surface — a scope the provider declares and
+    /// cannot be installed into.
+    #[must_use]
+    pub fn owns_at(&self, path: &str, scope: Option<TargetScope>) -> bool {
+        Self::within(self.owned_projection(scope), path)
+    }
+
+    /// Whether *any* target this provider declares owns a path.
+    ///
+    /// `validate-bundle` is handed a bundle and a target and no scope — that is
+    /// the argv contract — so the question it can answer is "could this
+    /// provider install this bundle at all", not "at this scope". Plan and
+    /// apply know the scope and ask the exact question with [`Self::owns_at`].
+    #[must_use]
+    pub fn owns_anywhere(&self, path: &str) -> bool {
+        self.owns(path)
+            || self
+                .scoped_projections
+                .iter()
+                .any(|scoped| Self::within(scoped.native_namespaces, path))
+    }
+
+    fn within(namespaces: &[&str], path: &str) -> bool {
+        namespaces.iter().any(|namespace| {
             path == *namespace
                 || path
                     .strip_prefix(namespace)
@@ -231,16 +263,46 @@ impl Harness {
         )
     }
 
-    /// The projection this provider owns, which is what its identity is over.
+    /// The scoped profile a named scope selects, when this harness declares one.
     ///
-    /// Exactly `native_namespaces`. It is a method rather than a field access so
-    /// that every caller asking "what is this target's identity" goes through
-    /// one name — the defect behind `ai_stp#417` was that the one caller
-    /// answering that question answered it differently from the four that
-    /// mutate.
+    /// `None` for the global target — including for an explicit
+    /// `TargetScope::Global`, which *is* the global block rather than a fourth
+    /// declaration of it.
     #[must_use]
-    pub const fn owned_projection(&self) -> &'static [&'static str] {
-        self.native_namespaces
+    pub fn scoped_for(&self, scope: Option<TargetScope>) -> Option<Scoped> {
+        let named = scope?;
+        self.scoped_projections
+            .iter()
+            .find(|scoped| scoped.target_scope == named)
+            .copied()
+    }
+
+    /// The projection this provider owns **at the target a scope names**.
+    ///
+    /// It is a method rather than a field access so that every caller asking
+    /// "what is this target's identity" goes through one name — the defect
+    /// behind `ai_stp#417` was that the one caller answering that question
+    /// answered it differently from the four that mutate.
+    ///
+    /// It took a scope for the same reason, one release later and for a worse
+    /// version of the same defect. `scoped_projections` gave two harnesses a
+    /// second target — codex's `~/.agents` under `user_root`, antigravity's
+    /// workspace under `project` — and this method kept answering with the
+    /// *global* namespaces. Measured on the shipped `0.0.27`: a `~/.agents`
+    /// holding two skills planned a backup whose `expected_target_digest` was
+    /// the digest of the empty string, and applying it produced a slot with a
+    /// `slot.json` and no payload. A backup that reports success and captures
+    /// nothing.
+    ///
+    /// The declaration was scope-aware and so was `remove`. The identity, the
+    /// capture, the replace and the recorded ownership were not: five facts,
+    /// one compared.
+    #[must_use]
+    pub fn owned_projection(&self, scope: Option<TargetScope>) -> &'static [&'static str] {
+        match self.scoped_for(scope) {
+            Some(scoped) => scoped.native_namespaces,
+            None => self.native_namespaces,
+        }
     }
 
     /// Paths that are not part of this target's identity even so.

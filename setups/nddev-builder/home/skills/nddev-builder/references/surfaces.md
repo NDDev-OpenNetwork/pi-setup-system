@@ -38,11 +38,27 @@ the kind it would carry already routes somewhere else. One kind on two
 surfaces makes a consumer's route ambiguous, and the guard in
 `harness_runtime::surfaces` refuses it by name.
 
+## A second target: `target_scope: user_root`
+
+Rooted at `~/.agents`, which is **not** this product's configuration
+home. A consumer reaches it by naming the scope on the request, and
+every path below is relative to that root rather than to the home
+above -- writing the root into the path again would nest it twice.
+
+| path | routes | shape | decided by | exercised by |
+| --- | --- | --- | --- | --- |
+| `skills` | skill | directory | measured from the pinned bundle, digest verified before reading (pi 0.84.4, package/dist/core/package-manager.js) | read its bytes |
+
+**Under a scope the namespace is the permission and the recorded
+files are the inventory.** A root like this one is read by several
+products at once, so `remove`, the capture and a restore all act on
+the files this provider recorded writing -- never on the namespace
+whole, which would take or revert a neighbour's work.
+
 ## Considered and not owned
 
-14 rows. Each records what was searched, so the next reader does not repeat the search:
+13 rows. Each records what was searched, so the next reader does not repeat the search:
 
-- **`$HOME/.agents/skills`** — Pi is a second product that reads the user-level convention root, and this is measured from the product rather than from a page. In the pinned 0.84.3 bundle, package/dist/core/package-manager.js:1976 builds `userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills")` and line 2017 loads from it: `addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), ...)`. Line 2012 names the root itself as `userAgentsBaseDir = dirname(userAgentsSkillsDir)`. A neighbouring use in trust-manager.js:160 *excludes* this directory while walking up for a project-scoped one, which is what a first reading of the variable name would have mistaken for the read -- so the line that matters is 2017, not 1976.
 - **`.pi-setup-system`** — This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is.
 - **`AGENTS.override.md`** — Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away.
 - **`NDDEV-PI-PROVIDER.json`** — This provider's own state file: which setup is applied, the identity it recorded, and which slot reverses the last operation. Written by every operation and excluded from target identity, because counting it would leave a target different from the identity the operation just wrote. Not a projection surface and never ownable as one.

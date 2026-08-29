@@ -101,6 +101,21 @@ impl Error {
         self
     }
 
+    /// Whether the cause underneath was "that path is not there".
+    ///
+    /// Asked by the tree walk, which meets three separate gaps between listing
+    /// an entry and reading it and must tell a racing writer from a real
+    /// failure. The source is kept as a boxed `dyn Error`, so the io kind is
+    /// recovered by downcast rather than by matching on the message -- a guard
+    /// that matched prose would measure how a failure was described.
+    #[must_use]
+    pub fn is_missing_path(&self) -> bool {
+        self.source
+            .as_ref()
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
+    }
+
     /// The stable reason code.
     #[must_use]
     pub const fn reason(&self) -> ReasonCode {

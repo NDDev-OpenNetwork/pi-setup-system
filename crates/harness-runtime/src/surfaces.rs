@@ -307,6 +307,34 @@ fn owned_paths_fold_together(harness: &Harness, found: &mut Vec<String>) {
     }
 }
 
+/// A scope's namespaces must not be the global set.
+///
+/// `status` takes a target and no scope — that is the argv contract — so it
+/// recovers the scope from `native_ownership`, the namespaces the state records
+/// as owned *here*. That recovery is a lookup, and a lookup needs its keys to be
+/// distinct: a scoped profile declaring exactly the global set would make a
+/// plain managed target read as scoped, and `status` would then answer about the
+/// wrong inventory for a target nobody operated under a scope.
+///
+/// None of the seven does this, and the reason to state it is that the recovery
+/// *depends* on none of them doing it. An invariant a reader has to notice is an
+/// invariant somebody removes.
+fn a_scope_is_distinguishable_from_the_global_target(harness: &Harness, found: &mut Vec<String>) {
+    for scoped in harness.scoped_projections {
+        let same = scoped.native_namespaces.len() == harness.native_namespaces.len()
+            && scoped
+                .native_namespaces
+                .iter()
+                .all(|name| harness.native_namespaces.contains(name));
+        if same {
+            found.push(format!(
+                "the {} scope owns exactly the namespaces the global target owns, so a                  managed global target reads back as scoped and `status` answers about the                  wrong inventory. Declare what the scope's own root holds.",
+                scoped.target_scope.as_str()
+            ));
+        }
+    }
+}
+
 fn policy_is_not_owned(harness: &Harness, found: &mut Vec<String>) {
     let owned: Vec<&str> = harness
         .native_namespaces
@@ -332,19 +360,58 @@ fn policy_is_not_owned(harness: &Harness, found: &mut Vec<String>) {
     }
 }
 
-fn silent_about_routing_nothing(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
-    let Some(rows) = baseline
-        .get(BLOCK)
-        .and_then(|block| block.get("surfaces"))
+/// Every owned surface row in a baseline, with the namespaces it is judged by.
+///
+/// Both guards below walked `surfaces` alone while two harnesses declared a
+/// second target. Codex has published `user_root` and antigravity `project` for
+/// weeks, and their scoped rows were checked by neither: codex's carried no
+/// `evidence` field at all and `evidence_is_recorded` stayed green, because it
+/// was green about the rows it looked at and silent about the rest.
+///
+/// A row is matched against the namespaces of *its own block*: a scoped path is
+/// relative to that scope's root and is not a member of the global set, so
+/// judging it by the global one would skip every scoped row on the way in.
+fn owned_rows<'a>(
+    harness: &Harness,
+    block: &'a Value,
+) -> Vec<(&'a Value, &'static [&'static str])> {
+    let mut rows: Vec<(&Value, &'static [&'static str])> = Vec::new();
+    if let Some(global) = block.get("surfaces").and_then(Value::as_array) {
+        rows.extend(global.iter().map(|row| (row, harness.native_namespaces)));
+    }
+    for scope in block
+        .get("scoped")
         .and_then(Value::as_array)
-    else {
+        .map_or(&[][..], Vec::as_slice)
+    {
+        let Some(named) = scope.get("target_scope").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(declared) = harness
+            .scoped_projections
+            .iter()
+            .find(|scoped| scoped.target_scope.as_str() == named)
+        else {
+            continue;
+        };
+        if let Some(entries) = scope.get("surfaces").and_then(Value::as_array) {
+            rows.extend(entries.iter().map(|row| (row, declared.native_namespaces)));
+        }
+    }
+    rows
+}
+
+fn silent_about_routing_nothing(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    let Some(block) = baseline.get(BLOCK) else {
         return;
     };
-    for row in rows {
+    // Every owned row, global and scoped: `owned_rows` says why both guards
+    // needed the second half.
+    for (row, owned) in owned_rows(harness, block) {
         let Some(path) = row.get("path").and_then(Value::as_str) else {
             continue;
         };
-        if !harness.native_namespaces.contains(&path) {
+        if !owned.contains(&path) {
             continue;
         }
         let routes = row
@@ -923,18 +990,14 @@ fn writes_where_nothing_is_routed(harness: &Harness, baseline: &Value, found: &m
 /// most of them -- which is the reason to render it rather than to hide it.
 fn evidence_is_recorded(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
     const ALLOWED: [&str; 3] = ["ran", "bytes", "page"];
-    let Some(rows) = baseline
-        .get(BLOCK)
-        .and_then(|block| block.get("surfaces"))
-        .and_then(Value::as_array)
-    else {
+    let Some(block) = baseline.get(BLOCK) else {
         return;
     };
-    for row in rows {
+    for (row, owned) in owned_rows(harness, block) {
         let Some(path) = row.get("path").and_then(Value::as_str) else {
             continue;
         };
-        if !harness.native_namespaces.contains(&path) {
+        if !owned.contains(&path) {
             continue;
         }
         match row.get("evidence").and_then(Value::as_str) {
@@ -967,6 +1030,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     shares_a_name_with_the_protocol(baseline, &mut found);
     credentials_are_disclaimed(harness, baseline, &mut found);
     policy_is_not_owned(harness, &mut found);
+    a_scope_is_distinguishable_from_the_global_target(harness, &mut found);
     owned_paths_fold_together(harness, &mut found);
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
@@ -1122,6 +1186,27 @@ mod tests {
                     "note": "measured by reading the product",
                 },
                 "surfaces": surfaces,
+                // The second target this harness declares. A fixture standing
+                // for a real baseline has to source every scope the harness
+                // publishes, because a scope declared and unsourced is exactly
+                // the state this guard exists to name.
+                "scoped": [
+                    {
+                        "target_scope": "user_root",
+                        "root": "~/.agents",
+                        "surfaces": [
+                            {
+                                "path": "shared",
+                                "kinds": ["skill"],
+                                "shape": "directory",
+                                "source": "this fixture's own contract",
+                                "evidence": "page",
+                                "note": "the scoped namespace, relative to the scope's own root",
+                            },
+                        ],
+                        "declined": [],
+                    },
+                ],
                 // The two paths that are the provider's own. Every real
                 // baseline records them, so the fixture that stands for one
                 // must too.
@@ -1369,6 +1454,30 @@ mod tests {
     ///
     /// The pair is one path on macOS and Windows and two on Linux, so the same
     /// declaration would mean different things per platform.
+    /// Observed failing on a scope that owns exactly what the global target does.
+    #[test]
+    fn a_scope_that_owns_the_global_set_is_refused() {
+        let mut clean = Vec::new();
+        a_scope_is_distinguishable_from_the_global_target(&TEST, &mut clean);
+        assert_eq!(clean, Vec::<String>::new(), "{clean:?}");
+
+        let mut harness = TEST;
+        harness.scoped_projections = &[crate::facts::Scoped {
+            target_scope: provider_v3::TargetScope::UserRoot,
+            profile_id: "test/native-files/user-root/1",
+            component_kinds: &[],
+            projection_kinds: &[],
+            // Reordered as well as equal, because the check is on the set: a
+            // permutation is the same declaration and would fool a comparison
+            // written on the slices.
+            native_namespaces: &["skills", "AGENTS.md", "settings.json"],
+        }];
+        let mut found = Vec::new();
+        a_scope_is_distinguishable_from_the_global_target(&harness, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("reads back as scoped"), "{found:?}");
+    }
+
     #[test]
     fn two_owned_paths_that_fold_together_are_refused() {
         let mut found = Vec::new();
@@ -1477,6 +1586,20 @@ mod tests {
         evidence_is_recorded(&TEST, &baseline, &mut found);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("what exercised it"), "{found:?}");
+
+        // And the same row in the *scoped* block, which this guard did not
+        // read at all while two harnesses declared a second target. Six rows
+        // across codex and antigravity carried no `evidence` and it stayed
+        // green -- green about the rows it looked at and silent about the rest.
+        let mut baseline = agreeing();
+        baseline["native_surfaces"]["scoped"][0]["surfaces"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence");
+        let mut found = Vec::new();
+        evidence_is_recorded(&TEST, &baseline, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("\"shared\""), "{found:?}");
 
         // A value outside the three is refused too, so the field cannot become
         // free text meaning whatever the writer felt.

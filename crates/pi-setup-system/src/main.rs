@@ -14,8 +14,8 @@ use std::process::ExitCode;
 
 mod software;
 
-use harness_runtime::{Foreign, Harness};
-use provider_v3::{ComponentKind, ProjectionKind};
+use harness_runtime::{Foreign, Harness, Scoped};
+use provider_v3::{ComponentKind, ProjectionKind, TargetScope};
 
 /// Everything specific to Pi Coding Agent, verified against `pi-baseline.json`.
 pub const PI: Harness = Harness {
@@ -98,11 +98,36 @@ pub const PI: Harness = Harness {
         ComponentKind::Command,
     ],
     projection_kinds: &[ProjectionKind::NativeFiles, ProjectionKind::Package],
-    // One scope. Pi's project surfaces live under `.pi/` in a workspace, which is a
-    // different root rather than a second scope of this target.
+    // **Two scopes.** The second is `~/.agents`, the one root in this estate
+    // that belongs to a convention rather than to a product: a *sibling* of
+    // this product's configuration home, not a child, so nothing declared
+    // against the target above can reach it. That is what `user_root` is for.
     //
-    // Empty rather than absent: a harness that owns one target says so.
-    scoped_projections: &[],
+    // `package-manager.js:2017` loads from `join(getHomeDir(), ".agents", "skills")`, and no Pi page says so.
+    //
+    // **This was a declined row until now, and the reason it carried had
+    // stopped being true.** It read *a namespace is removed whole, so a second
+    // declaration would make either provider's remove take the other's
+    // skills.* Correct when written; false since `written_paths` shipped.
+    // Under a scope every verb acts on the files this provider recorded
+    // writing -- the removal refuses rather than widening when it cannot read
+    // the record, the capture takes ours and not a neighbour's, and a restore
+    // leaves a neighbour's file as it was. Five of the seven products read
+    // this root and one declared it; the reason was simply not re-read when
+    // the thing it described changed.
+    scoped_projections: &[Scoped {
+        target_scope: TargetScope::UserRoot,
+        // Distinct from the global identity, because the digest binds a
+        // declaration together with the scope it owns.
+        profile_id: "pi/native-files/user-root/1",
+        component_kinds: &[ComponentKind::Skill],
+        projection_kinds: &[ProjectionKind::NativeFiles],
+        // Relative to `~/.agents`, which is the target this scope names -- so a
+        // skill is `skills/<name>` rather than `.agents/skills/<name>`. Writing
+        // the root into the path would put the skills at
+        // `~/.agents/.agents/skills`.
+        native_namespaces: &["skills"],
+    }],
     max_files: 8192,
     max_bytes: 64 * 1024 * 1024,
     kit_identity: include_str!("../../../provider-kit/v3/KIT-IDENTITY.json"),
