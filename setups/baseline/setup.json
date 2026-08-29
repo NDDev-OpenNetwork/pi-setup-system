@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "baseline",
-  "description": "A working floor: instructions plus conservative settings.",
+  "description": "A working floor: instructions, plus the one setting a floor needs here. The other six harnesses make their baseline a conservative permission rule; this product has none to write. Its own documentation says it \"intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash\" and ships no sandbox -- its tools run with the permissions of the process. So there is nothing to deny and nothing to ask about, and `enableSkillCommands` is written instead: it makes the skills a setup delivers invokable as commands. Described as \"conservative settings\" until 2026-08-29, which was the shape of the other six borrowed for a product that does not have it.",
   "sources": [
     "https://pi.dev/docs/latest/settings"
   ]
