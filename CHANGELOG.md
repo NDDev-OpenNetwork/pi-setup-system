@@ -20,6 +20,44 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-08-29
+
+A check that reports into an issue rather than failing had its
+verdict recovered from an English sentence, and defaulted to *clean* when the
+sentence did not match.
+
+Two sweeps in this project's own workflow reach a vendor's server, so neither
+fails the run -- a repository check depending on somebody else's uptime stops
+being read, and that decision stands. What did not stand is how their results
+travelled. The workflow matched the human summary with a regular expression and
+substituted zero when the match came back empty, so **renaming one word in that
+summary turns every failure into none**, opens no issue, and reports the sweep
+as clean. Demonstrated rather than argued: one word, three failures, zero
+reported.
+
+Nothing anywhere said the prose was load-bearing. And the default was a copy of
+a number the tool already had.
+
+Both tools print a marker line for a machine and a sentence for a person now.
+The workflow reads the marker, and **refuses when it is absent rather than
+assuming zero** -- an absent measurement and a measurement of nothing are
+different states, and only one of them is good news. A test binds all three
+halves and was observed failing under each mutation separately: restoring the
+default, renaming the marker, and softening the refusal.
+
+**How it was found is the part worth carrying.** A peer project named a failure
+mode neither of us had listed -- an instrument with no planted negative, whose
+green therefore says nothing -- and the answer was to go through every check
+here asking whether it had ever been handed something it must reject. One had
+not.
+
+The first attempt to hand it one was *wrong*: the document chosen as invalid was
+something that schema happens to accept, and the checker was right to pass it.
+Reading the schema to construct a genuine violation is what led to the line
+above. **A failed injection is information about the injection first**, and the
+pull to read it as information about the instrument is strongest exactly when
+somebody is already hunting for a defect.
+
 ## [0.0.26] - 2026-08-29
 
 One product shipped eight releases between one check and the next, and

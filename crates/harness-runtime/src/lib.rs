@@ -525,4 +525,63 @@ mod tests {
             missing.join(", ")
         );
     }
+
+    /// A workflow reading a count out of prose reads it out of a marker now,
+    /// and this is what stops the marker being renamed back.
+    ///
+    /// Two sweeps report into an issue rather than failing, because both reach
+    /// a vendor's server and a repository check that depends on someone else's
+    /// uptime stops being read. Their counts reached the workflow through a
+    /// regular expression over the human sentence, defaulting to zero when the
+    /// match came back empty — so renaming one word in that sentence would have
+    /// turned every failure into none, opened no issue, and reported the sweep
+    /// as clean. Nothing anywhere said the prose was load-bearing.
+    ///
+    /// The tools print a `RESULT` line for a machine and a sentence for a
+    /// person. This binds the first: the tool must print it, the workflow must
+    /// read it, and the workflow must refuse when it is absent — because an
+    /// absent measurement and a measurement of nothing are different states and
+    /// only one of them is good news.
+    #[test]
+    fn the_reported_counts_come_from_a_marker_and_not_from_prose() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("tools").is_dir() {
+            return; // A published tree ships neither tool nor workflow.
+        }
+
+        for (tool, key) in [
+            ("tools/validate_setup_schemas.py", "failed="),
+            ("tools/conformance_report.py", "refused="),
+        ] {
+            let source = std::fs::read_to_string(root.join(tool))
+                .unwrap_or_else(|_| panic!("{tool} is missing"));
+            assert!(
+                source.contains("\"RESULT ") || source.contains("f\"RESULT "),
+                "{tool} no longer prints a RESULT line, and the workflow reads one"
+            );
+            assert!(
+                source.contains(key),
+                "{tool}'s RESULT line no longer carries {key}"
+            );
+        }
+
+        let workflow = std::fs::read_to_string(root.join(".github/workflows/conformance.yml"))
+            .expect("the conformance workflow is missing");
+        assert_eq!(
+            workflow.matches("^RESULT").count(),
+            2,
+            "both sweeps must read their count from the marker, anchored at the \
+             start of the line"
+        );
+        assert_eq!(
+            workflow.matches("so its verdict is unknown").count(),
+            2,
+            "both sweeps must refuse a missing marker rather than assume zero"
+        );
+        assert!(
+            !workflow.contains(":-0}"),
+            "a count defaulting to zero is an absent measurement reported as a \
+             clean one, which is the defect this test exists for"
+        );
+    }
 }
