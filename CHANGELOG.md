@@ -20,6 +20,78 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-08-29
+
+A verdict read without the subject that gives it meaning.
+
+The consumer's conformance checker marks every case with a `subject`, and
+computes its `conforms` over provider-subject cases alone. That is deliberate,
+and its own source says why: a provider declaring a component kind the compiler
+has no route for *"has satisfied every obligation v3 places on it; the gap is
+ours, and calling it non-conformance would name the wrong party in the one
+field people read."*
+
+The reporting here collected every failed case regardless of subject. So a gap
+that belonged to the consumer printed **REFUSED** against a provider the checker
+had just passed, with zero provider-subject failures.
+
+The cost was not a wrong line in a report. That number was written into a source
+comment and into a baseline as a *measured fact about the protocol*, and it then
+argued for reverting the declaration that had exposed the gap. A defective
+instrument propagates further than a wrong belief, because a belief gets
+challenged and a record does not.
+
+The reader now separates the two subjects, and refuses a summary that
+contradicts its own cases -- an instrument disagreeing with itself has not said
+this provider is fine. It is checked by feeding it answers it must accept and
+answers it must reject, including a provider failure hidden behind a passing
+summary, and that check was seen failing on the original defect before it was
+kept.
+
+**Pi Coding Agent declares the `instruction` kind**, and the surface that routes it is
+owned. Where the consumer carries no route yet, composition still refuses early
+rather than late; what changes is that this side is no longer the thing being
+waited on.
+
+Also here: two Windows artifacts this product publishes were missing from the
+artifact table, because the vendor ships an executable rather than an archive
+and the guessed archive URLs answered 404. Each harness's toolkit now teaches
+that harness's own components in that harness's own format. And every blank in
+the software table carries the measurement that says why it cannot be filled
+yet, rather than reading as a hole nobody looked at.
+
+**Upgrading the Antigravity CLI setup system, and only that one:** if you keep
+your own rules in `~/.gemini/config/rules/`, read this. That build now owns
+`config/rules`, which the published `0.0.28` did not. Ownership in this program
+means a namespace is managed whole, so on the next install your own files there
+are captured into a backup slot. Nothing is lost -- `slot-000000000001` holds
+them and a restore puts them back byte for byte -- but they will not be in place
+afterwards, and no setup writes to that directory, so it is emptied rather than
+replaced.
+
+Measured rather than reasoned, by running both binaries against one target: a
+hand-written `config/rules/MY-OWN.md` survives an install by the published
+`0.0.28` and does not survive one by this release. Files outside the owned
+namespaces are untouched by both, as they always have been.
+
+It is the same rule that has always applied to `antigravity-cli/keybindings.json`
+and to a skill directory you wrote yourself; `config/rules` simply joins them.
+To keep your own rules across installs, a plugin's `rules/` is the customization
+root that build's own setups use, and it is not emptied.
+
+The other six setup systems are unaffected -- none of them owns a path of that
+name. This entry is shared by all seven trees because they are rendered from one
+source, which is why the paragraph above names the one it is about.
+
+**Not new here, and worth saying because the version numbers disagree.** The
+Windows digest fix -- a delete-pending path answers `PermissionDenied` rather
+than `NotFound`, so the walk asks the path instead of trusting the error kind --
+is already in the published `0.0.28`. The three-OS matrix in these trees caught
+it on the `0.0.28` release pull requests, and the release branch was re-rendered
+onto the fix before it merged. So the monorepo's `0.0.28` tag does not carry it
+and every published `0.0.28` does. Nobody is waiting on this release for
+Windows.
+
 ## [0.0.28] - 2026-08-29
 
 A second target this program declared and could not operate.

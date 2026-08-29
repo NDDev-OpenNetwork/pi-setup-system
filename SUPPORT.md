@@ -233,6 +233,14 @@ Never owned. It is a security decision a person made, not configuration a setup 
 
 **`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. ([source](measured from the pinned 0.84.3 bundle, package/dist/core))
 
+**`mcp_config.json`** -- **The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the pinned 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…"*
+
+So there is no MCP surface at any scope, and the capability arrives through `extensions/`, which this provider owns and routes as `plugin`. A stated absence is worth more than a missing file: it says the next release will not quietly add one under a name nobody guessed. ([source](the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage))
+
+**`agents`** -- No sub-agents, from the same sentence as the MCP row above: *"It intentionally does not include built-in MCP, **sub-agents**, permission popups…"* The `agent` kind is therefore not declared for this harness, and nothing under this home is read as one. ([source](the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage))
+
+**`hooks.json`** -- Hooks here are an **extension API concept, not a configuration surface**. `extensions.md`, under the pinned bundle's own `package/docs/`, documents `session_start`, a `spawnHook` around tool execution and session-scoped teardown hooks -- all of them functions inside an extension module. There is no `hooks.json` and no `hooks` key in `settings.json`, so a hook reaches this product through `extensions/`, which is owned and routes `plugin`. ([source](the product's own shipped documentation, extensions.md under the pinned bundle's package/docs/))
+
 ## Response
 
 One maintainer. Defects are triaged as time allows; security reports are
