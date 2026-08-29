@@ -939,6 +939,28 @@ def main() -> int:
         )
         return 1
 
+    # The same rule, for the other absence. It was not here, and the rendered
+    # workflow's own check was carrying it alone: `render_public_trees.py`
+    # refuses a harness in neither `NO_PROBE_MEASURED` nor a probe command, so
+    # CI could not reach the gap. A hand invocation could, and did -- this file
+    # documents itself as runnable by hand, and run that way it printed
+    #
+    #     reads -> not asked:
+    #
+    # an absence with nothing behind it, in the same shape and one screen below
+    # the check that exists for `--writes`. A rule applied to one of two
+    # neighbouring cases is the defect this estate keeps meeting: the second
+    # case was added where it was needed and the guard written before it kept
+    # answering for the first.
+    if not args.probe and not args.probe_absent:
+        print(
+            "one of --probe or --probe-absent is required: a product that was "
+            "never asked to report our setup has to say why, measured rather "
+            "than assumed",
+            file=sys.stderr,
+        )
+        return 1
+
     binary = os.path.abspath(args.binary)
     if not os.path.isfile(binary):
         print(f"no binary at {binary}", file=sys.stderr)
