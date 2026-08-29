@@ -572,6 +572,87 @@ fn owned_surfaces<'a>(rows: &'a [Value], found: &mut Vec<String>) -> Vec<Owned<'
     }
     owned
 }
+/// Every declared projection kind names an owned surface it unpacks into.
+///
+/// The component-kind half of this rule has been enforced since the surfaces
+/// block existed -- *a declared kind is a promise of a rollback*. The
+/// projection half was not, and two harnesses were declaring package families
+/// they could not deliver: one whose plugins come from a hosted directory with
+/// nothing under the home to hold them, and one that declared `marketplace`
+/// while every path a marketplace is registered in sat in its own **declined**
+/// list.
+///
+/// **A declined path cannot serve as the name, and it needs no clause of its
+/// own.** That was going to be a second condition, because the case that
+/// motivated it names four declined paths; asking the *owned* set excludes them
+/// already, which the control confirmed by reporting `plugins/marketplaces` as
+/// a path the harness does not own rather than as one it declined. One
+/// condition where two were planned, and the second was planned from reasoning
+/// rather than from running it.
+///
+/// A declaration with one real half and one naming nothing is worse than two
+/// wrong halves carrying a note, because the note is the thing that gets
+/// re-read.
+///
+/// `native_files` needs no basis: it is the default every provider writes, and
+/// requiring it to name one surface would ask which of several. Everything else
+/// names a directory the provider unpacks a package into, per the consumer's
+/// own definition of the field: *"native packaging selected by the target
+/// provider … another package family"*. Where the landing place is a file the
+/// provider already owns rather than a package it unpacks -- registering a
+/// marketplace by writing a settings key -- the basis names that file, and the
+/// distinction is the consumer's: a landing place you already own is a
+/// `setting` contribution, and a projection kind names a package.
+fn every_projection_names_where_it_lands(
+    harness: &Harness,
+    block: &serde_json::Map<String, Value>,
+    owned: &[Owned<'_>],
+    found: &mut Vec<String>,
+) {
+    let basis = block.get("projection_basis").and_then(Value::as_object);
+    let declared: Vec<&str> = harness
+        .projection_kinds
+        .iter()
+        .map(|kind| kind.as_str())
+        .filter(|kind| *kind != "native_files")
+        .collect();
+
+    let Some(basis) = basis else {
+        if !declared.is_empty() {
+            found.push(format!(
+                "{} declares {declared:?} and {BLOCK} has no projection_basis, so \
+                 nothing says where a package of that family would land",
+                harness.provider_id
+            ));
+        }
+        return;
+    };
+
+    for kind in &declared {
+        let Some(path) = basis.get(*kind).and_then(Value::as_str) else {
+            found.push(format!(
+                "{kind} is a declared projection and projection_basis names no surface \
+                 for it; a package family with nowhere to unpack is a promise nothing \
+                 can keep"
+            ));
+            continue;
+        };
+        if !owned.iter().any(|surface| surface.path == path) {
+            found.push(format!(
+                "{kind} is declared to land in {path:?}, which this harness does not own"
+            ));
+        }
+    }
+
+    for (kind, _) in basis {
+        if !declared.contains(&kind.as_str()) {
+            found.push(format!(
+                "projection_basis names {kind} and the declaration does not, so the \
+                 basis is describing a family this provider does not offer"
+            ));
+        }
+    }
+}
 
 /// Compare the declaration against what the checked rows own and route.
 fn against_declaration(harness: &Harness, owned: &[Owned<'_>], found: &mut Vec<String>) {
@@ -1055,6 +1136,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     // reported as itself rather than as a missing namespace somewhere else.
     let owned = owned_surfaces(surfaces, &mut found);
     against_declaration(harness, &owned, &mut found);
+    every_projection_names_where_it_lands(harness, block, &owned, &mut found);
 
     // A second scope is checked exactly as the first, against the declaration
     // that owns it. Written as the same two functions rather than a variant of
