@@ -20,6 +20,37 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.30] - 2026-08-29
+
+A plugin this provider can host in a surface it already owns.
+
+Every blank in this program's component matrix was re-asked against the
+vendor's current word rather than against the record. Thirteen of fourteen came
+back correct. One did not.
+
+**Pi Coding Agent's table gained a kind.** Where a product loads a plugin from a
+folder inside a directory this provider already owns -- distinguished from a
+plain component by a manifest the product itself reads -- that is a plugin this
+program can install and roll back, and the kind is declared now. The reason it
+was blank is worth keeping: the record said a plugin projects through the
+settings file, which was true of *enabling* one and was never the whole
+question. A negative taken from the pages that happened to be read.
+
+**One blank stayed, and its evidence is now much stronger.** A vendor's own page
+lists a user-level directory for a kind; the shipping binary resolves that
+directory from the workspace path alone, with positive controls present and an
+invented path absent. So the page documents something the product does not do.
+This estate had built its habit around pages going *stale*; a page can also run
+*ahead*, and declaring on one would have this provider claim a path nothing
+reads. The rule is not "bytes over pages" but **the artifact decides, whichever
+direction it disagrees in**.
+
+Also here: a software pin moved the same afternoon the last release published,
+and a citation naming the older build had quietly become a claim rather than a
+measurement -- an artifact nobody can fetch cannot be checked. Re-asked on the
+new build with the same controls, and it holds. **A measurement is reproducible
+only while the thing it names can still be downloaded.**
+
 ## [0.0.29] - 2026-08-29
 
 A verdict read without the subject that gives it meaning.

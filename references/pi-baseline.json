@@ -187,7 +187,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-29T08:26:02+00:00",
+  "verified_at": "2026-08-29T10:54:48+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-27",
     "config_home": "~/.pi/agent",
@@ -401,7 +401,7 @@
       }
     },
     "version": "0.84.4",
-    "verified_at": "2026-08-29T08:26:02+00:00"
+    "verified_at": "2026-08-29T10:54:48+00:00"
   },
   "setup_catalogue_digest": "sha256:de16bec84b4fd7f24e7b15abb993a0af6f3c4b2af8998bd79e9c1c06158bdb66",
   "previous_software_artifacts": {
