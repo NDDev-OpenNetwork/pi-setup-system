@@ -20,6 +20,38 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.32] - 2026-08-29
+
+Two package families this program could not deliver, withdrawn.
+
+A provider declares which *package families* it can unpack a component into.
+Two of the seven declared families they had nowhere to put. One product's
+plugins are drawn from a hosted directory with nothing under its home to hold
+them. The other declared a marketplace while every path a marketplace is
+registered in sat in that same declaration's **declined** list — one real half
+and one naming nothing, which is worse than two wrong halves carrying a note,
+because the note is the thing that gets re-read.
+
+Nothing is stranded. The consumer counted its published corpus first: no
+component anywhere requests either family from these two, so this narrows a
+promise rather than refusing an install.
+
+**And the rule is enforced now rather than remembered.** Every declared family
+names the owned surface it unpacks into, and a family with no name, or one
+naming a path the harness does not own, is refused before release. The
+component half of that rule — *a declared kind is a promise of a rollback* — has
+been enforced since this program had surfaces; the packaging half never was, in
+the same file, one field along.
+
+One surface where a personal marketplace really does exist stays unowned on
+purpose, and the reason is worth stating because it is not a technical
+limitation. It lives in a directory several products read. A skill installed
+there is one product's file that others may also read; **a marketplace is an
+instruction to all of them**. Putting this program's backup and restore in
+charge of where a neighbouring product resolves its plugins is a larger claim
+than configuring a home, and it is not one a routing table should make on
+anybody's behalf.
+
 ## [0.0.31] - 2026-08-29
 
 Three guards, each found by using this program rather than reading it.

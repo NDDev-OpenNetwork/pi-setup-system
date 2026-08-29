@@ -357,7 +357,10 @@
         ],
         "declined": []
       }
-    ]
+    ],
+    "projection_basis": {
+      "package": "extensions"
+    }
   },
   "software_artifacts": {
     "command": "pi",
