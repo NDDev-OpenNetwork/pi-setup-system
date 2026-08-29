@@ -9,7 +9,77 @@ against a real installation on every platform it claims.
 An entry is never edited after its release. It says what that release was,
 including claims a later release made false.
 
+**Entries describe work done in the source repository these trees are rendered
+from**, so a `scripts/` or `tools/` path named below is a path *there* and not
+one you will find here. This repository ships one script of its own,
+`scripts/evidence.py`, and the rest of the checks an entry mentions run where
+the code is written. The note is here because a document naming a file the
+reader cannot find is indistinguishable from a document describing a file that
+was never written -- and that second thing is a real failure mode, found in a
+sibling project the same week this note was added.
+
 ## [Unreleased]
+
+## [0.0.25] - 2026-08-29
+
+A pass somebody did by hand, once per product, is an instrument now --
+and the thing that makes it an instrument rather than a search is what it looks
+for that must not be there.
+
+Every declared surface in this record carries a value saying what exercised it:
+a run, the product's own bytes, or a page alone. A page-only row is not
+suspicious; it is **unfalsifiable from inside this repository**, which is worse,
+and this project has shipped exactly one wrong fact of that kind -- a manifest
+filename that had a citation, sat beside correct rows, and passed every check
+here.
+
+Thirty-one of those rows were moved off `page` by a person opening each artifact
+and reading it. That pass now runs on a schedule: after installing a product
+from its pinned bytes, the evidence job searches the bytes it just installed for
+every namespace the provider declares, joined to the configuration home the
+binary itself prints.
+
+**Both of those are asked of their owner rather than copied.** The namespaces
+come from the provider's own declaration and the home from its own first lines,
+so a declaration that moves cannot leave this measuring the old one. It reads no
+record at all -- which is the point, because a record checking itself is not a
+check.
+
+**A name nothing can own is searched alongside the real ones.** If it is found,
+the run reports nothing else. *Everything matched* and *the search matches
+everything* are indistinguishable from the outside, and feeding an instrument
+something it must reject is the only cheap way to tell them apart.
+
+**It reports and never promotes.** Recording a value still takes somebody
+writing down what they measured, and a separate tool re-derives that value from
+the row's own prose and refuses one stronger than the prose supports. Two
+instruments sharing one opinion would be one instrument.
+
+**A bare name is deliberately not reported as a count.** One directory name
+appears sixteen hundred times in a product's bundle as identifiers, keys and
+prose; printing that number beside an anchored eleven invites reading the larger
+as the stronger. Where the anchored form is absent, the run says the bare name
+proves nothing and gives the reason: the product may join that name to a
+directory while it runs, in which case no literal exists to find. One product
+reads zero of seven for exactly that reason and is not thereby suspect.
+
+Four rows moved on the first run. One of them is a **single** occurrence and is
+recorded as one -- weaker than eleven, stronger than a bare name, and rounding
+it up is the promotion this column was added to prevent.
+
+**And every tool a document names must now exist.** A sibling project found a
+contract file asserting, in the present tense, that a validation script fails
+when three lists disagree. That script had never been written, and the drift it
+promised to prevent had already happened -- in the file that claimed to prevent
+it. A reader cannot tell a described guard from a running one. This repository
+had the rule for documents and now has it for executables, observed failing on
+that exact sentence.
+
+Its own first version compared the tail of a filename, and the linter refused:
+a case-sensitive extension comparison answers differently on the three systems
+this runs on. Another module here carries that correction, written for the same
+reason. **A lesson recorded in one place does not travel to the next thing
+somebody writes.**
 
 ## [0.0.24] - 2026-08-29
 
