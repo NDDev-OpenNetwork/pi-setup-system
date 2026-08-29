@@ -7,7 +7,7 @@
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Version 0.1.0
 [CmdletBinding()]
 param(
-  [string]$Version = "0.0.25",
+  [string]$Version = "0.0.26",
   [string]$InstallDir = "$env:LOCALAPPDATA\Programs\pi-setup-system"
 )
 $ErrorActionPreference = "Stop"

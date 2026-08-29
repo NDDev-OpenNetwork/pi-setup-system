@@ -20,6 +20,32 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.26] - 2026-08-29
+
+One product shipped eight releases between one check and the next, and
+the check's summary line nearly sent somebody looking for a broken instrument.
+
+The pinned version moves from `1.0.5` to `1.0.13`, npm and the direct
+distribution both, with the installer's own digest moving with them. Six
+artifacts re-fetched and re-hashed against what the vendor publishes now.
+
+**The summary said "7 pins behind" and that is seven *rows*, not seven
+products.** One product's version appears in seven places in its record: the
+artifact table, the package version, the installer's version argument, and four
+native packages. Read as seven products it looks like every pin in the estate
+went stale overnight; read correctly it is one vendor being busy. *A count is
+only a count together with what it counts* — the same sentence as a remainder
+reported without its denominator, which this project has now got wrong twice and
+caught both times.
+
+**Four of the seven can now cross a real version transition**, because a bump
+assigns the outgoing pin to the second slot. `software_update` needs a version
+to come *from* and a rollback needs a tree to return *to*; a product pinned once
+has neither, so both operations were declared with nothing exercising them. The
+remaining three fill on their next bump, which at the measured tempo is days.
+
+Nothing else changes. The rest of this release is the version.
+
 ## [0.0.25] - 2026-08-29
 
 A pass somebody did by hand, once per product, is an instrument now --
