@@ -433,4 +433,85 @@ mod tests {
         // second one.
         assert_eq!(asked(""), "deterministic", "a detached HEAD is not main");
     }
+
+    /// Every tool a document names exists.
+    ///
+    /// A sibling project found a contract file asserting, in the present tense,
+    /// that `scripts/validate_harness_docs.py` fails when three lists disagree
+    /// — and that script had never been written. The drift it promised to
+    /// prevent had happened: the document listed seventeen identities where the
+    /// code had seven. That is worse than a check examining nothing, because a
+    /// reader has no way to tell a described guard from a running one, and the
+    /// description sat in the very file it claimed to protect.
+    ///
+    /// This repository has the rule in the other direction already — nothing
+    /// shipped may name a document it does not carry. This is the same question
+    /// asked of executables: a prose promise that something runs is checkable
+    /// for free, and the failure it prevents is a reader trusting a guard that
+    /// does not exist.
+    ///
+    /// Deliberately only `scripts/` and `tools/`: those are the paths this
+    /// estate's prose promises *behaviour* of. A missing source file is a
+    /// compile error and needs no test.
+    #[test]
+    fn every_tool_a_document_names_exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("tools").is_dir() {
+            // A published tree ships neither `tools/` nor `scripts/`, and
+            // absence is asserted rather than skipped: if one is present and
+            // the other is not, somebody deleted an entry point.
+            assert!(
+                !root.join("scripts").is_dir(),
+                "scripts/ exists without tools/, so this is a workspace with an \
+                 entry point missing rather than a published tree"
+            );
+            return;
+        }
+
+        let mut prose = String::new();
+        let mut read_all = |from: &std::path::Path| {
+            if let Ok(entries) = std::fs::read_dir(from) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "md")
+                        && let Ok(text) = std::fs::read_to_string(&path)
+                    {
+                        prose.push_str(&text);
+                        prose.push('\n');
+                    }
+                }
+            }
+        };
+        read_all(&root.join("docs"));
+        read_all(&root);
+
+        let mut missing = Vec::new();
+        for word in prose.split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c))) {
+            let named = word.trim_matches(|c| c == '.' || c == '-');
+            if !(named.starts_with("scripts/") || named.starts_with("tools/")) {
+                continue;
+            }
+            // Asked through `extension` rather than by comparing the tail of
+            // the string, which is the same correction `catalog::unsourced`
+            // carries: a case-sensitive comparison decides differently on the
+            // three systems this runs on, and the answer must not.
+            let runnable = std::path::Path::new(named)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("py") || extension.eq_ignore_ascii_case("sh")
+                });
+            if !runnable {
+                continue;
+            }
+            if !root.join(named).is_file() && !missing.contains(&named.to_owned()) {
+                missing.push(named.to_owned());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these are named in this repository's prose and do not exist: {}",
+            missing.join(", ")
+        );
+    }
 }
