@@ -4,11 +4,20 @@
 //! [`harness_runtime`], shared with every other setup system, so a change to
 //! behaviour lands once and a change to Pi Coding Agent's surface lands here.
 //!
-//! The program lifecycle is the one thing this harness does not offer. Pi is a
-//! Node package whose dependency closure npm resolves at install time, so there
-//! is no single artifact whose digest could be named in a plan, and declaring
-//! an operation on that footing would promise something this build cannot keep.
-//! `src/software.rs` records that as a fact rather than leaving it an absence.
+//! This harness offers the program lifecycle like the other six. It reads
+//! `src/software.rs`, generated from measured bytes: one npm tarball, one
+//! digest, one member that runs.
+//!
+//! This paragraph used to say the opposite -- that pi could not be installed
+//! because npm resolves a dependency closure at install time, so no single
+//! artifact's digest could be named in a plan. `7180648` measured that and
+//! found it wrong twice: the published package ships `npm-shrinkwrap.json`, so
+//! the closure is fixed, and it does not matter anyway because the bundle
+//! imports only Node built-ins and runs with no `node_modules` at all. The
+//! correction is held by a test rather than by prose --
+//! `setup_core::software`'s *pi installs from one tarball and the thing that
+//! lands runs*. The sentence survived the commit that refuted it, in three
+//! files; this was one.
 
 use std::process::ExitCode;
 

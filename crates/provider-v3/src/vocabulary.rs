@@ -434,20 +434,191 @@ mod tests {
         all.iter().map(|item| as_str(*item).to_owned()).collect()
     }
 
+    /// Everything the vendored kit says about itself, checked in both
+    /// directions.
+    ///
+    /// The first half of this was here already and it asked one question: does
+    /// each file `SHA256SUMS` names still hash to what it says. That leaves
+    /// three ways to be wrong, and the third is the one that reached
+    /// `provider-info`:
+    ///
+    /// * A `SHA256SUMS` with no lines passes an iteration over its lines. The
+    ///   check has to know which files should be covered, not only which are.
+    /// * `KIT-IDENTITY.json` names its own `files`, and nothing compared that
+    ///   list with the one beside it.
+    /// * **`aggregate_digest` is the value the kit's own README says to pin** --
+    ///   *"закреплять следует агрегат -- он неподделываем"* -- and every one of
+    ///   the seven providers publishes it as `kit_aggregate_digest`, the
+    ///   revision it was compiled against. Nothing recomputed it. A regenerated
+    ///   `SHA256SUMS` with a stale `KIT-IDENTITY.json` would have shipped a
+    ///   revision id naming bytes that no longer existed, on all seven, with
+    ///   every test green.
+    ///
+    /// **`README.md` is outside all of it, on their side and therefore on
+    /// ours.** `provider_kit.py` generates every file in that directory except
+    /// that one, so the page sits beside digest-bound bytes with the same
+    /// apparent authority and nothing holding it.
+    ///
+    /// Measured rather than reasoned, against their checker on copies: a
+    /// tampered `manifest.json` is refused, `provider kit differs`, exit 1; a
+    /// `README.md` with an invented sentence appended passes, exit 0. Their
+    /// checker re-derives every file from source and demands byte equality,
+    /// which is stronger than enumerating defects the way this test does -- and
+    /// its coverage stops at the one file with no source to re-derive from.
+    ///
+    /// Ours drifted a revision behind twice in one day. **A digest pinned here
+    /// would guard the wrong direction**: it would catch a local edit, and the
+    /// failure that actually happens is this copy lagging theirs, which only
+    /// asking upstream can see and no test in this repository can do. So the
+    /// file is named and not guarded, which is the honest state rather than a
+    /// gap someone should close.
+    ///
+    /// Returns the first disagreement rather than panicking, so the control
+    /// below can assert that each defect is refused.
+    fn kit_disagreement(root: &std::path::Path) -> Option<String> {
+        let sums_bytes = std::fs::read(root.join("SHA256SUMS")).ok()?;
+        let sums = String::from_utf8(sums_bytes.clone()).ok()?;
+
+        let mut covered = Vec::new();
+        for line in sums.lines().filter(|line| !line.trim().is_empty()) {
+            let Some((expected, name)) = line.split_once("  ") else {
+                return Some(format!(
+                    "SHA256SUMS line is not a digest and a name: {line:?}"
+                ));
+            };
+            let Ok(bytes) = std::fs::read(root.join(name)) else {
+                return Some(format!("SHA256SUMS names {name:?} and it is not there"));
+            };
+            let actual = setup_core::digest::of_bytes(&bytes);
+            if actual != format!("sha256:{expected}") {
+                return Some(format!("{name} does not match SHA256SUMS"));
+            }
+            covered.push(name.to_owned());
+        }
+        covered.sort();
+
+        // The other direction: a generated JSON file present and uncovered is
+        // the failure an iteration over `SHA256SUMS` alone cannot see.
+        let mut present: Vec<String> = std::fs::read_dir(root)
+            .ok()?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+                    && name != "KIT-IDENTITY.json"
+            })
+            .collect();
+        present.sort();
+        if covered != present {
+            return Some(format!(
+                "SHA256SUMS covers {covered:?} and the directory holds {present:?}"
+            ));
+        }
+
+        let identity: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("KIT-IDENTITY.json")).ok()?).ok()?;
+        let mut named: Vec<String> = identity["files"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        named.sort();
+        if named != covered {
+            return Some(format!(
+                "KIT-IDENTITY names {named:?} and SHA256SUMS covers {covered:?}"
+            ));
+        }
+
+        let aggregate = setup_core::digest::of_bytes(&sums_bytes);
+        let recorded = identity["aggregate_digest"].as_str().unwrap_or_default();
+        if aggregate != recorded {
+            return Some(format!(
+                "KIT-IDENTITY records {recorded} and SHA256SUMS hashes to {aggregate}"
+            ));
+        }
+        None
+    }
+
     #[test]
     fn the_kit_bytes_match_the_digests_it_publishes() {
         // A vocabulary bound to a file nobody verified is bound to nothing.
-        let sums = std::fs::read_to_string(kit::root().join("SHA256SUMS")).unwrap();
-        for line in sums.lines().filter(|line| !line.trim().is_empty()) {
-            let (expected, name) = line.split_once("  ").unwrap();
-            let bytes = std::fs::read(kit::root().join(name)).unwrap();
-            let actual = setup_core::digest::of_bytes(&bytes);
-            assert_eq!(
-                actual,
-                format!("sha256:{expected}"),
-                "{name} does not match SHA256SUMS"
-            );
-        }
+        assert_eq!(kit_disagreement(&kit::root()), None);
+    }
+
+    #[test]
+    fn a_kit_that_disagrees_with_itself_is_refused() {
+        // Observed failing on each of the four defects before being kept. The
+        // real kit is never touched: every case is a copy in a temporary
+        // directory, because a control that edits the artifact it guards is one
+        // interrupted run away from leaving it edited.
+        let root = std::env::temp_dir().join(format!("kit-control-{}", std::process::id()));
+        let seed = |case: &str| {
+            let dir = root.join(case);
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for entry in std::fs::read_dir(kit::root()).unwrap() {
+                let entry = entry.unwrap();
+                std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+            }
+            dir
+        };
+
+        let clean = seed("clean");
+        assert_eq!(kit_disagreement(&clean), None, "the copy itself must pass");
+
+        let tampered = seed("tampered-member");
+        let mut bytes = std::fs::read(tampered.join("manifest.json")).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(tampered.join("manifest.json"), bytes).unwrap();
+        assert!(
+            kit_disagreement(&tampered).is_some_and(|why| why.contains("does not match")),
+            "a member whose bytes moved must be refused"
+        );
+
+        let emptied = seed("empty-sums");
+        std::fs::write(emptied.join("SHA256SUMS"), "").unwrap();
+        assert!(
+            kit_disagreement(&emptied).is_some_and(|why| why.contains("the directory holds")),
+            "an empty SHA256SUMS must not pass by having nothing to iterate"
+        );
+
+        let renamed = seed("identity-file-list");
+        let mut identity: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(renamed.join("KIT-IDENTITY.json")).unwrap())
+                .unwrap();
+        identity["files"] = serde_json::json!(["manifest.json"]);
+        std::fs::write(
+            renamed.join("KIT-IDENTITY.json"),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            kit_disagreement(&renamed).is_some_and(|why| why.contains("KIT-IDENTITY names")),
+            "an identity naming a different file set must be refused"
+        );
+
+        let stale = seed("stale-aggregate");
+        let mut identity: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(stale.join("KIT-IDENTITY.json")).unwrap())
+                .unwrap();
+        identity["aggregate_digest"] = serde_json::json!("sha256:00");
+        std::fs::write(
+            stale.join("KIT-IDENTITY.json"),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            kit_disagreement(&stale).is_some_and(|why| why.contains("KIT-IDENTITY records")),
+            "the revision every provider publishes must be recomputed, not trusted"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
