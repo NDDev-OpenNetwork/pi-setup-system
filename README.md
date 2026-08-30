@@ -177,7 +177,7 @@ release is a convenience, not the authorised copy.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.37 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.38 \
   status --target /config/<dir> --json
 ```
 

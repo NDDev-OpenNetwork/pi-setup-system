@@ -14,7 +14,7 @@ set -eu
 
 REPO="NDDev-OpenNetwork/pi-setup-system"
 BINARY="pi-setup-system"
-VERSION="${1:-0.0.37}"
+VERSION="${1:-0.0.38}"
 PREFIX="${PI_INSTALL_DIR:-$HOME/.local/bin}"
 
 case "$(uname -s)" in
