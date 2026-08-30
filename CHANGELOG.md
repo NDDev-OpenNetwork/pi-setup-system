@@ -20,6 +20,35 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-08-30
+
+One line, in a workflow rather than in the program, and it is here
+because the alternative was leaving seven repositories carrying a broken
+experiment.
+
+`0.0.35` shipped a manual Windows probe into these trees. It answers a question
+two projects had carried as permanently settled without either of them having
+run it — and it landed here because the workspace it was written in cannot start
+a hosted job at all, so it had been dispatched twice there and never once begun.
+
+Dispatched here it ran, created an AppContainer profile, printed its identifier,
+and then failed placing the access rule this whole experiment is about:
+
+    "Some or all identity references could not be translated."
+
+The rule was handed an identifier as **text**. Given text it tries to resolve an
+account behind it, and this kind of identifier has none. It takes an identifier
+object instead. Nothing about the question being asked is involved.
+
+**The reason this is worth a release of its own** is where the failure appears.
+It is raised while the rule is being built and reported on the line that applies
+it — so it reads as *the access rule was refused*, which is precisely the
+outcome the experiment exists to detect. Somebody skimming that run would have
+recorded the assumption as a measurement and closed the question.
+
+Nothing in the program changed. What changed is that the instrument now fails
+later, for a reason it names, and can be asked again.
+
 ## [0.0.35] - 2026-08-30
 
 Four merges, and the two that matter were found by running this

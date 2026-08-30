@@ -102,9 +102,18 @@ jobs:
           Write-Host "AppContainer SID: $sidText"
 
           # The whole experiment: an ACE on the *leaf only*.
+          #
+          # **The identity is a `SecurityIdentifier`, never the SID string.**
+          # `FileSystemAccessRule` given a string tries to translate it to an
+          # account, and an AppContainer SID has no account behind it, so the
+          # first run that ever got this far died on
+          # `"Some or all identity references could not be translated."`
+          # -- an error about the *rule's constructor*, at the line placing the
+          # ACE, which reads exactly like the ACE being refused.
           $acl = Get-Acl -LiteralPath $target
+          $who = [System.Security.Principal.SecurityIdentifier]::new($sidText)
           $ace = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                    $sidText, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+                    $who, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
           $acl.AddAccessRule($ace)
           Set-Acl -LiteralPath $target -AclObject $acl
           Write-Host "ACE placed on the target. The parent's DACL was not touched:"
