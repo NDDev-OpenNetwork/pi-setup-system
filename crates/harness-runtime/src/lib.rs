@@ -556,10 +556,19 @@ mod tests {
             return; // A published tree ships neither tool nor workflow.
         }
 
-        for (tool, key) in [
+        // The list is the source of the count below, rather than a number
+        // typed beside it. A third sweep was added to this lane and the guard
+        // failed with `left: 3, right: 2` -- correct, and one character from
+        // being "fixed" by bumping the 2. A hand-written tally in a check is
+        // the same defect the check exists to catch, one level up.
+        let sweeps = [
             ("tools/validate_setup_schemas.py", "failed="),
             ("tools/conformance_report.py", "refused="),
-        ] {
+            ("tools/check_vendored_kit.py", "behind="),
+            ("tools/check_authored_keys.py", "unsourced="),
+        ];
+
+        for (tool, key) in sweeps {
             let source = std::fs::read_to_string(root.join(tool))
                 .unwrap_or_else(|_| panic!("{tool} is missing"));
             assert!(
@@ -576,14 +585,14 @@ mod tests {
             .expect("the conformance workflow is missing");
         assert_eq!(
             workflow.matches("^RESULT").count(),
-            2,
-            "both sweeps must read their count from the marker, anchored at the \
+            sweeps.len(),
+            "every sweep must read its count from the marker, anchored at the \
              start of the line"
         );
         assert_eq!(
             workflow.matches("so its verdict is unknown").count(),
-            2,
-            "both sweeps must refuse a missing marker rather than assume zero"
+            sweeps.len(),
+            "every sweep must refuse a missing marker rather than assume zero"
         );
         assert!(
             !workflow.contains(":-0}"),

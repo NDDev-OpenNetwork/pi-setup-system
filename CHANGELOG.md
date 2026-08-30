@@ -20,6 +20,53 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-08-30
+
+Four merges, and the two that matter were found by running this
+program rather than by reading it.
+
+**The line printed before a write did not say what the write takes.** Installing
+a setup replaces every namespace this provider owns *whole* -- each is removed
+and rewritten -- so anything a person kept under one goes into the backup slot
+and out of the target. Until now only `remove` said so. The plan a consumer
+renders before asking for approval said *"withdraw every file this provider
+owns"*, which is not what happens, and the install preview enumerated the files
+it would write while saying nothing about the removal preceding them.
+
+The sharpest case is a harness that owns a global `rules/` directory, routes
+instructions to it, and writes there from no setup, because its floor is
+delivered as a plugin instead. Installing any setup emptied that directory, and
+the sentence before it named three files.
+
+Nothing about what an operation does has changed. What changed is whether the
+person approving it was told: every surface now names each namespace, says they
+go whole, and says the backup slot holds whatever else was under them. Under a
+named scope the sentence is the opposite, because the behaviour is -- there the
+verbs act only on files this provider recorded writing, so a neighbour sharing
+the root is left alone.
+
+**A rollback readback that was blind to the name it had just written.** On
+Windows a JavaScript entry point is exposed as `<command>.cmd`, and the reading
+that says which version is live looked for `<command>`. So a rollback succeeded
+and then reported that the prefix still ran something else. The fix is the
+accessor: the member-blind constructor is gone, which turned every caller into a
+compile error and made fourteen tests state which member they meant. All
+fourteen had used a native binary whose two names are identical -- which is why
+three operating systems were green while nothing ever entered the branch that
+was wrong.
+
+**Every shipped file is now checked against something.** Six of a hundred and
+fifty-three named a vendor schema; the rest were held only by a digest, which
+refuses a silent edit and says nothing about whether the bytes are right. They
+are now parsed in the format their product reads, checked against the required
+keys their product documents, and required to resolve every reference they name.
+
+**And every configuration key a setup writes must be sourced** -- by a page that
+setup cites or by the harness's own baseline. Seven keys turned out to rest
+entirely on a comment, and that comment named a release three behind the one
+pinned beside it. They were measured in the pinned artifacts instead, each with
+an invented control key that appears nowhere in the same bytes.
+
 ## [0.0.34] - 2026-08-30
 
 Fourteen commits of corrections that no check could have made, and two

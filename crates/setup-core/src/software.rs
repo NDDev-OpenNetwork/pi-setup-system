@@ -163,22 +163,45 @@ impl Present {
         self.versions.iter().any(|found| found == version)
     }
 
-    /// Read what a program directory holds.
+    /// Read what a program directory holds, told which member the exposed
+    /// thing was made from.
     ///
     /// A missing or unreadable directory reads as empty rather than failing: a
     /// plan for a prefix that does not exist yet is exactly the ordinary case.
-    #[must_use]
-    pub fn under(root: &Path, command: &str) -> Self {
-        Self::under_named(root, command, "")
-    }
-
-    /// The same reading, told which member the exposed thing was made from.
     ///
     /// Windows exposes a JavaScript entry point as `<command>.cmd`, so a
-    /// reading that only ever looked for `<command>` would report nothing
-    /// exposed on exactly the harness that needed the launcher.
+    /// reading that only ever looked for `<command>` reports nothing exposed on
+    /// exactly the harness that needed the launcher.
+    ///
+    /// **There was a member-blind `under(root, command)` beside this, and it is
+    /// gone.** It passed `member = ""`, which is a true statement for a native
+    /// binary and a false one for pi, whose members are all
+    /// `package/dist/bundle/cli.js`. Both production callers -- `software` and
+    /// `rollback` on the human surface -- took the short one, so on Windows
+    /// `fs::metadata(bin/pi)` failed, `exposed` came back `None`, and a
+    /// rollback that had worked reported *"the prefix still runs something
+    /// else"*. Every test of the path used `codex`, whose member-blind and
+    /// member-aware names are identical, so the suite was green on all three
+    /// systems and never entered the branch.
+    ///
+    /// Removing the short constructor is the repair rather than fixing the two
+    /// call sites: a defaulted member preserves every future instance of the
+    /// same mistake, and changing the signature turned both of them into
+    /// compile errors.
     #[must_use]
     pub fn under_named(root: &Path, command: &str, member: &str) -> Self {
+        Self::under_on(root, command, member, cfg!(windows))
+    }
+
+    /// The same reading, with the platform as an argument rather than as a
+    /// `cfg`.
+    ///
+    /// Same reason [`exposed_name_on`] takes one, and the same reason spelled
+    /// out there: a `cfg!` makes the Windows branch provable only on Windows,
+    /// and this branch is the one that was wrong. A reading laid out the way
+    /// Windows lays it out can now be asserted from Linux.
+    #[must_use]
+    pub fn under_on(root: &Path, command: &str, member: &str, windows: bool) -> Self {
         let mut versions: Vec<String> = fs::read_dir(root)
             .into_iter()
             .flatten()
@@ -220,7 +243,7 @@ impl Present {
         // remembers what `expose` last pointed at, and someone can break that
         // by hand afterwards. `metadata` follows links, so this is false for a
         // dangling one and true for both a real file and a live link.
-        let exposed_as = exposed_name(command, member);
+        let exposed_as = exposed_name_on(command, member, windows);
         let usable = fs::metadata(root.join("bin").join(&exposed_as)).is_ok();
         let marker = Self::marker(root, command);
         let exposed = fs::read_to_string(&marker)
@@ -955,7 +978,7 @@ mod tests {
         let rolled = rollback(&software(), &root, "1.2.2").unwrap();
         assert_eq!(rolled.version, "1.2.2");
 
-        let present = Present::under(&root, "codex");
+        let present = Present::under_named(&root, "codex", CODEX_MEMBER);
         assert_eq!(present.exposed.as_deref(), Some("1.2.2"));
         assert_eq!(present.versions, vec!["1.2.2", "1.2.3"]);
 
@@ -966,7 +989,9 @@ mod tests {
             "1.2.3"
         );
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
     }
@@ -1004,6 +1029,69 @@ mod tests {
         assert_eq!(
             exposed_name("pi", js),
             exposed_name_on("pi", js, cfg!(windows))
+        );
+    }
+
+    /// A prefix laid out the way Windows lays one out reads back correctly,
+    /// and the member-blind reading of the same prefix finds nothing.
+    ///
+    /// This is the defect `pi`'s `evidence.yml` failed on, on `windows-latest`
+    /// and only there: `rollback` answered, and the readback after it reported
+    /// *"the prefix still runs something else"*. `rollback` was right; the
+    /// reading was blind. Both production callers passed `member = ""`, so
+    /// `exposed_name("pi", "")` gave `pi`, `bin/pi` does not exist beside a
+    /// `.cmd` launcher, and `exposed` came back `None`.
+    ///
+    /// **Every existing test of this path uses `codex`**, a native binary whose
+    /// member-blind and member-aware names are the same string. So the whole
+    /// suite was green on all three systems while never once entering the
+    /// branch that was wrong. That is why this test names `pi` and its real
+    /// member, and why it takes the platform as an argument: on Linux
+    /// `cfg!(windows)` is false and a `cfg`-gated version of this could not
+    /// have run where it was written.
+    ///
+    /// The control is the second half. A positive that says "the reading found
+    /// it" proves nothing unless the reading can also fail — so the same
+    /// directory is read once with the member and once without, and the
+    /// member-blind reading must come back empty. If someone reintroduces a
+    /// blind constructor, that assertion is what stops it.
+    #[test]
+    fn a_windows_shaped_prefix_is_read_back_by_the_member_and_not_by_the_command() {
+        let member = "package/dist/bundle/cli.js";
+        let at = scratch("windows-readback");
+        let root = at.join("prefix");
+        fs::create_dir_all(root.join("0.84.4").join("package/dist/bundle")).unwrap();
+        fs::write(root.join("0.84.4").join(member), b"// the bundle").unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+
+        // What `expose` leaves on Windows: a launcher named by the extension
+        // rule, plus the marker that records which version it points into.
+        let launcher = exposed_name_on("pi", member, true);
+        assert_eq!(launcher, "pi.cmd");
+        fs::write(root.join("bin").join(&launcher), b"@echo off\r\n").unwrap();
+        fs::write(root.join("bin").join(".pi.version"), b"0.84.4\n").unwrap();
+
+        assert_eq!(
+            Present::under_on(&root, "pi", member, true)
+                .exposed
+                .as_deref(),
+            Some("0.84.4"),
+            "the reading told the member did not find the launcher beside it"
+        );
+
+        // The control: the same prefix, read the way the two callers read it
+        // before this commit.
+        assert_eq!(
+            Present::under_on(&root, "pi", "", true).exposed,
+            None,
+            "a member-blind reading found something, so this test proves nothing"
+        );
+
+        // And both readings agree about what is installed, which is what makes
+        // the difference above specifically about the exposed name.
+        assert_eq!(
+            Present::under_on(&root, "pi", "", true).versions,
+            vec!["0.84.4".to_owned()]
         );
     }
 
@@ -1070,7 +1158,9 @@ mod tests {
         let root = at.join("prefix");
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
 
@@ -1082,14 +1172,19 @@ mod tests {
         fs::write(&exposed, &bytes).unwrap();
         assert!(!exposed.symlink_metadata().unwrap().is_symlink());
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3"),
             "the exposed version was unreadable without a link to resolve"
         );
 
         // A record naming a version that is not there is not believed.
         fs::write(root.join("bin").join(".codex.version"), "9.9.9").unwrap();
-        assert_eq!(Present::under(&root, "codex").exposed, None);
+        assert_eq!(
+            Present::under_named(&root, "codex", CODEX_MEMBER).exposed,
+            None
+        );
 
         // And removing takes the record with the command it described.
         fs::write(root.join("bin").join(".codex.version"), "1.2.3").unwrap();
@@ -1110,7 +1205,9 @@ mod tests {
         assert!(error.detail().contains("1.2.3"), "{}", error.detail());
         // Nothing moved.
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
     }
@@ -1129,7 +1226,9 @@ mod tests {
         assert!(error.detail().contains("1.2.2"), "{}", error.detail());
         assert!(error.detail().contains("looked at"), "{}", error.detail());
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
     }
@@ -1402,7 +1501,10 @@ mod tests {
         // A plan for a prefix that does not exist yet is the ordinary first
         // case, not a failure.
         let nowhere = scratch("present-absent");
-        assert_eq!(Present::under(&nowhere, "codex"), Present::default());
+        assert_eq!(
+            Present::under_named(&nowhere, "codex", CODEX_MEMBER),
+            Present::default()
+        );
     }
 
     #[test]
@@ -1414,7 +1516,7 @@ mod tests {
         // A second version, installed but not exposed.
         fs::create_dir_all(root.join("9.9.9")).unwrap();
 
-        let found = Present::under(&root, "codex");
+        let found = Present::under_named(&root, "codex", CODEX_MEMBER);
         assert_eq!(found.versions, vec!["1.2.3".to_owned(), "9.9.9".to_owned()]);
         assert!(found.holds("1.2.3"));
         assert!(!found.holds("0.0.1"));
@@ -1432,7 +1534,9 @@ mod tests {
         // What `expose` writes: an absolute target.
         assert!(fs::read_link(&link).unwrap().is_absolute());
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
 
@@ -1447,14 +1551,19 @@ mod tests {
         .unwrap();
         assert!(!fs::read_link(&link).unwrap().is_absolute());
         assert_eq!(
-            Present::under(&root, "codex").exposed.as_deref(),
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
             Some("1.2.3")
         );
 
         // A dangling link exposes nothing, which is what it means.
         fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(root.join("9.9.9").join("codex"), &link).unwrap();
-        assert_eq!(Present::under(&root, "codex").exposed, None);
+        assert_eq!(
+            Present::under_named(&root, "codex", CODEX_MEMBER).exposed,
+            None
+        );
 
         fs::remove_dir_all(&at).unwrap();
     }
@@ -1466,7 +1575,7 @@ mod tests {
         fs::create_dir_all(at.join(".codex-setup-system")).unwrap();
         fs::create_dir_all(at.join("1.2.3")).unwrap();
         assert_eq!(
-            Present::under(&at, "codex").versions,
+            Present::under_named(&at, "codex", CODEX_MEMBER).versions,
             vec!["1.2.3".to_owned()]
         );
         fs::remove_dir_all(&at).unwrap();

@@ -530,7 +530,11 @@ fn named_slot(
 /// can be commands someone types.
 fn software(harness: &Harness, prefix: &Path) -> Result<()> {
     let declared = declared_software(harness)?;
-    let present = setup_core::software::Present::under(prefix, declared.command);
+    let present = setup_core::software::Present::under_named(
+        prefix,
+        declared.command,
+        declared.member_hint(),
+    );
 
     if present.versions.is_empty() {
         println!(
@@ -580,7 +584,11 @@ fn software(harness: &Harness, prefix: &Path) -> Result<()> {
 /// Point the exposed command back at a version that is already on disk.
 fn rollback(harness: &Harness, prefix: &Path, to: Option<&str>) -> Result<()> {
     let declared = declared_software(harness)?;
-    let present = setup_core::software::Present::under(prefix, declared.command);
+    let present = setup_core::software::Present::under_named(
+        prefix,
+        declared.command,
+        declared.member_hint(),
+    );
 
     // Named, never inferred. There is no record of what was previous -- only
     // what is on disk -- and these version strings do not order reliably:
@@ -853,6 +861,15 @@ fn apply_setup(
         },
     )?;
     println!("Applied setup {setup_id} to {}.", target.display());
+    // **The same sentence `remove` says, because an install does the same
+    // thing.** `replace_managed_from` removes each owned namespace whole before
+    // copying into it, so an install takes whatever a person kept under one --
+    // and until now only `remove` said so. The correction reached the result
+    // line of one verb, the plan preview of both, and not this line, which is
+    // the one somebody reads after an install has already happened.
+    for line in wire::taken_before_writing(harness, HUMAN_SCOPE) {
+        println!("  {line}");
+    }
     println!(
         "  previous state captured as {}",
         report_field(&report, "backup_ref")
@@ -926,11 +943,12 @@ fn remove(harness: &Harness, target: &Path) -> Result<()> {
     // before the removal, over exactly these namespaces, and `restore` returns
     // them byte-exact -- but "nothing is lost" is only true if the person knows
     // to restore, and they only know if they are told what went.
-    println!(
-        "  taken whole, not file by file: {}",
-        harness.native_namespaces.join(", ")
-    );
-    println!("  anything you put under those went too, and is in the capture below");
+    // One sentence, from the one place that owns it. This used to be a second
+    // copy saying "the capture below" while the plan preview said "above" --
+    // two wordings of one fact, each true only where it happened to be printed.
+    for line in wire::taken_before_writing(harness, HUMAN_SCOPE) {
+        println!("  {line}");
+    }
     println!(
         "  previous state captured as {}",
         report_field(&report, "backup_ref")
@@ -1125,18 +1143,26 @@ fn mutate(
     )
 }
 
+/// The scope every human command operates under.
+///
+/// A person typing `install --target <dir>` is pointing at a product's own
+/// configuration home; a shared root arrives only through a consumer, which is
+/// where a scope comes from. Named rather than written as a bare `None` at each
+/// call site so that the next scope-aware reader is a compile error rather than
+/// a silent global answer -- which is the defect `owned_projection(scope)` was
+/// given a parameter to turn into one.
+const HUMAN_SCOPE: Option<provider_v3::TargetScope> = None;
+
 fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) -> Vec<String> {
     let capture = "capture the current target into a new backup slot".to_owned();
     match effect {
         Effect::Backup => vec![capture],
         Effect::Remove => {
-            vec![
-                capture,
-                format!(
-                    "withdraw the {} entries this provider owns",
-                    harness.native_namespaces.len()
-                ),
-            ]
+            // A count, where the result line four hundred lines above names
+            // them. `wire::taken_before_writing` carries the words both say.
+            let mut lines = vec![capture];
+            lines.extend(wire::taken_before_writing(harness, HUMAN_SCOPE));
+            lines
         }
         Effect::Adopt { stamp } => vec![
             capture,
@@ -1163,13 +1189,19 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
             capture,
             format!("write the {} files the bundle declares", files.len()),
         ],
-        Effect::Materialize { setup } => vec![
-            capture,
-            format!(
-                "write setup {} over the entries this provider owns",
+        Effect::Materialize { setup } => {
+            // "over the entries this provider owns" is true and is heard as
+            // "writes the setup's files". `replace_managed_from` removes each
+            // owned namespace whole first, so the removal is named before the
+            // write it precedes.
+            let mut lines = vec![capture];
+            lines.extend(wire::taken_before_writing(harness, HUMAN_SCOPE));
+            lines.push(format!(
+                "write setup {} into them",
                 setup_id.unwrap_or(setup.manifest.id.as_str())
-            ),
-        ],
+            ));
+            lines
+        }
     }
 }
 
@@ -1518,6 +1550,42 @@ mod tests {
 
     fn harness() -> Harness {
         crate::wire::tests_support::TEST
+    }
+
+    /// The two human previews say what an operation takes, not how many.
+    ///
+    /// `remove`'s *result* line has named the namespaces since `0.0.24`; the
+    /// preview beside it still printed a count, and `install`'s preview said
+    /// *"write setup X over the entries this provider owns"* -- true, and heard
+    /// as "writes the setup's files", while `replace_managed_from` removes each
+    /// owned namespace whole before copying into it.
+    ///
+    /// Observed red against the shipped wording: the old `Remove` line held a
+    /// number and no name, and the old `Materialize` line held no removal at
+    /// all.
+    #[test]
+    fn the_preview_names_what_goes_before_it_names_what_arrives() {
+        let facts = harness();
+
+        let removal = effect_lines(&facts, &Effect::Remove, None).join("\n");
+        for namespace in facts.native_namespaces {
+            assert!(removal.contains(namespace), "{removal}");
+        }
+        assert!(removal.contains("whole, not file by file"), "{removal}");
+
+        let (catalog, _) = world("preview-names-what-goes");
+        let setup = setup_at(&catalog, "baseline");
+        let writing = effect_lines(
+            &facts,
+            &Effect::Materialize { setup: &setup },
+            Some("baseline"),
+        );
+        let text = writing.join("\n");
+        assert!(text.contains("whole, not file by file"), "{text}");
+        // And in that order: what goes, then what arrives.
+        let removed = text.find("whole, not file by file").unwrap();
+        let written = text.find("write setup baseline").unwrap();
+        assert!(removed < written, "the write is announced first: {text}");
     }
 
     fn setup_at(catalog: &Path, id: &str) -> crate::catalog::Setup {
