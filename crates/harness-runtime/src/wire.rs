@@ -503,6 +503,66 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
 }
 
 /// Produce a plan without touching the target.
+/// What a mutation **takes away** before it writes, in the words the result
+/// line already uses.
+///
+/// `0.0.24` corrected `remove`'s result sentence: it stopped saying *"Removed
+/// everything `<provider>` owns"* and started naming the namespaces, saying
+/// they go whole, and saying the capture holds whatever else was under them.
+/// The correction landed on the sentence that was being read, and not on every
+/// sentence making the claim. Three more were left, and the two here are the
+/// ones a **consumer** renders on the surface that precedes an install:
+///
+/// * `Operation::Remove` planned *"withdraw every file this provider owns"* —
+///   which is the truth under a scope and false under `global`, where
+///   `remove_managed` calls `remove_dir_all` on each namespace and takes files
+///   this provider never wrote.
+/// * `Install`/`Replace` enumerated the writes and said nothing about the
+///   removal that precedes them. `replace_managed_from` removes each owned
+///   namespace whole before copying, so a plan reading *"write 3 declared
+///   files"* can empty six directories.
+///
+/// Antigravity is the sharpest case and both halves of it are deliberate:
+/// `config/rules` is owned and routes `instruction`, and **no setup writes
+/// there**, because the floor is delivered from a plugin instead. So an install
+/// empties a person's global rules directory into a backup slot, and the plan
+/// that preceded it enumerated three writes.
+///
+/// Nothing here changes what an operation does. What it changes is whether the
+/// person approving it was told.
+pub(crate) fn taken_before_writing(
+    harness: &Harness,
+    scope: Option<provider_v3::TargetScope>,
+) -> Vec<String> {
+    // Under a scope the record *is* the inventory: `remove` and `replace` act
+    // on the paths this provider recorded writing, because a shared root such
+    // as `~/.agents` is read by several products at once. So the global
+    // sentence would be false here in the other direction -- it would promise
+    // to take a neighbour's files.
+    if harness.scoped_for(scope).is_some() {
+        return vec![
+            "only the files this provider recorded writing under this scope go; \
+             anything else under the same root is left alone"
+                .to_owned(),
+        ];
+    }
+    vec![
+        // Tense-neutral, because the same sentence is a preview on two
+        // surfaces and a result on two others. "remove these entries" read as
+        // an instruction under a line that had already removed them.
+        format!(
+            "these entries go whole, not file by file: {}",
+            harness.native_namespaces.join(", ")
+        ),
+        // **Position-free on purpose.** This sentence is printed on four
+        // surfaces and the capture is named above it on three of them and below
+        // it on the fourth. The first version said "the capture above holds
+        // it", which was false on the one that reads it after the fact -- a
+        // word describing layout inside a sentence describing behaviour.
+        "anything you put under those goes too, and the backup slot holds it".to_owned(),
+    ]
+}
+
 /// What writing a bundle over the target will do, enumerated for the plan.
 ///
 /// The bundle is read and verified here rather than at apply time only, so a
@@ -518,13 +578,12 @@ fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String
         ));
     };
     let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
-    let mut effects = vec![
-        "capture the current target into a new backup slot".to_owned(),
-        format!(
-            "write the {} declared files over the entries this provider owns",
-            verified.files.len()
-        ),
-    ];
+    let mut effects = vec!["capture the current target into a new backup slot".to_owned()];
+    effects.extend(taken_before_writing(harness, request.target_scope));
+    effects.push(format!(
+        "write the {} declared files over the entries this provider owns",
+        verified.files.len()
+    ));
     effects.extend(
         verified
             .files
@@ -597,14 +656,11 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
                 Some(digest::of_tree(&payload)?),
             )
         }
-        Operation::Remove => (
-            vec![
-                "capture the current target before removing".to_owned(),
-                "withdraw every file this provider owns".to_owned(),
-            ],
-            None,
-            None,
-        ),
+        Operation::Remove => {
+            let mut lines = vec!["capture the current target before removing".to_owned()];
+            lines.extend(taken_before_writing(harness, request.target_scope));
+            (lines, None, None)
+        }
         Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
         other @ Operation::Launch => {
             return Err(Error::refuse(
@@ -2006,6 +2062,107 @@ mod tests {
 
     fn far_future() -> &'static str {
         "2099-01-01T00:00:00.000Z"
+    }
+
+    /// The plan says what a mutation **takes** before it says what it writes.
+    ///
+    /// `0.0.24` fixed this sentence on `remove`'s *result* line and left it on
+    /// the two plan surfaces, which are the ones a consumer renders before a
+    /// person approves. `Operation::Remove` planned *"withdraw every file this
+    /// provider owns"* -- false under `global`, where `remove_managed` calls
+    /// `remove_dir_all` on each namespace -- and `Install` enumerated writes
+    /// while saying nothing about the removal that precedes them.
+    ///
+    /// Observed red against the shipped wording before it was kept: the old
+    /// `remove` line contains neither a namespace name nor the word `whole`,
+    /// and the old install effects contained no removal line at all.
+    #[test]
+    fn a_plan_names_the_namespaces_it_takes_whole_before_the_writes() {
+        let target = seeded("effects-name-what-goes");
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        let effects: Vec<String> = planned["plan"]["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap().to_owned())
+            .collect();
+        let text = effects.join("\n");
+
+        // Every namespace by name, not a count and not "every file".
+        for namespace in TEST.native_namespaces {
+            assert!(
+                text.contains(namespace),
+                "the plan never names {namespace}: {effects:?}"
+            );
+        }
+        assert!(
+            text.contains("go whole, not file by file"),
+            "the plan does not say the namespaces go whole: {effects:?}"
+        );
+        assert!(
+            text.contains("the backup slot holds it"),
+            "the plan does not say the capture holds what else was there: {effects:?}"
+        );
+        // The sentence that was wrong under `global`, gone.
+        assert!(
+            !text.contains("withdraw every file this provider owns"),
+            "the false sentence survived: {effects:?}"
+        );
+    }
+
+    /// Under a scope the same plan promises the opposite, because the
+    /// behaviour is the opposite.
+    ///
+    /// `remove` and `replace` under `user_root` act on the paths this provider
+    /// recorded writing: a shared root is read by several products at once. The
+    /// global sentence would be false here in the other direction -- it would
+    /// promise to take a neighbour's files -- so one wording for both cases is
+    /// wrong whichever wording is chosen.
+    #[test]
+    fn under_a_scope_the_plan_promises_the_recorded_files_and_not_the_namespaces() {
+        let target = seeded("effects-scoped");
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+                "--target-scope",
+                "user_root",
+            ],
+        ));
+        let text = planned["plan"]["effects"].to_string();
+        assert!(
+            text.contains("only the files this provider recorded writing"),
+            "{text}"
+        );
+        assert!(
+            text.contains("left alone"),
+            "the scoped plan does not say a neighbour is left alone: {text}"
+        );
+        assert!(
+            !text.contains("go whole, not file by file"),
+            "the global sentence reached a scoped plan: {text}"
+        );
     }
 
     /// A removal under a shared root is refused, and the refusal says why.

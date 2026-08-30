@@ -1,0 +1,219 @@
+name: appcontainer-probe
+
+# One experiment, not a gate. It answers a question two projects have carried as
+# permanent since 2026-08-26 without either of them running it.
+#
+# **It lives here rather than in the authoring workspace, and the reason is a
+# standing decision rather than a fault.** It was dispatched there twice -- on
+# 2026-08-28 and again on 2026-08-30 -- and both runs failed in four seconds
+# with **zero steps executed**: a startup failure, not a result.
+#
+# The cause was confirmed by the estate's own tooling session rather than
+# inferred here: a private `NDDev-it-com` repository cannot start a hosted job
+# at all, because the account's spending limit refuses it before any step runs.
+# Every other job in that workspace is on a self-hosted Linux fleet and this was
+# its only `windows-latest` one. So no amount of debugging it in place could
+# ever have produced an answer.
+#
+# These repositories are public, where `windows-latest` is free and green on
+# every commit, so here the runner is known to work and the question can
+# actually be asked.
+#
+# **The shape is worth remembering past this workflow.** A red run in a list
+# reads as a result, and *failed*, *never ran* and *passed vacuously* all render
+# identically. Only the middle one leaves a trace you can look for: zero steps,
+# near-zero duration. Before believing a run, check that it ran.
+#
+# Nothing in this repository depends on it and nothing schedules it.
+#
+# `ai_stp#416` records AppContainer isolation as blocked by target DACL
+# traversal. The agreed reading is that the issue answers *"may an installer
+# prepare a parent directory"* -- and that is a different question from *"can
+# the target itself carry an ACE an AppContainer can reach"*. Only the first is
+# in the issue. Bypass-traverse (`SeChangeNotifyPrivilege`) is granted broadly
+# by default, so the second may already be yes.
+#
+# Either answer is worth having. A yes retires a debt on the platform where
+# there is no launcher at all; a no replaces an inherited assumption with a
+# measurement and names what actually blocks it.
+#
+# Manual only. Nothing depends on it and a red result here is information about
+# Windows rather than about a commit.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  # One at a time: the probe creates a named AppContainer profile on the runner
+  # and deletes it at the end, and two overlapping runs would race that name.
+  group: appcontainer-probe
+  cancel-in-progress: false
+
+permissions:
+  # Reads the tree to get this file. The probe writes nothing anywhere but the
+  # runner's own temporary directory and needs no other scope.
+  contents: read
+
+jobs:
+  reach:
+    name: can an AppContainer reach an ACE'd target
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Create a profile, ACE only the target, and try to read it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # A parent whose DACL is deliberately *not* touched. If traversal of
+          # ancestors were required, an ACE on the leaf alone would not be
+          # enough and the read below would fail here rather than at the leaf.
+          $parent = Join-Path $env:RUNNER_TEMP 'probe-parent'
+          $target = Join-Path $parent 'target'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $canary = Join-Path $target 'canary.txt'
+          Set-Content -LiteralPath $canary -Value 'reachable' -NoNewline
+
+          Add-Type -Namespace P -Name Ac -MemberDefinition @'
+          [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
+          public static extern int CreateAppContainerProfile(
+              string name, string display, string desc,
+              IntPtr caps, int capCount, out IntPtr sid);
+          [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
+          public static extern int DeleteAppContainerProfile(string name);
+          [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+          public static extern bool ConvertSidToStringSid(IntPtr sid, out string str);
+          '@
+
+          $name = 'nddev-probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+          [IntPtr]$raw = [IntPtr]::Zero
+          $made = [P.Ac]::CreateAppContainerProfile($name, $name, 'setup-systems probe',
+                                                    [IntPtr]::Zero, 0, [ref]$raw)
+          if ($made -ne 0) {
+            # A profile this runner image will not create is itself the answer
+            # to a narrower question, and saying which is the point.
+            Write-Host "RESULT: no-profile — CreateAppContainerProfile returned 0x$('{0:X8}' -f $made)"
+            Write-Host "So the question below was not reached. This is a property of the runner image, not of DACL traversal."
+            exit 0
+          }
+
+          $sidText = $null
+          [void][P.Ac]::ConvertSidToStringSid($raw, [ref]$sidText)
+          Write-Host "AppContainer SID: $sidText"
+
+          # The whole experiment: an ACE on the *leaf only*.
+          $acl = Get-Acl -LiteralPath $target
+          $ace = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    $sidText, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+          $acl.AddAccessRule($ace)
+          Set-Acl -LiteralPath $target -AclObject $acl
+          Write-Host "ACE placed on the target. The parent's DACL was not touched:"
+          (Get-Acl -LiteralPath $parent).Access |
+            Where-Object { $_.IdentityReference -like "*$sidText*" } |
+            ForEach-Object { Write-Host "  UNEXPECTED: $_" }
+
+          # Run a child inside the container and have it try the read. Its exit
+          # code is the measurement; its stdout says which way.
+          $script = Join-Path $env:RUNNER_TEMP 'inside.ps1'
+          Set-Content -LiteralPath $script -Value @"
+          try {
+            `$text = Get-Content -LiteralPath '$canary' -Raw -ErrorAction Stop
+            Write-Output "INSIDE-READ-OK:`$text"
+            exit 0
+          } catch {
+            Write-Output "INSIDE-READ-DENIED:`$(`$_.Exception.GetType().Name)"
+            exit 5
+          }
+          "@
+
+          Add-Type -Namespace P -Name Run -MemberDefinition @'
+          [StructLayout(LayoutKind.Sequential)]
+          public struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct SecurityCapabilities {
+              public IntPtr AppContainerSid; public IntPtr Capabilities;
+              public uint CapabilityCount; public uint Reserved; }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct StartupInfoEx {
+              public int cb; public IntPtr r1, r2, r3;
+              public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars,
+                         dwFillAttribute, dwFlags;
+              public short wShowWindow, cbReserved2;
+              public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError, lpAttributeList; }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct ProcessInformation {
+              public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+          [DllImport("kernel32.dll", SetLastError=true)]
+          public static extern bool InitializeProcThreadAttributeList(
+              IntPtr list, int count, int flags, ref IntPtr size);
+          [DllImport("kernel32.dll", SetLastError=true)]
+          public static extern bool UpdateProcThreadAttribute(
+              IntPtr list, uint flags, IntPtr attr, IntPtr value, IntPtr size,
+              IntPtr prev, IntPtr returned);
+          [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+          public static extern bool CreateProcessW(
+              string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags,
+              IntPtr env, string dir, ref StartupInfoEx si, out ProcessInformation pi);
+          [DllImport("kernel32.dll", SetLastError=true)]
+          public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+          [DllImport("kernel32.dll", SetLastError=true)]
+          public static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+          '@
+
+          $caps = New-Object P.Run+SecurityCapabilities
+          $caps.AppContainerSid = $raw
+          $caps.Capabilities = [IntPtr]::Zero
+          $caps.CapabilityCount = 0
+          $caps.Reserved = 0
+          $capsPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal(
+                       [Runtime.InteropServices.Marshal]::SizeOf($caps))
+          [Runtime.InteropServices.Marshal]::StructureToPtr($caps, $capsPtr, $false)
+
+          [IntPtr]$size = [IntPtr]::Zero
+          [void][P.Run]::InitializeProcThreadAttributeList([IntPtr]::Zero, 1, 0, [ref]$size)
+          $list = [Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+          [void][P.Run]::InitializeProcThreadAttributeList($list, 1, 0, [ref]$size)
+          # PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES
+          [void][P.Run]::UpdateProcThreadAttribute(
+            $list, 0, [IntPtr]0x00020009, $capsPtr,
+            [IntPtr][Runtime.InteropServices.Marshal]::SizeOf($caps),
+            [IntPtr]::Zero, [IntPtr]::Zero)
+
+          $si = New-Object P.Run+StartupInfoEx
+          $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
+          $si.lpAttributeList = $list
+          $out = Join-Path $env:RUNNER_TEMP 'inside.log'
+          $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$script`" > `"$out`" 2>&1"
+          $pi = New-Object P.Run+ProcessInformation
+          # EXTENDED_STARTUPINFO_PRESENT
+          $spawned = [P.Run]::CreateProcessW($null, "cmd.exe /c $cmd", [IntPtr]::Zero,
+                       [IntPtr]::Zero, $false, 0x00080000, [IntPtr]::Zero, $target,
+                       [ref]$si, [ref]$pi)
+
+          if (-not $spawned) {
+            $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            Write-Host "RESULT: no-spawn — CreateProcessW failed with $code"
+            Write-Host "The container could not be entered, so nothing was learned about the ACE."
+            [void][P.Ac]::DeleteAppContainerProfile($name)
+            exit 0
+          }
+
+          [void][P.Run]::WaitForSingleObject($pi.hProcess, 60000)
+          [uint32]$exit = 0
+          [void][P.Run]::GetExitCodeProcess($pi.hProcess, [ref]$exit)
+          $said = if (Test-Path $out) { (Get-Content -LiteralPath $out -Raw).Trim() } else { '(no output)' }
+
+          Write-Host "child exit: $exit"
+          Write-Host "child said: $said"
+          if ($said -match 'INSIDE-READ-OK') {
+            Write-Host "RESULT: reachable — an AppContainer read a target carrying only its own ACE,"
+            Write-Host "with no ACE anywhere on the parent. Ancestor traversal did not block it."
+          } elseif ($said -match 'INSIDE-READ-DENIED') {
+            Write-Host "RESULT: denied — the leaf ACE alone was not enough. This is the measurement"
+            Write-Host "ai_stp#416 assumed, now taken rather than inherited."
+          } else {
+            Write-Host "RESULT: inconclusive — the child ran and said neither. Read its output above"
+            Write-Host "before drawing anything from this run."
+          }
+
+          [void][P.Ac]::DeleteAppContainerProfile($name)

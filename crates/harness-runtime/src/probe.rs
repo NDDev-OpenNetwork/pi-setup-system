@@ -388,7 +388,18 @@ fn through_remove(exe: &Path, target: &Path, own: &[String], first: &str, found:
     //
     // Checked here rather than in a unit test because the words only exist on
     // the human surface, and a `println!` is not reachable from one.
-    for wanted in ["taken whole", "is in the capture below", "restore it with"] {
+    // The wording moved once and this caught it, which is what it is for. It
+    // now asserts the *facts* the sentence has to carry rather than the phrases
+    // that carried them: the namespaces go whole, the capture holds the rest,
+    // and there is a command that puts it back. The words themselves are one
+    // sentence in `wire::taken_before_writing`, printed on four surfaces --
+    // two previews and two results -- which is why the phrasing had to stop
+    // being tensed and stop naming a direction on the page.
+    for wanted in [
+        "go whole, not file by file",
+        "the backup slot holds it",
+        "restore it with",
+    ] {
         if !removed.out.contains(wanted) {
             found.push(format!(
                 "remove no longer tells a person {wanted:?}; it said:\n{}",
@@ -486,10 +497,33 @@ pub fn round_trip(exe: &Path) -> Vec<String> {
 /// for, and it does so on all three systems.
 ///
 /// What it asserts is deliberately narrow: at most one of several concurrent
-/// installs applies, every refusal names the lock, and the target afterwards
-/// reports a setup with no drift. It does not assert that exactly one wins --
-/// a machine slow enough to serialise them would apply them one after another,
-/// which is correct behaviour and not what this is about.
+/// installs applies, every refusal is one of the two a race can legitimately
+/// produce, and the target afterwards reports a setup with no drift. It does
+/// not assert that exactly one wins -- a machine slow enough to serialise them
+/// would apply them one after another, which is correct behaviour and not what
+/// this is about.
+///
+/// **There are two admissible refusals, and this asked for one.** It required
+/// every refusal to name `target.lock`, and failed once under a loaded gate
+/// with:
+///
+/// ```text
+/// stale: the target changed after the lock was taken; no effect was made
+/// ```
+///
+/// That refusal is not a defect. It says so in its own words: the process
+/// *took* the lock, and by then the winner had already written, so the identity
+/// its plan expected no longer matched. Serialisation producing exactly that is
+/// what serialisation is for. A loser can be turned away at the lock or after
+/// it, and the second is invisible on an idle machine -- which is why this ran
+/// green for weeks and failed the first time the gate was busy.
+///
+/// So both are named, and **nothing else is**. Widening this to "any refusal"
+/// would retire the assertion rather than correct it: the reason a refusal is
+/// admissible has to be stated, or the next unexpected one passes too. The
+/// earlier version of this same check caught a real defect that way -- a
+/// refusal reading `cannot stat <path>`, naming a filesystem rather than the
+/// lock, from a tree walk racing a writer.
 #[must_use]
 pub fn one_writer_at_a_time(exe: &Path) -> Vec<String> {
     let mut found = Vec::new();
@@ -525,7 +559,7 @@ pub fn one_writer_at_a_time(exe: &Path) -> Vec<String> {
     }
 
     let mut applied = 0_usize;
-    let mut refused_without_naming_the_lock = Vec::new();
+    let mut refused_for_another_reason = Vec::new();
     for child in children {
         match child.wait_with_output() {
             Ok(output) => {
@@ -534,8 +568,15 @@ pub fn one_writer_at_a_time(exe: &Path) -> Vec<String> {
                 } else {
                     let said = String::from_utf8_lossy(&output.stderr).into_owned()
                         + &String::from_utf8_lossy(&output.stdout);
-                    if !said.contains("target.lock") {
-                        refused_without_naming_the_lock.push(said.replace("\r\n", "\n"));
+                    // Turned away at the lock, or after taking it and finding
+                    // the winner had already moved the target. Both are what a
+                    // race is supposed to produce; see this function's header
+                    // for why the second is named rather than tolerated.
+                    let at_the_lock = said.contains("target.lock");
+                    let after_the_lock =
+                        said.contains("the target changed after the lock was taken");
+                    if !at_the_lock && !after_the_lock {
+                        refused_for_another_reason.push(said.replace("\r\n", "\n"));
                     }
                 }
             }
@@ -548,9 +589,10 @@ pub fn one_writer_at_a_time(exe: &Path) -> Vec<String> {
     if applied == 0 {
         found.push("no concurrent install applied, so the target was never written".to_owned());
     }
-    for said in refused_without_naming_the_lock {
+    for said in refused_for_another_reason {
         found.push(format!(
-            "a concurrent install was refused without naming the lock:\n{said}"
+            "a concurrent install was refused for neither of the two reasons a race \
+             produces -- not at the lock, and not by the target moving after it:\n{said}"
         ));
     }
 
