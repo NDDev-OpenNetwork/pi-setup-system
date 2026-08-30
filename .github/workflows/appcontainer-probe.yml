@@ -101,6 +101,12 @@ jobs:
           [void][P.Ac]::ConvertSidToStringSid($raw, [ref]$sidText)
           Write-Host "AppContainer SID: $sidText"
 
+          # A neutral directory for the child to stand in, ACE'd on purpose and
+          # named so nobody mistakes it for part of the measurement. See the
+          # note at `CreateProcessW` for why the target cannot be used.
+          $work = Join-Path $env:RUNNER_TEMP 'probe-work'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
           # The whole experiment: an ACE on the *leaf only*.
           #
           # **The identity is a `SecurityIdentifier`, never the SID string.**
@@ -116,6 +122,12 @@ jobs:
                     $who, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
           $acl.AddAccessRule($ace)
           Set-Acl -LiteralPath $target -AclObject $acl
+
+          # The same grant on the standing-room, which is not under test.
+          $wacl = Get-Acl -LiteralPath $work
+          $wacl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    $who, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+          Set-Acl -LiteralPath $work -AclObject $wacl
           Write-Host "ACE placed on the target. The parent's DACL was not touched:"
           (Get-Acl -LiteralPath $parent).Access |
             Where-Object { $_.IdentityReference -like "*$sidText*" } |
@@ -123,7 +135,7 @@ jobs:
 
           # Run a child inside the container and have it try the read. Its exit
           # code is the measurement; its stdout says which way.
-          $script = Join-Path $env:RUNNER_TEMP 'inside.ps1'
+          $script = Join-Path $work 'inside.ps1'
           Set-Content -LiteralPath $script -Value @"
           try {
             `$text = Get-Content -LiteralPath '$canary' -Raw -ErrorAction Stop
@@ -191,13 +203,32 @@ jobs:
           $si = New-Object P.Run+StartupInfoEx
           $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
           $si.lpAttributeList = $list
-          $out = Join-Path $env:RUNNER_TEMP 'inside.log'
+          $out = Join-Path $work 'inside.log'
           $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$script`" > `"$out`" 2>&1"
           $pi = New-Object P.Run+ProcessInformation
+          # **The working directory is deliberately not the target.**
+          #
+          # It was, and the first run that got this far returned
+          # `ERROR_PATH_NOT_FOUND` from `CreateProcessW`. That is not the
+          # experiment's answer even though it looks like one: a working
+          # directory has to be *traversed to* by the new token, so pointing it
+          # at the target asked whether the container can walk a parent this
+          # probe deliberately leaves un-ACE'd -- a different and easier
+          # question than whether it can open the file. Every run would have
+          # failed at the door and reported it as the room being locked.
+          #
+          # `$work` is a sibling of the parent under test, ACE'd for the
+          # container on purpose, and it is not part of the measurement. The
+          # subject is still `$parent/target`, whose only ACE is on the leaf.
+          #
+          # `lpApplicationName` is the full path rather than `$null` for the
+          # same class of reason: a null name makes Windows search `PATH`, and a
+          # search that fails inside a container is one more way to get a
+          # not-found that reads like a refusal.
           # EXTENDED_STARTUPINFO_PRESENT
-          $spawned = [P.Run]::CreateProcessW($null, "cmd.exe /c $cmd", [IntPtr]::Zero,
-                       [IntPtr]::Zero, $false, 0x00080000, [IntPtr]::Zero, $target,
-                       [ref]$si, [ref]$pi)
+          $spawned = [P.Run]::CreateProcessW($env:ComSpec, "`"$env:ComSpec`" /c $cmd",
+                       [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00080000,
+                       [IntPtr]::Zero, $work, [ref]$si, [ref]$pi)
 
           if (-not $spawned) {
             $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
