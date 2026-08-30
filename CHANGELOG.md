@@ -20,6 +20,55 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.44] - 2026-08-31
+
+One system stops claiming it can start its product, and the reason had been
+written down in this repository for three days.
+
+**A launch declared from two questions that do not decide it.** The rule asked
+whether a build installs its product and whether that product documents an
+environment variable for its configuration home, and concluded that the product
+could be started against any target a caller names. Both are necessary. Neither
+is sufficient, and for one harness the answer was already recorded and disagreed:
+its own baseline note says that of the eight things this provider owns there,
+**one** follows that variable. The rest are built from a literal join to the
+process home and reach no override at all.
+
+So a launch against a chosen target assembled a session from the caller's own
+rules, hooks and integration servers and the target's settings file. Hooks and
+MCP servers are executable. None of them came from the setup anybody selected,
+and the same target behaved differently for different people.
+
+That system now declares no launch, and says why in the refusal rather than in a
+generic sentence -- the previous one told callers *"this build installs no
+software"*, which was false, because it installs and removes it.
+
+Launch is a stated fact per system now, carrying **how** it was established. The
+five that remain are not equally well established: three were measured by asking
+the product which home it resolved, one by making it write into the target, and
+one rests on a vendor page because no credential-free command of that product
+writes or reports its home. The weakest is declared with its basis visible rather
+than levelled up to look like the others or withdrawn on a technicality.
+
+**A vendor command script exposed under a name Windows cannot run.** The rule
+that names the stable command asked *is this member JavaScript* and answered the
+bare command for everything else. One vendor ships a batch launcher, so the
+stable command became an extensionless file holding batch text, hard-linked as
+though it were a program. It classifies the member's kind now, and a command
+script gets a wrapper that calls the vendor's script **where it lives** --
+copying it out would leave its own directory reference pointing at nothing.
+
+A native executable deliberately still has no extension, which looks
+inconsistent and is the measured distinction: starting a program by an explicit
+path reads its header rather than its name, so an `.exe` runs whatever it is
+called. A batch file has no header. One of the two was broken.
+
+**And a ninth surface nobody had a row for.** One product reads a separate
+sandbox policy file from the process home, with its own filesystem and network
+keys, which an administrator can relocate. It is declined rather than owned, for
+routing reasons rather than reluctance, and the posture that switches sandboxing
+off now says what it writes and what it cannot see.
+
 ## [0.0.43] - 2026-08-31
 
 Three corrections, and two of them close the last open questions an outside

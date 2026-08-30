@@ -931,16 +931,61 @@ pub fn exposed_name(command: &str, member: &str) -> String {
 /// the reason it is a parameter now.
 #[must_use]
 pub fn exposed_name_on(command: &str, member: &str, windows: bool) -> String {
+    match member_kind(member, windows) {
+        // A launcher naming the runtime, or a batch file kept as one. Both need
+        // an extension because Windows decides how to run a file from its name.
+        MemberKind::JavaScript | MemberKind::CommandScript => format!("{command}.cmd"),
+        MemberKind::Native => command.to_owned(),
+    }
+}
+
+/// What the vendor's entry point *is*, which is what decides how to expose it.
+///
+/// This used to be one question -- *is the member JavaScript* -- and everything
+/// else fell through to the bare command. Cursor's Windows package ships
+/// `dist-package/cursor-agent.cmd`, a batch launcher, so the stable command
+/// became an extensionless file holding batch text: not a program on the only
+/// platform that branch exists for, and hard-linked or copied as though it were
+/// native.
+///
+/// **A native `.exe` deliberately stays extensionless**, which looks
+/// inconsistent and is the measured distinction. `CreateProcess` on an explicit
+/// path reads the PE header rather than the name, so codex's `codex.exe` runs
+/// exposed as `codex`. A batch file has no header and cannot be executed without
+/// an interpreter at all. One of the two was broken; renaming the other would
+/// move the entry point in every plan, marker and readback for no benefit.
+///
+/// The platform is a parameter rather than a `cfg!` for the reason spelled out
+/// on [`exposed_name_on`]: the branch that was wrong is the one only Windows
+/// runs, and a `cfg!` makes it provable only there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberKind {
+    /// A program the operating system runs directly.
+    Native,
+    /// JavaScript, which needs the runtime named.
+    JavaScript,
+    /// A Windows batch launcher, which needs `cmd` and its own directory.
+    CommandScript,
+}
+
+/// Classify one artifact member for one platform.
+#[must_use]
+pub fn member_kind(member: &str, windows: bool) -> MemberKind {
+    if !windows {
+        // On Unix the shebang does the work and nothing here is a batch file.
+        return MemberKind::Native;
+    }
     // Through the extension rather than the spelling: Windows treats `.JS` and
     // `.js` as one extension, and a rule that missed the first would expose an
     // unrunnable file on the only platform this branch exists for.
-    let javascript = Path::new(member)
+    match Path::new(member)
         .extension()
-        .is_some_and(|kind| kind.eq_ignore_ascii_case("js"));
-    if windows && javascript {
-        format!("{command}.cmd")
-    } else {
-        command.to_owned()
+        .map(|kind| kind.to_string_lossy().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("js") => MemberKind::JavaScript,
+        Some("cmd" | "bat") => MemberKind::CommandScript,
+        _ => MemberKind::Native,
     }
 }
 
@@ -1049,25 +1094,43 @@ fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Re
     }
     #[cfg(not(unix))]
     {
-        if exposed.extension().is_some_and(|kind| kind == "cmd") {
-            // A launcher rather than a link. Windows runs a file by its
-            // extension, so neither a hard link nor a copy of a `.js` is a
-            // program -- and the interpreter has to be named. `%*` forwards
-            // every argument, and the quotes survive a prefix with spaces,
-            // which `%LOCALAPPDATA%\Programs` is one bad default away from.
-            fs::write(
-                exposed,
-                format!("@node \"{}\" %*\r\n", executable.display()),
-            )
-            .map_err(fail)?;
-        } else {
-            // Windows reserves symlink creation for privileged or
-            // developer-mode processes, so a hard link is what actually works;
-            // a copy is the last resort and costs a second copy of a large
-            // binary.
-            fs::hard_link(executable, exposed)
-                .or_else(|_| fs::copy(executable, exposed).map(|_| ()))
+        match member_kind(&executable.to_string_lossy(), true) {
+            MemberKind::JavaScript => {
+                // A launcher rather than a link. Windows runs a file by its
+                // extension, so neither a hard link nor a copy of a `.js` is a
+                // program -- and the interpreter has to be named. `%*` forwards
+                // every argument, and the quotes survive a prefix with spaces,
+                // which `%LOCALAPPDATA%\Programs` is one bad default away from.
+                fs::write(
+                    exposed,
+                    format!("@node \"{}\" %*\r\n", executable.display()),
+                )
                 .map_err(fail)?;
+            }
+            MemberKind::CommandScript => {
+                // A wrapper that *calls* the vendor script where it lives.
+                // Copying or linking it here would move it out of its own tree,
+                // and a batch launcher locates the runtime it starts through
+                // `%~dp0` -- which would then resolve to `bin\` and name
+                // nothing. `call` so the wrapper returns the script's exit
+                // status rather than ending the shell, and `%*` to forward
+                // arguments with their quoting intact.
+                fs::write(
+                    exposed,
+                    format!("@call \"{}\" %*\r\n", executable.display()),
+                )
+                .map_err(fail)?;
+            }
+            MemberKind::Native => {
+                // Windows reserves symlink creation for privileged or
+                // developer-mode processes, so a hard link is what actually
+                // works; a copy is the last resort and costs a second copy of a
+                // large binary. An extensionless name is fine here: an explicit
+                // path to a PE runs whatever it is called.
+                fs::hard_link(executable, exposed)
+                    .or_else(|_| fs::copy(executable, exposed).map(|_| ()))
+                    .map_err(fail)?;
+            }
         }
     }
 
@@ -1405,6 +1468,72 @@ mod tests {
                 .as_deref(),
             Some("1.2.3"),
             "the exposed command no longer names an installed version"
+        );
+    }
+
+    /// A vendor command script keeps a runnable boundary on Windows.
+    ///
+    /// `exposed_name_on` asked one question -- *is the member JavaScript* -- and
+    /// answered `agent` for everything else. Cursor's Windows package ships
+    /// `dist-package/cursor-agent.cmd`, a batch launcher, so the stable command
+    /// became an extensionless `bin/agent` holding batch text. Windows decides
+    /// how to run a file from its extension, so that file is not a program, and
+    /// the exposure branch beside it then hard-linked or copied it as though it
+    /// were native.
+    ///
+    /// The question that decides is the member's *kind*, not whether it happens
+    /// to be one particular kind. Four members, asserted for both platforms from
+    /// whichever one is running, because the branch that was wrong is the one
+    /// only Windows executes.
+    #[test]
+    fn a_command_script_member_keeps_an_extension_windows_can_run() {
+        // Native: the command, on every system.
+        assert_eq!(
+            exposed_name_on("agent", "dist-package/cursor-agent", true),
+            "agent"
+        );
+        assert_eq!(
+            exposed_name_on("agent", "dist-package/cursor-agent", false),
+            "agent"
+        );
+
+        // JavaScript: a launcher on Windows, the shebang does it on Unix.
+        assert_eq!(
+            exposed_name_on("pi", "package/dist/bundle/cli.js", true),
+            "pi.cmd"
+        );
+        assert_eq!(
+            exposed_name_on("pi", "package/dist/bundle/cli.js", false),
+            "pi"
+        );
+
+        // A vendor batch launcher: still a batch file, so it keeps an extension
+        // Windows will run. On Unix the member is never this shape.
+        assert_eq!(
+            exposed_name_on("agent", "dist-package/cursor-agent.cmd", true),
+            "agent.cmd",
+            "a .cmd member was exposed as a name Windows cannot run"
+        );
+        assert_eq!(
+            exposed_name_on("agent", "dist-package/cursor-agent.cmd", false),
+            "agent"
+        );
+
+        // **And a native `.exe` deliberately does not change.** Codex ships one
+        // and is exposed extensionless today, which works: `CreateProcess` on an
+        // explicit path reads the PE header rather than the name, so the file
+        // runs whatever it is called. A batch file has no header and cannot be
+        // executed at all without an interpreter, which is the whole difference
+        // and the reason only one of these two was broken. Renaming the working
+        // one would move the entry point in every plan and marker for no
+        // measured benefit.
+        assert_eq!(
+            exposed_name_on("codex", "package/bin/codex.exe", true),
+            "codex"
+        );
+        assert_eq!(
+            exposed_name_on("codex", "package/bin/codex.exe", false),
+            "codex"
         );
     }
 

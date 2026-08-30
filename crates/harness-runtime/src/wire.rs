@@ -1954,6 +1954,7 @@ pub(crate) mod tests_support {
         };
 
     pub(crate) const TEST: Harness = Harness {
+        launch_binding: crate::facts::LaunchBinding::Complete { how: "a fixture" },
         software: Some(TEST_SOFTWARE),
         predecessor_state_file: "NDDEV-TEST-SETUP.json",
         embedded_setups: &[],

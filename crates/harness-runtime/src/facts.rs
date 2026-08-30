@@ -42,6 +42,27 @@ pub struct Harness {
     /// Documentation either way: nothing here resolves a path from it, because
     /// every command takes an explicit target.
     pub config_home_env: &'static str,
+    /// Whether pointing the product at a target actually moves what it reads.
+    ///
+    /// This used to be inferred: `can_launch` asked whether the build installs
+    /// software and whether `config_home_env` is non-empty, and concluded that
+    /// the product could be started against any target. Neither question is the
+    /// one that decides, and for one harness the answer was already written
+    /// down and disagreed. Cursor's own baseline note, from 2026-08-28: *"one of
+    /// the eight this build owns"* follows the variable -- `cli-config.json` --
+    /// while `rules`, `commands`, `hooks.json`, `mcp.json` and the plugin pair
+    /// are built from a literal join to the process home and reach no resolver.
+    ///
+    /// So a launch there assembled a session from the caller's rules, hooks and
+    /// MCP servers and the target's settings file: a harness nobody selected,
+    /// and one that can execute code the chosen setup never carried.
+    ///
+    /// A fact rather than a conclusion, carrying how it was established, because
+    /// the five that are complete are not equally well established: three were
+    /// measured by asking the product what it resolved, one by making it write,
+    /// and one rests on a vendor page because no credential-free command of that
+    /// product writes its home.
+    pub launch_binding: LaunchBinding,
     /// The variable that stops this product replacing the bytes we installed.
     ///
     /// Empty where the product has none, which is the ordinary case: of the two
@@ -186,6 +207,31 @@ pub struct Scoped {
     pub projection_kinds: &'static [ProjectionKind],
     /// The top-level entries this provider owns inside such a target.
     pub native_namespaces: &'static [&'static str],
+}
+
+/// How completely a product follows the target it is pointed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchBinding {
+    /// Every owned surface at the target is what the product reads there.
+    ///
+    /// `how` records what established it, so a reader can tell a product that
+    /// was asked what it resolved from one that was only read about.
+    Complete {
+        /// What established it, so a reader can tell a product that was asked
+        /// what it resolved from one that was only read about.
+        how: &'static str,
+    },
+    /// Some owned surfaces follow the target and the rest resolve elsewhere.
+    ///
+    /// `unbound` names the ones that do not, because that list is the whole
+    /// reason a launch here would be a different harness from the one selected.
+    Partial {
+        /// The owned surfaces that do *not* follow the target, because that list
+        /// is the whole reason a launch here would be a different harness.
+        unbound: &'static str,
+    },
+    /// The product documents no way to be pointed at a target at all.
+    Undocumented,
 }
 
 /// One sign that a target is a different product's configuration home.
@@ -469,7 +515,17 @@ impl Harness {
     /// and that is the honest pair rather than a launch that ignores its target.
     #[must_use]
     pub fn can_launch(&self) -> bool {
-        !self.config_home_env.is_empty()
+        // Three conditions, and the history is in the order. This used to be the
+        // last two: a variable exists and software is installed. Both are
+        // necessary and neither is sufficient -- what decides is whether the
+        // variable moves what this provider owns, which is the first.
+        //
+        // The variable stays in the conjunction rather than being folded into
+        // the binding, because a product that documents none cannot be pointed
+        // at a target at all, and that is a different sentence from a product
+        // that can be pointed at one and only half follows.
+        matches!(self.launch_binding, LaunchBinding::Complete { .. })
+            && !self.config_home_env.is_empty()
             && matches!(
                 self.software,
                 Some(Software {
@@ -477,6 +533,40 @@ impl Harness {
                     ..
                 })
             )
+    }
+
+    /// Why this build does not start its product, for a caller that asked.
+    ///
+    /// Named rather than left to a generic refusal: *"cursor-setup-system does
+    /// not declare launch"* tells a person nothing they can act on, and the
+    /// thing they can act on is which surfaces would have come from somewhere
+    /// else.
+    #[must_use]
+    pub fn why_no_launch(&self) -> String {
+        if self.config_home_env.is_empty() {
+            return format!(
+                "{} documents no environment variable for its configuration home, so a \
+                 launch could not point it at the target this command was given",
+                self.product
+            );
+        }
+        match self.launch_binding {
+            LaunchBinding::Undocumented => format!(
+                "{} documents no way to be pointed at a target",
+                self.product
+            ),
+            LaunchBinding::Partial { unbound } => format!(
+                "{} follows {} for some of what this provider owns and not for the rest: \
+                 {}. A launch would assemble a session from this target and the caller's \
+                 own home, which is a different harness from the one selected",
+                self.product, self.config_home_env, unbound
+            ),
+            LaunchBinding::Complete { .. } => {
+                "this build installs no software, and launching a name found on PATH would \
+                 start whatever else shares it"
+                    .to_owned()
+            }
+        }
     }
 
     /// The commands this build answers.
@@ -557,11 +647,93 @@ impl Harness {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
+    /// A variable existing is not the same as a variable moving what matters.
+    ///
+    /// `can_launch` asked two questions -- does this build install software, and
+    /// is `config_home_env` non-empty -- and concluded that the product could be
+    /// started against any target. Neither question is the one that decides, and
+    /// for cursor the answer was already written down and disagreed: its own
+    /// baseline note has said since 2026-08-28 that one of the eight surfaces it
+    /// owns follows the variable.
+    ///
+    /// Both directions, because only the pair says anything: a build that
+    /// declared launch for every binding would pass the first assertion, and one
+    /// that declared it for none would pass the second.
+    #[test]
+    fn a_partial_binding_never_becomes_launch_capable() {
+        // `SAMPLE` declares no software, so the fixture supplies some: the rule
+        // is a conjunction and a test that forgot one half would pass for the
+        // wrong reason.
+        const ARTIFACT: setup_core::software::Artifact = setup_core::software::Artifact {
+            platform: "linux/x86_64",
+            url: "https://example.invalid/x.tgz",
+            bytes: 1,
+            sha256: "sha256:0",
+            shape: setup_core::software::Shape::GzipTar,
+            member: "package/x",
+        };
+        const DELIVERED: Software = Software {
+            command: "x",
+            version: "1.0.0",
+            delivery: Delivery::Artifacts(&[ARTIFACT]),
+            unsupported: &[],
+            previous: None,
+        };
+        let with_software = Harness {
+            software: Some(DELIVERED),
+            ..SAMPLE
+        };
+
+        let complete = Harness {
+            launch_binding: LaunchBinding::Complete { how: "measured" },
+            ..with_software
+        };
+        assert!(
+            complete.can_launch(),
+            "a complete binding with artifacts cannot launch"
+        );
+
+        // The other half of the conjunction, so neither can carry the rule alone.
+        let complete_without_software = Harness {
+            launch_binding: LaunchBinding::Complete { how: "measured" },
+            software: None,
+            ..SAMPLE
+        };
+        assert!(
+            !complete_without_software.can_launch(),
+            "a build with nothing installed declared launch"
+        );
+
+        let partial = Harness {
+            launch_binding: LaunchBinding::Partial {
+                unbound: "rules, hooks.json",
+            },
+            ..with_software
+        };
+        assert!(
+            !partial.can_launch(),
+            "a partial binding declared launch because a variable exists"
+        );
+        assert!(
+            partial.why_no_launch().contains("rules, hooks.json"),
+            "the refusal does not name the surfaces that would come from elsewhere: {}",
+            partial.why_no_launch()
+        );
+
+        let undocumented = Harness {
+            launch_binding: LaunchBinding::Undocumented,
+            config_home_env: "",
+            ..with_software
+        };
+        assert!(!undocumented.can_launch());
+    }
+
     use super::*;
 
     /// A harness that offers no software lifecycle, which is most of what the
     /// declaration tests are about.
     pub(crate) const SAMPLE: Harness = Harness {
+        launch_binding: LaunchBinding::Undocumented,
         software: None,
         predecessor_state_file: "",
         embedded_setups: &[],

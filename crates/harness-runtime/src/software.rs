@@ -400,20 +400,15 @@ pub(crate) fn launch(
     if !harness.can_launch() {
         return Err(Error::refuse(
             WireReason::UnsupportedOperation,
+            // The reason comes from the declaration rather than being guessed
+            // from one field here. Guessing produced a refusal that told cursor
+            // callers *"this build installs no software"* -- false, it installs
+            // and removes it, and the actual reason is that the product follows
+            // its variable for one of the eight surfaces this provider owns.
             format!(
                 "{} does not declare launch: {}",
                 harness.provider_id,
-                if harness.config_home_env.is_empty() {
-                    format!(
-                        "{} documents no environment variable for its configuration home, so a \
-                         launch could not point it at the target this command was given",
-                        harness.product
-                    )
-                } else {
-                    "this build installs no software, and launching a name found on PATH would \
-                     start whatever else shares it"
-                        .to_owned()
-                },
+                harness.why_no_launch()
             ),
         ));
     }
