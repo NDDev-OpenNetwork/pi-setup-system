@@ -2033,6 +2033,48 @@ mod tests {
 
     /// The reader refuses an archive that would inflate past what the caller
     /// allowed, and it decides *before* writing rather than while writing.
+    /// A central directory that declares itself implausibly large is refused
+    /// before a byte of it is allocated.
+    ///
+    /// **A constraint with no subjects, until this.** `MAX_CENTRAL_BYTES` is
+    /// 16 MiB and the line after it allocates `vec![0; size]` from a number an
+    /// untrusted archive supplies. Every zip fixture in this file has a central
+    /// directory of a few hundred bytes, so the bound and the data agreed by
+    /// accident -- which is indistinguishable from the bound working. Deleting
+    /// the check would have kept the suite green and left a memory-exhaustion
+    /// path open on input this reader is handed by a consumer.
+    ///
+    /// Driven by rewriting the size field in the end-of-central-directory
+    /// record rather than by building 16 MiB, because what the guard reads is
+    /// the *declaration*, not the bytes -- and a reader that believed the
+    /// declaration is exactly the failure being guarded against.
+    ///
+    /// The ordering is asserted too: the refusal must arrive before the
+    /// allocation, so the entry count is left small and the archive stays a few
+    /// hundred bytes on disk.
+    #[test]
+    fn a_central_directory_that_declares_itself_enormous_is_refused_before_allocating() {
+        let room = scratch("zip-central");
+        let mut bytes = zip_bytes(&[("payload.txt", b"small", false)]);
+        // End of central directory: the last 22 bytes when there is no comment.
+        // Its central-directory size is four bytes at offset 12 within it.
+        let eocd = bytes.len() - 22;
+        let declared: u32 = 16 * 1024 * 1024 + 1;
+        bytes[eocd + 12..eocd + 16].copy_from_slice(&declared.to_le_bytes());
+
+        let error = extract_zip(io::Cursor::new(bytes), &room, ROOMY)
+            .expect_err("a central directory larger than the reader will hold must be refused");
+        assert!(
+            format!("{error}").contains("implausibly large"),
+            "unexpected refusal: {error}"
+        );
+        assert!(
+            !room.join("payload.txt").exists(),
+            "nothing should have been written"
+        );
+        let _ = fs::remove_dir_all(&room);
+    }
+
     #[test]
     fn a_zip_that_inflates_past_the_limit_is_refused_before_it_writes() {
         let room = scratch("zip-limit");

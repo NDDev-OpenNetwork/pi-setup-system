@@ -50,6 +50,7 @@ Generated from the same rows as the section above, for every harness in this est
 | `metadata` | yes | yes | yes | yes | yes | — |
 | `license` | yes | **dropped** | yes | yes | — | — |
 | `compatibility` | yes | **dropped** | yes | yes | — | — |
+| `when_to_use` | yes | — | — | — | — | — |
 | `when-to-use` | — | yes | — | — | — | — |
 | `icon` | — | — | — | — | yes | — |
 | `color` | — | — | — | — | yes | — |

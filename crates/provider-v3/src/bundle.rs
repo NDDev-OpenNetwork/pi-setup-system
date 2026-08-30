@@ -807,6 +807,80 @@ mod tests {
     }
 
     /// Build a bundle whose three identities are all internally consistent.
+    /// A bundle cannot raise its own ceiling, and a bundle may lower it.
+    ///
+    /// **A constraint with no subjects, until this.** `effective_max_files` and
+    /// its two siblings clamp a bundle's declared limits to the contract's, and
+    /// the comment above them says why: without it *"a hostile one could declare
+    /// a ceiling of its own choosing"*. Three enforcement sites call them. **No
+    /// test had ever handed one a bundle that declared more than the contract
+    /// allows** -- every fixture in this file declares limits at or below the
+    /// contract, so the clamp and the data agreed by accident, which is
+    /// indistinguishable from the clamp working.
+    ///
+    /// That is the shape a peer hit from the other side today: a length bound
+    /// whose only data had never approached it, so nothing exercised the
+    /// difference between the type that declares the value and the code that
+    /// constructs it. Review cannot see it -- the declaration reads correct and
+    /// the use reads plausible, and they sit in different files. Only data at
+    /// the boundary tells you.
+    ///
+    /// Both directions, because `min` has two of them: a hostile ceiling is
+    /// refused, and a *stricter* bundle is honoured rather than widened back up
+    /// to the contract.
+    #[test]
+    fn a_bundle_may_lower_its_limits_and_may_not_raise_them() {
+        let hostile: Manifest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "bundle_format": BUNDLE_FORMAT,
+            "protocol_version": BUNDLE_PROTOCOL_VERSION,
+            "harness_id": "test",
+            "bundle_digest": "sha256:aa",
+            "limits": {
+                "max_files": 999_999,
+                "max_file_bytes": 8_u64 * 1024 * 1024 * 1024,
+                "max_bundle_bytes": 8_u64 * 1024 * 1024 * 1024,
+            }
+        }))
+        .unwrap();
+        assert_eq!(hostile.effective_max_files(), CONTRACT_MAX_FILES);
+        assert_eq!(hostile.effective_max_file_bytes(), CONTRACT_MAX_FILE_BYTES);
+        assert_eq!(
+            hostile.effective_max_bundle_bytes(),
+            CONTRACT_MAX_BUNDLE_BYTES
+        );
+
+        let stricter: Manifest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "bundle_format": BUNDLE_FORMAT,
+            "protocol_version": BUNDLE_PROTOCOL_VERSION,
+            "harness_id": "test",
+            "bundle_digest": "sha256:aa",
+            "limits": {"max_files": 3, "max_file_bytes": 16, "max_bundle_bytes": 32}
+        }))
+        .unwrap();
+        assert_eq!(stricter.effective_max_files(), 3);
+        assert_eq!(stricter.effective_max_file_bytes(), 16);
+        assert_eq!(stricter.effective_max_bundle_bytes(), 32);
+
+        // A bundle that declares nothing gets the contract, which is the case
+        // every other fixture here exercises and the reason this went unnoticed.
+        let silent: Manifest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "bundle_format": BUNDLE_FORMAT,
+            "protocol_version": BUNDLE_PROTOCOL_VERSION,
+            "harness_id": "test",
+            "bundle_digest": "sha256:aa",
+        }))
+        .unwrap();
+        assert_eq!(silent.effective_max_files(), CONTRACT_MAX_FILES);
+        assert_eq!(silent.effective_max_file_bytes(), CONTRACT_MAX_FILE_BYTES);
+        assert_eq!(
+            silent.effective_max_bundle_bytes(),
+            CONTRACT_MAX_BUNDLE_BYTES
+        );
+    }
+
     fn build(files: &[(&str, &str, u32)]) -> Built {
         let records: Vec<serde_json::Value> = files
             .iter()

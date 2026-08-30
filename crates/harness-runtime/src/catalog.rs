@@ -599,6 +599,89 @@ fn is_a_plugin_root(files: &[String], owner: &str) -> bool {
     })
 }
 
+/// Anything inside a skill that neither its entry point nor a page it routes to
+/// names.
+///
+/// **Written after the same sweep produced two findings in one hour**, both
+/// invisible to every guard here:
+///
+/// * a 192-line executable validator shipped into people's homes, named by no
+///   skill, no command and no guard, and wrong in three ways because nothing
+///   had asked it anything since the layout moved under it;
+/// * eleven authoring pages -- the configuration file and the instruction file,
+///   the two a setup spends most of its bytes on -- written into four harnesses
+///   and routed to from none of them.
+///
+/// The estate had one direction of the reference question. `dangling_references`
+/// asks whether a *named* file exists; `unreachable_references` asks whether a
+/// `references/` **directory** has an entry point above it. Neither asks whether
+/// an *existing* file is named, per file, and neither looks outside
+/// `references/` -- which is why a `scripts/` directory could hold an orphan for
+/// as long as it liked.
+///
+/// One hop, deliberately. A skill routes to its references and a reference may
+/// route on; a chain longer than that is a document nobody was going to follow
+/// anyway, and demanding transitive reachability would turn a real rule into a
+/// graph problem with arbitrary depth.
+///
+/// It reports its subject count for the reason [`undescribed`] does: one of the
+/// seven ships no skill at all, so an emptiness assertion there is green over
+/// nothing.
+#[must_use]
+pub fn stranded(setups: &[Setup]) -> Examined {
+    let mut found = Vec::new();
+    let mut entry_points = 0_usize;
+    for setup in setups {
+        for (relative, path) in files_by_path(&setup.payload) {
+            if !relative.ends_with("SKILL.md") {
+                continue;
+            }
+            let Some(directory) = path.parent() else {
+                continue;
+            };
+            let Ok(entry) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let carried: Vec<(String, std::path::PathBuf)> = files_by_path(directory)
+                .into_iter()
+                .filter(|(name, _)| name != "SKILL.md")
+                .collect();
+            let named_by = |text: &str, name: &str| {
+                text.contains(name)
+                    || std::path::Path::new(name)
+                        .file_name()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|leaf| text.contains(leaf))
+            };
+            let mut hop = String::new();
+            for (name, at) in &carried {
+                if named_by(&entry, name)
+                    && let Ok(text) = std::fs::read_to_string(at)
+                {
+                    hop.push_str(&text);
+                }
+            }
+            for (name, _) in &carried {
+                entry_points += 1;
+                if named_by(&entry, name) || named_by(&hop, name) {
+                    continue;
+                }
+                found.push(format!(
+                    "{} ships {name:?} inside a skill, and neither its SKILL.md nor \
+                     anything that routes from it names the file",
+                    setup.manifest.id
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    Examined {
+        problems: found,
+        entry_points,
+    }
+}
+
 /// A `references/` directory no entry point reaches.
 ///
 /// [`undescribed`] requires an entry point to describe itself; this requires
@@ -776,6 +859,29 @@ pub struct Setup {
     /// Two setups with the same bytes have the same definition digest, whatever
     /// they are called — identity is content, not a name.
     pub definition_digest: String,
+    /// The digest of the setup's **manifest**, which the one above does not cover.
+    ///
+    /// `definition_digest` is `of_tree(payload)` and nothing else, deliberately:
+    /// two setups with identical bytes must produce the same value so
+    /// [`identical`] can call one of them a posture in name only. Folding the
+    /// manifest in would give every setup a distinct digest and retire that
+    /// guard, because `id` alone would separate them.
+    ///
+    /// **The cost of that was a manifest bound by nothing.** `setup_catalogue_digest`
+    /// is the aggregate of the definition digests, so `id`, `sources` and
+    /// `description` could change with every check in this estate staying green
+    /// -- and those three are exactly what a consumer renders on the surface
+    /// that precedes an install. `full-auto`'s description runs to 3312
+    /// characters on one harness and is safety context, not marketing copy;
+    /// `sources` is what `check_authored_keys.py` reads to source every key a
+    /// setup writes. The provenance chain ran through a file no digest held.
+    ///
+    /// Proved rather than reasoned: a description was rewritten and the whole
+    /// gate stayed clean.
+    ///
+    /// So there are two digests rather than one wider digest. Content identity
+    /// keeps its meaning, and the manifest is held against silent change.
+    pub manifest_digest: String,
     /// How many files the tree holds.
     pub file_count: u64,
     /// Keeps a materialized catalog alive for as long as `payload` names it.
@@ -1128,6 +1234,14 @@ fn read_setup(directory: &Path, lifeline: &Lifeline) -> Result<Setup> {
     }
     Ok(Setup {
         definition_digest: digest::of_tree(&payload)?,
+        // The manifest's own bytes, separately from the payload's, and the
+        // separation is the point. See the field's documentation.
+        manifest_digest: digest::of_bytes(&std::fs::read(&manifest_path).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("{} cannot be re-read: {error}", manifest_path.display()),
+            )
+        })?),
         file_count: count_files(&payload)?,
         manifest,
         payload,
