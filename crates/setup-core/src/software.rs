@@ -19,6 +19,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::archive::{self, Limits};
 use crate::digest;
 use crate::error::{Error, ReasonCode, Result};
@@ -626,6 +628,99 @@ pub fn install(
     })
 }
 
+/// Resolve whatever an interrupted software operation left in a prefix.
+///
+/// Configuration mutations have a durable journal and a `recover-operation` that
+/// reads it. Software operations have neither: the protocol's recovery takes a
+/// `--target` and this work happens under a `--prefix`, which is a different
+/// root with a different lifetime. So an interrupted install used to be resolved
+/// by the *next* install happening to clear the leftovers, and nothing could say
+/// an operation had been interrupted at all.
+///
+/// The filesystem is the record here, and it is enough for a decision because
+/// the promote is two renames in a known order. Three states, and each has one
+/// right answer:
+///
+/// * **staging present** — extraction did not finish. The final path was never
+///   touched, so the installation that was there is still there. Take the
+///   staging directory.
+/// * **quarantine present and the version present** — the promote landed and
+///   the cleanup did not. The new tree is in place. Take the quarantine.
+/// * **quarantine present and the version absent** — the promote failed after
+///   the old tree stepped aside. Put it back.
+///
+/// The third is the one that matters and the one the old code could not have
+/// resolved: `<version>` empty with a full `.replaced-<version>` beside it reads
+/// as "nothing installed" to every other function here.
+///
+/// Idempotent: run twice and the second run finds nothing and says so. It
+/// answers what it did rather than how it went, because a caller printing this
+/// is telling a person what happened to their prefix.
+///
+/// # Errors
+///
+/// Fails where a leftover cannot be removed or a tree cannot be put back, which
+/// is a prefix nobody can repair by running this again.
+pub fn recover(root: &Path) -> Result<Vec<String>> {
+    fn fail(what: String) -> impl FnOnce(std::io::Error) -> Error {
+        move |error: std::io::Error| {
+            Error::new(ReasonCode::StateUnavailable, format!("{what}: {error}")).with_source(error)
+        }
+    }
+
+    let mut done = Vec::new();
+    let mut entries: Vec<PathBuf> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+
+    for path in entries {
+        let Some(name) = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        if let Some(version) = name.strip_prefix(".incoming-") {
+            fs::remove_dir_all(&path).map_err(fail(format!(
+                "the staged {version} tree could not be cleared"
+            )))?;
+            done.push(format!(
+                "an install of {version} was interrupted before it landed; the staged tree \
+                 is gone and whatever was installed is untouched"
+            ));
+        } else if let Some(version) = name.strip_prefix(".replaced-") {
+            let final_path = root.join(version);
+            if final_path.exists() {
+                fs::remove_dir_all(&path).map_err(fail(format!(
+                    "the replaced {version} tree could not be cleared"
+                )))?;
+                done.push(format!(
+                    "an install of {version} landed and its cleanup did not; the new tree is \
+                     in place and the old one is gone"
+                ));
+            } else {
+                fs::rename(&path, &final_path).map_err(fail(format!(
+                    "the previous {version} tree could not be put back"
+                )))?;
+                done.push(format!(
+                    "an install of {version} failed after the installed tree stepped aside; \
+                     it is back"
+                ));
+            }
+        } else if name.ends_with(".incoming") {
+            // A staged marker or manifest. Neither is a tree and neither is the
+            // record until it is renamed, so a leftover is only litter.
+            let _ = fs::remove_file(&path);
+            done.push(format!("a half-written {name} was cleared"));
+        }
+    }
+    Ok(done)
+}
+
 /// Remove one installed version, and the exposed command if it pointed at it.
 ///
 /// # Errors
@@ -855,6 +950,83 @@ pub fn exposed_name_on(command: &str, member: &str, windows: bool) -> String {
 /// and `bwrap` beside it and cursor's launcher needs its bundled `node`, so
 /// moving the executable out of its tree would produce a file that runs on the
 /// machine it was built on and nowhere else.
+/// Write a file so a reader sees the old contents or the new ones, never a part.
+///
+/// Staged in the same directory and renamed, because a rename within one
+/// directory is atomic and a plain write can stop anywhere. Factored when the
+/// second caller arrived: the version marker needed it after the consumer
+/// constructed an interrupted write that truncated onto another installed
+/// version, and the manifest beside it has the same failure and a worse one --
+/// a half-written JSON document does not parse, so a reader would call an
+/// installation unverifiable rather than wrong.
+///
+/// The staging name is dotted and sits beside its target, which every reader in
+/// this module already skips.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let staging = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let name = name.to_string_lossy();
+            // Dotted once, not twice. Both callers already write a dotted file,
+            // and blindly prefixing produced `..codex.version.incoming` -- which
+            // works and reads as a mistake. Caught by the marker test, which
+            // blocks the staging path by name to prove the write stages at all.
+            let dotted = if name.starts_with('.') {
+                format!("{name}.incoming")
+            } else {
+                format!(".{name}.incoming")
+            };
+            parent.join(dotted)
+        }
+        _ => return fs::write(path, bytes),
+    };
+    fs::write(&staging, bytes)?;
+    fs::rename(&staging, path)
+}
+
+/// What this prefix runs, recorded so a launch can check it rather than trust it.
+///
+/// The version marker beside this answers *which* version is exposed. It cannot
+/// answer whether the bytes under that version are the ones this provider put
+/// there, and `launch` was checking only that a file existed and carried an
+/// executable bit. So a product that replaced itself, or anything else that
+/// wrote over the tree, was started and reported as the pinned release.
+///
+/// The digest is of the executable named here rather than of the exposed
+/// command: on Windows the exposure can be a `.cmd` launcher holding a path
+/// rather than a copy of the program, and hashing that would check the launcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    /// The shape of this record, so a reader can refuse one it does not know.
+    pub schema_version: u32,
+    /// Which product version the exposed command runs.
+    pub version: String,
+    /// The executable, relative to the prefix.
+    pub executable: String,
+    /// Its digest when this provider exposed it.
+    pub executable_sha256: String,
+}
+
+impl Manifest {
+    /// Where the record for one command lives.
+    #[must_use]
+    pub fn path(root: &Path, command: &str) -> PathBuf {
+        root.join("bin").join(format!(".{command}.manifest.json"))
+    }
+
+    /// The record, or `None` where there is not one to read.
+    ///
+    /// Absent is a real state and not a failure: a prefix written before this
+    /// existed has no record, and calling that tampering would refuse every
+    /// installation made by an earlier release of this provider. Unparseable is
+    /// also `None` -- a record that cannot be read cannot accuse anything.
+    #[must_use]
+    pub fn read(root: &Path, command: &str) -> Option<Self> {
+        let raw = fs::read_to_string(Self::path(root, command)).ok()?;
+        let found: Self = serde_json::from_str(&raw).ok()?;
+        (found.schema_version == 1).then_some(found)
+    }
+}
+
 fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Result<()> {
     let fail = |error: std::io::Error| {
         Error::new(
@@ -922,10 +1094,27 @@ fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Re
         // that was there or the one being put there, never a third thing. The
         // staging name is dotted like the marker itself, which `Present` already
         // skips when it lists versions.
-        let marker = Present::marker(root, command);
-        let staging = marker.with_extension("version.incoming");
-        fs::write(&staging, version).map_err(fail)?;
-        fs::rename(&staging, &marker).map_err(fail)?;
+        write_atomically(&Present::marker(root, command), version.as_bytes()).map_err(fail)?;
+
+        // And what a launch needs to check the bytes rather than trust them.
+        // Written after the marker: a reader that finds a manifest and no
+        // marker has a partial record, and a reader that finds a marker and no
+        // manifest has the state every prefix written before this had, which is
+        // accepted rather than refused.
+        let relative = executable.strip_prefix(root).unwrap_or(executable);
+        let manifest = Manifest {
+            schema_version: 1,
+            version: version.to_owned(),
+            executable: relative.to_string_lossy().replace('\\', "/"),
+            executable_sha256: digest::of_file(executable)?,
+        };
+        let body = serde_json::to_vec(&manifest).map_err(|error| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!("the installation record could not be written: {error}"),
+            )
+        })?;
+        write_atomically(&Manifest::path(root, command), &body).map_err(fail)?;
     }
     Ok(())
 }
@@ -1217,6 +1406,75 @@ mod tests {
             Some("1.2.3"),
             "the exposed command no longer names an installed version"
         );
+    }
+
+    /// An interrupted software operation is resolved by a decision, not by luck.
+    ///
+    /// Until this existed, the leftovers of an interrupted install were cleared
+    /// by whatever ran next, and nothing could say an operation had been
+    /// interrupted. The protocol's `recover-operation` cannot help: it takes a
+    /// `--target` and this is a `--prefix`, a different root with a different
+    /// lifetime.
+    ///
+    /// The three states, each asserted for what it leaves behind rather than
+    /// for what it says. The third is the one that matters: a version directory
+    /// that is *empty of the promote* with a full quarantine beside it reads as
+    /// "nothing installed" to every other function here, so luck would have
+    /// resolved it as a missing installation.
+    #[test]
+    fn an_interrupted_install_is_resolved_by_the_state_it_left() {
+        let root = scratch("recover-prefix");
+        fs::create_dir_all(&root).unwrap();
+
+        // Staging only: extraction stopped, the final path was never touched.
+        fs::create_dir_all(root.join(".incoming-1.2.3/package")).unwrap();
+        fs::create_dir_all(root.join("1.2.2")).unwrap();
+        fs::write(root.join("1.2.2/kept"), b"the installation that was there").unwrap();
+        let said = recover(&root).unwrap();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("interrupted before it landed"), "{said:?}");
+        assert!(!root.join(".incoming-1.2.3").exists());
+        assert!(
+            root.join("1.2.2/kept").is_file(),
+            "an untouched tree was taken"
+        );
+
+        // Quarantine with the version present: promoted, cleanup interrupted.
+        fs::create_dir_all(root.join(".replaced-1.2.3")).unwrap();
+        fs::write(root.join(".replaced-1.2.3/old"), b"the previous tree").unwrap();
+        fs::create_dir_all(root.join("1.2.3")).unwrap();
+        fs::write(root.join("1.2.3/new"), b"the tree that landed").unwrap();
+        let said = recover(&root).unwrap();
+        assert!(
+            said.iter().any(|line| line.contains("cleanup did not")),
+            "{said:?}"
+        );
+        assert!(!root.join(".replaced-1.2.3").exists());
+        assert_eq!(
+            fs::read(root.join("1.2.3/new")).unwrap(),
+            b"the tree that landed",
+            "the promoted tree was replaced by the one it replaced"
+        );
+
+        // Quarantine with the version absent: the promote failed after the old
+        // tree stepped aside. Every other function here reads this as nothing
+        // installed.
+        fs::remove_dir_all(root.join("1.2.3")).unwrap();
+        fs::create_dir_all(root.join(".replaced-1.2.3")).unwrap();
+        fs::write(root.join(".replaced-1.2.3/old"), b"the previous tree").unwrap();
+        let said = recover(&root).unwrap();
+        assert!(
+            said.iter().any(|line| line.contains("it is back")),
+            "{said:?}"
+        );
+        assert_eq!(
+            fs::read(root.join("1.2.3/old")).unwrap(),
+            b"the previous tree",
+            "the tree that stepped aside was not put back"
+        );
+
+        // Idempotent, and it says nothing rather than inventing something.
+        assert!(recover(&root).unwrap().is_empty());
     }
 
     /// A marker truncated onto a sibling version is not believed.

@@ -20,6 +20,50 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-08-31
+
+Three corrections, and two of them close the last open questions an outside
+review of one harness raised about the program lifecycle.
+
+**A launch checked that a file was there, not which bytes were in it.** It
+verified that the exposed command existed, that it was a regular file, and that
+the host could execute it. None of those says *which* program. So anything with
+the prefix in reach -- the product replacing itself, a package manager writing
+over the tree -- was started and reported as the pinned release, while the plan
+that authorised the install, the digest recorded beside it and the rollback to
+the version next door all went on saying otherwise.
+
+Exposing a version now writes a record beside it: the version, the executable's
+path, and its digest at that moment. A launch checks the digest and refuses when
+it disagrees, naming both and starting nothing. A prefix with no record is
+accepted, because one written by an earlier release has none and refusing those
+would call every older installation tampered-with. What a record cannot do is be
+present and disagree.
+
+**An interrupted install was resolved by whatever ran next.** Configuration
+mutations have a durable journal and a recovery that reads it; software
+operations have neither and cannot, because that recovery names a configuration
+target and this work happens under a program prefix. So the leftovers were
+cleared as a side effect rather than by a decision, and nothing could say an
+operation had been interrupted.
+
+The filesystem is enough of a record here, because the promotion is two renames
+in a known order. Three states, each with one right answer, and one of them is
+resolved wrongly by luck: a missing version directory with a full quarantine
+beside it reads as *nothing installed* to everything else, so the next install
+would plan against a prefix whose real state was a version set aside. Recovery
+runs under the lock before anything reads the prefix, and its answer travels in
+the response -- empty on every ordinary run.
+
+**And an instrument that named the asker and never the asked.** The conformance
+report printed the checker's version and then seven verdicts, never the version
+of the providers it drove. It reads them from the built binaries, a debug build
+does not touch that directory, and so a day of ordinary work left it stale while
+every run reported that everything conformed. Measured: binaries eight releases
+behind a workspace, and verdicts published all day about a tree nobody had. The
+conclusion survived a rebuild. The instrument did not, and the instrument is the
+thing being sold.
+
 ## [0.0.42] - 2026-08-30
 
 Three corrections, and all three are one defect seen from different angles: a
