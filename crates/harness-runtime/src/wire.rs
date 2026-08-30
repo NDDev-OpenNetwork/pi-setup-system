@@ -606,7 +606,11 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
 
     let owned = owned_here(harness, &resolved, request.target_scope)?;
     let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
-    let profile = harness.projection_profile()?;
+    // The profile at *this* target. `projection_profile()` answers with the
+    // global block whatever scope it is asked about, and its digest went into
+    // every scoped plan -- so a consumer that compiled against the scoped
+    // profile `provider-info` publishes was handed a plan naming another one.
+    let profile = harness.projection_profile_for(request.target_scope)?;
     let build_digest = harness.build_digest()?;
 
     // Every operation that touches the target captures a backup first, so a
@@ -1767,7 +1771,14 @@ fn write_state(
         bundle_format: applied.bundle_format.clone(),
         bundle_digest: applied.bundle_digest.clone(),
         artifact_digest: applied.artifact_digest.clone(),
-        projection_profile_digest: Some(harness.projection_profile()?.digest),
+        // The same question the plan asks, asked the same way: under a scope
+        // this is that scope's profile. It recorded the global one, which made
+        // the state disagree with the plan that authorized it.
+        projection_profile_digest: Some(
+            harness
+                .projection_profile_for(mutation.target_scope)?
+                .digest,
+        ),
         // The digest of the plan this operation was authorized by -- taken
         // from the value the caller passed as `--plan-digest`, which is what
         // was checked against the plan's bytes before anything ran.
@@ -2020,9 +2031,23 @@ mod tests {
     /// the target's identity between plan and apply, and the apply would then
     /// correctly refuse its own plan as stale. It must also be unique per test,
     /// because these run in parallel.
+    /// A directory no other running test shares.
+    ///
+    /// The pid alone was not enough. These tests are registered twice in one
+    /// binary, so two threads call this with the same `name` at the same time,
+    /// land on the same path, and the second one to take the target lock is
+    /// refused with *"this process already holds …"* — a failure about the
+    /// fixture wearing the shape of a locking defect. It only shows on a test
+    /// that holds the lock long enough to overlap, which is why it stayed
+    /// invisible until one did: the plan-only tests release before the twin
+    /// arrives.
     fn scratch(name: &str) -> PathBuf {
-        let base =
-            std::env::temp_dir().join(format!("harness-runtime-{name}-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "harness-runtime-{name}-{}-{nth}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("target")).unwrap();
         fs::canonicalize(&base).unwrap()
@@ -2131,6 +2156,79 @@ mod tests {
     /// global sentence would be false here in the other direction -- it would
     /// promise to take a neighbour's files -- so one wording for both cases is
     /// wrong whichever wording is chosen.
+    /// And the state a scoped operation writes records the same profile.
+    ///
+    /// The plan and the state are read by different callers at different times,
+    /// and they disagreed: the plan is what a consumer approves, the state is
+    /// what `status` publishes afterwards, and a consumer comparing the two
+    /// found one profile in the authorization and another in the record of it.
+    /// Split from the plan test rather than folded into it, because fixing the
+    /// plan alone would leave this half green-by-omission.
+    #[test]
+    fn the_state_a_scoped_operation_writes_names_the_scoped_profile() {
+        let info = dispatch(&TEST, argv::parse(["provider-info"]).unwrap()).unwrap();
+        let global = info["projection_profile"]["digest"].as_str().unwrap();
+        let scoped = info["scoped_projection_profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["target_scope"] == "user_root")
+            .unwrap()["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(scoped, global, "the fixture's two profiles are identical");
+
+        let target = seeded("scoped-profile-state");
+        install_scoped(&target, "profile", "one", "# one\n");
+
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join(TEST.state_file)).unwrap()).unwrap();
+        assert_eq!(
+            state["projection_profile_digest"], scoped,
+            "the state after a scoped install named the global profile"
+        );
+    }
+
+    /// A scoped plan names the scoped profile, not the global one.
+    ///
+    /// `provider-info` publishes two profiles for a harness with a scope, and a
+    /// consumer compiles its bundle against the scoped one. The plan handed back
+    /// carried `projection_profile_digest` from `projection_profile()`, which
+    /// answers with the global block whatever it is asked — so the two sides
+    /// named different profiles for the same operation, and the state written
+    /// afterwards recorded the global one as well.
+    ///
+    /// Both halves are asserted. Equal to the scoped digest is the claim;
+    /// *different from the global* is what makes the first assertion mean
+    /// something, since a build whose two profiles happened to agree would pass
+    /// the first on its own.
+    #[test]
+    fn a_scoped_plan_names_the_scoped_profile_and_not_the_global_one() {
+        let info = dispatch(&TEST, argv::parse(["provider-info"]).unwrap()).unwrap();
+        let global = info["projection_profile"]["digest"].as_str().unwrap();
+        let scoped = info["scoped_projection_profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["target_scope"] == "user_root")
+            .unwrap()["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(
+            scoped, global,
+            "the fixture's two profiles are identical, so this test cannot fail"
+        );
+
+        let target = seeded("scoped-profile-digest");
+        let planned = scoped_plan(&target, "remove", "operation_01SCOPEDPROFILE");
+        assert_eq!(
+            planned["plan"]["projection_profile_digest"], scoped,
+            "a user_root plan named a profile the consumer did not compile against"
+        );
+    }
+
     #[test]
     fn under_a_scope_the_plan_promises_the_recorded_files_and_not_the_namespaces() {
         let target = seeded("effects-scoped");

@@ -387,6 +387,47 @@ impl Harness {
         )
     }
 
+    /// The projection profile **at the target a scope names**.
+    ///
+    /// A method rather than a second call site, for the reason
+    /// [`Self::projection_profile`] gives one level up and this is the next face
+    /// of: `projection_profile` answers with the global block whatever it is
+    /// asked, and its digest was written into a scoped plan and into the state a
+    /// scoped operation persists. So a consumer that compiled a bundle against
+    /// the scoped profile this build publishes in `provider-info` was handed a
+    /// plan naming a different profile, and the state afterwards recorded that
+    /// one too.
+    ///
+    /// Built the way `provider-info` builds it -- `ProjectionProfile::scoped`
+    /// with the same seven inputs -- rather than assembled again here, because
+    /// two constructions of one identity is how the digests came apart in the
+    /// first place.
+    ///
+    /// `None` is the global target, which is what the human surface passes: a
+    /// person at a terminal chose no scope and the global block is the answer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a declaration refusal.
+    pub fn projection_profile_for(
+        &self,
+        scope: Option<TargetScope>,
+    ) -> provider_v3::Result<ProjectionProfile> {
+        match self.scoped_for(scope) {
+            Some(scoped) => ProjectionProfile::scoped(
+                scoped.profile_id,
+                scoped.component_kinds,
+                scoped.projection_kinds,
+                scoped.native_namespaces,
+                &[BUNDLE_FORMAT],
+                self.max_files,
+                self.max_bytes,
+                scoped.target_scope,
+            ),
+            None => self.projection_profile(),
+        }
+    }
+
     /// The complete `provider-info` answer for this build.
     ///
     /// Only the five core operations are declared. The software lifecycle and

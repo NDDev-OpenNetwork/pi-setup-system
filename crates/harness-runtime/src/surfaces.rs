@@ -1099,6 +1099,39 @@ fn evidence_is_recorded(harness: &Harness, baseline: &Value, found: &mut Vec<Str
     }
 }
 
+/// A baseline may not record a gap it no longer has.
+///
+/// `second_pin_absent` exists so a reader can tell a gap from a fact: three of
+/// the seven pinned only one release, and a `software_update` that crosses two
+/// of them had nothing to cross. The block says so, and says how it will fill --
+/// by rotation, on the vendor's next bump.
+///
+/// It filled. Codex's next bump assigned `previous = 0.150.1` exactly as
+/// predicted, and the block stayed, so the file both carried a second pin and
+/// stated it had none. The prediction was right and nothing read it: a note that
+/// describes its own expiry cannot notice the expiry arriving.
+///
+/// The rule is the smallest one that holds: an absence recorded beside the thing
+/// it denies is a contradiction inside one file, and no vendor has to be asked
+/// to see it.
+fn an_absence_is_not_recorded_beside_the_thing(baseline: &Value, found: &mut Vec<String>) {
+    let claims_absent = baseline.get("second_pin_absent").is_some();
+    let carries_one = baseline
+        .get("previous_software_artifacts")
+        .and_then(|previous| previous.get("version"))
+        .and_then(Value::as_str)
+        .is_some_and(|version| !version.is_empty());
+    if claims_absent && carries_one {
+        found.push(
+            "second_pin_absent records that there is no second release to cross, and \
+             previous_software_artifacts names one. The gap it describes has closed: \
+             remove the block rather than editing it, because what it says was true and \
+             is now a statement about a different day."
+                .to_owned(),
+        );
+    }
+}
+
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
 /// Empty is the only passing answer. Each string names one disagreement and is
@@ -1116,6 +1149,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
     evidence_is_recorded(harness, baseline, &mut found);
+    an_absence_is_not_recorded_beside_the_thing(baseline, &mut found);
 
     let Some(block) = baseline.get(BLOCK).and_then(Value::as_object) else {
         found.push(format!(
