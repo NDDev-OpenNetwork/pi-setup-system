@@ -247,11 +247,16 @@ impl Harness {
 
     /// Whether this build can put a program on disk from bytes it can verify.
     ///
-    /// Not the same question as "does this harness have a `software` field".
-    /// Pi's is `Some`, and its delivery is a package manager -- the product is
-    /// installable, just not by fetching an artifact whose digest was fixed in
-    /// advance. Offering it `software` and `rollback` would be offering commands
-    /// that can only refuse.
+    /// Not the same question as "does this harness have a `software` field". A
+    /// `Delivery::Manager` product is installable, just not by fetching an
+    /// artifact whose digest was fixed in advance, and offering it `software`
+    /// and `rollback` would be offering commands that can only refuse.
+    ///
+    /// **No harness in this estate is manager-delivered today.** Pi was the
+    /// example this comment named until `7180648` measured its tarball; the
+    /// distinction is kept because the type admits it and `human.rs` exercises
+    /// it with a synthetic fixture, not because one of the seven is waiting to
+    /// be found by it.
     #[must_use]
     pub const fn installs_a_program(&self) -> bool {
         matches!(

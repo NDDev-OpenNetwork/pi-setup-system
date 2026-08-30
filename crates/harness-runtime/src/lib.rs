@@ -18,12 +18,19 @@
 //! setup from the local catalog when the owner asks for one by name.
 //!
 //! The software lifecycle is optional in the contract, and a harness declares
-//! it only when it carries an artifact table -- so six of the seven do, and pi
-//! does not, because npm resolves its dependency closure at install time and
-//! there is no single artifact whose digest can be fixed in advance. `launch`
-//! is declared by none. Declaring an optional operation this runtime cannot
-//! perform would let a consumer call something that cannot be honoured, which
-//! is worse than not offering it.
+//! it exactly when it carries an artifact table -- `Harness::installs_a_program`
+//! is the whole rule, and `launch` adds one condition on top of it, that the
+//! product documents an environment variable this build can point at a target.
+//! Declaring an optional operation this runtime cannot perform would let a
+//! consumer call something that cannot be honoured, which is worse than not
+//! offering it.
+//!
+//! **The rule is stated here and the tally is not, deliberately.** This
+//! paragraph used to carry one -- *"six of the seven do, and pi does not"*,
+//! plus *"`launch` is declared by none"* -- and both were false by the time
+//! anyone read them: pi gained an artifact table in `7180648`, and every
+//! harness but antigravity declares `launch`. A count in prose has nothing
+//! holding it. Ask the predicate.
 
 pub(crate) mod adopt;
 pub mod catalog;

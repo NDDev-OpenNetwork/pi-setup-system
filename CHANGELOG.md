@@ -20,6 +20,52 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-08-30
+
+Fourteen commits of corrections that no check could have made, and two
+checks that now exist because of them.
+
+Nothing in this release changes what a setup installs or where a component
+lands. It is a pass over the *claims* this estate makes about itself, from a
+day spent asking the artifacts to refuse things rather than reading what they
+say.
+
+**The revision every provider publishes was never recomputed.** Each of these
+seven binaries reports a `kit_aggregate_digest` -- the revision of the ai-stp
+provider kit it was compiled against, and the value the kit's own page says to
+pin. The guard beside it iterated the lines of `SHA256SUMS` and asked one
+question of each, which leaves three ways to be wrong: an empty file passes an
+iteration over its lines, `KIT-IDENTITY.json` names its own file list and
+nothing compared the two, and the aggregate itself was recomputed by nothing.
+The value is correct today; the claim was unheld. The guard now asks in both
+directions and ships a control that was observed refusing each of the four
+defects, on a copy rather than on the kit it guards.
+
+**A retry was applied to one of three call sites, and Windows found the
+second.** A tree walk racing a writer meets a name that is gone by the time it
+is stated. The first fix moved the refusal from `cannot stat` to `cannot open`,
+which is how the second and third came to be measured -- by a race rather than
+by reading.
+
+**One reason was removed and three copies of it outlived the commit.** A
+measurement corrected pi's exclusion from the program lifecycle and corrected
+the declaration; the sentence survived in three more files, one of them stating
+a tally of which harnesses install a program. A count in prose has nothing
+holding it; a predicate does, and the runtime's paragraph now states the rule
+instead of the tally.
+
+**The page six siblings rewrote, and the seventh kept the old one.** Cursor's
+builder toolkit told a model to run a command that does not exist in the tree
+shipping it. Five of the seven toolkits are generated and two are written by
+hand, and both hand-written ones have now drifted.
+
+**Two gate checks CI never ran, beside a page saying it did.** Both are purely
+local and finish in a tenth of a second, and neither was wired into any
+workflow, while `CONTRIBUTING.md` said CI runs the same commands. Two other
+checks reach vendor servers and stay outside the gate on purpose -- that is now
+written down where a person reads it, so *not running them* is a decision
+rather than an absence.
+
 ## [0.0.33] - 2026-08-29
 
 Four things that were wrong while every file was valid.
