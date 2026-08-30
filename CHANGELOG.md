@@ -20,6 +20,40 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-08-30
+
+The manual Windows experiment, corrected a second time, and this
+release exists only to carry it.
+
+The experiment asks whether a directory carrying one particular kind of
+permission entry can be reached from inside an isolated process, when the
+directory above it deliberately carries none. Two projects had recorded the
+answer as settled for four days without either of them running it.
+
+Its previous run refused to answer, and said so plainly: it could not start the
+isolated process at all, so nothing had been learned. The reason was in the
+experiment's own setup. The child was told to start *inside* the directory under
+test, and a working directory has to be reachable before a process begins — so
+the run was asking whether the isolated process can walk the directory above,
+which is exactly the thing being kept out of reach on purpose. It failed at the
+door and would have failed there every time.
+
+**That failure looks like the answer.** A not-found, from a call entering an
+isolated process, on a directory whose parent grants nothing, has the same shape
+as *"walking the parent is required"* — which is the belief this experiment
+exists to test. It reported "could not start" rather than "was refused" only
+because the two were kept separate when it was written, and that distinction is
+the whole value of the run.
+
+The child now stands in a neighbouring directory, granted access on purpose and
+named so nobody mistakes it for part of the measurement, and the program it runs
+is named by full path rather than searched for. What is being measured is
+unchanged.
+
+Nothing in these programs changed. This is the third correction to the
+instrument and the question is still open — but it is open now for a reason that
+can be stated, rather than because nobody looked.
+
 ## [0.0.36] - 2026-08-30
 
 One line, in a workflow rather than in the program, and it is here
