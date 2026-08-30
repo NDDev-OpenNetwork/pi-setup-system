@@ -20,6 +20,43 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.42] - 2026-08-30
+
+Three corrections, and all three are one defect seen from different angles: a
+statement that is true and does not say what it is about.
+
+**A marker write that could stop on another installed version.** The record of
+which version a program prefix runs is a plain file holding a version string, and
+a reader rejects a truncated one because a fragment is not an installed version
+-- unless the truncation stops somewhere that *is* one. `1.2.3` cut short is
+`1.2`, and where `1.2` is also installed the reader believes it, because 1.2
+really is there. Nothing in the file separates *"1.2 because that is what runs"*
+from *"1.2 because the write stopped there"*.
+
+That accident was constructed by the consumer of these providers after both
+sides had reasoned that only a person could produce a wrong-but-plausible
+record. It is not a person: it is an interrupted write and a sibling version
+whose string is a prefix of another, and the prefix relationship makes the
+second half free. The write stages and renames now, so a reader sees the record
+that was there or the one being put there and never a third thing. It cannot be
+fixed in the reading, on either side, and the attempt would have to distrust the
+record exactly where the record is right.
+
+**A total published over two roots under one label.** The evidence report counted
+sixty-five owned rows: fifty-five at the harnesses' own configuration homes and
+ten under a scope's separate root, with nothing saying so. The arithmetic was
+never wrong, which is why no check caught it -- a count has something recomputing
+it and a label has nothing.
+
+**A verification that did not say what it compared.** The render check reported
+that all seven published trees match this source and named neither side. It
+clones fresh from each remote, so a stale local copy could not fool it; what it
+could not tell you is which commit of each tree the agreement was about. It says
+so now.
+
+Also: a documented reading that had outlived its own present tense, dated to the
+day it was taken with what changed named.
+
 ## [0.0.41] - 2026-08-30
 
 Four corrections, and the two that matter are in the kernel every one of

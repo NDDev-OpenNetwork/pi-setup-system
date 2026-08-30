@@ -904,7 +904,28 @@ fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Re
     // command is in place, so a marker never names a version that is not
     // exposed yet.
     if let Some(root) = exposed.parent().and_then(Path::parent) {
-        fs::write(Present::marker(root, command), version).map_err(fail)?;
+        // **Staged and renamed, because a partial marker can name a real
+        // version.** A plain write can stop anywhere, and the version filter on
+        // the reading side rejects a fragment only because a fragment is not an
+        // installed version -- unless the truncation stops somewhere that *is*
+        // one. `1.2.3` cut short is `1.2`, and where `1.2` is also installed
+        // both readers believe it: `versions.contains("1.2")` is true because
+        // 1.2 really is there. Nothing in a plain-text marker separates "1.2
+        // because that is exposed" from "1.2 because the write stopped there".
+        //
+        // Constructed by the consumer after both of us had reasoned that only a
+        // person could produce a wrong-but-plausible marker. An interrupted
+        // write and a sibling whose string is a prefix of another is not a
+        // person, and the prefix relationship makes it free.
+        //
+        // A rename within one directory is atomic, so a reader sees the marker
+        // that was there or the one being put there, never a third thing. The
+        // staging name is dotted like the marker itself, which `Present` already
+        // skips when it lists versions.
+        let marker = Present::marker(root, command);
+        let staging = marker.with_extension("version.incoming");
+        fs::write(&staging, version).map_err(fail)?;
+        fs::rename(&staging, &marker).map_err(fail)?;
     }
     Ok(())
 }
@@ -1195,6 +1216,71 @@ mod tests {
                 .as_deref(),
             Some("1.2.3"),
             "the exposed command no longer names an installed version"
+        );
+    }
+
+    /// A marker truncated onto a sibling version is not believed.
+    ///
+    /// The consumer constructed the accident I told them I could not. The
+    /// version filter rejects a truncated marker because the fragment is not an
+    /// installed version -- unless the truncation stops somewhere that *is* one.
+    /// `1.18.23` cut short is `1.18`, and where `1.18` is also installed the
+    /// prefix relationship does it for free: no editing, no person, an
+    /// interrupted write and a sibling whose string is a prefix of another.
+    ///
+    /// `versions.contains("1.18")` is true, because 1.18 really is installed.
+    /// Nothing in a plain-text marker separates *"1.18 because that is what is
+    /// exposed"* from *"1.18 because the write stopped there"*, and reading it
+    /// twice does not help: the bytes are stable once written.
+    ///
+    /// So the fix is in the writing, not the reading. Both endings of an
+    /// interrupted write are asserted -- the old value or the new one, never a
+    /// third thing.
+    #[test]
+    fn a_marker_truncated_onto_a_sibling_version_is_not_believed() {
+        let (at, artifact) = staged("truncated-marker", b"#!/bin/sh\necho new\n", CODEX_MEMBER);
+        let root = at.join("prefix");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+
+        // A sibling whose string is a prefix of the exposed one. `1.2` beside
+        // the installed `1.2.3` is the shape; the consumer measured `1.18`
+        // beside `1.18.23`.
+        let sibling = root.join("1.2");
+        fs::create_dir_all(sibling.join("package/vendor/x86_64-unknown-linux-musl/bin")).unwrap();
+        fs::write(sibling.join(CODEX_MEMBER), b"#!/bin/sh\necho sibling\n").unwrap();
+
+        // What an interrupted write leaves: the exposed version, cut short at a
+        // point that happens to be another installed version.
+        fs::write(root.join("bin").join(".codex.version"), "1.2").unwrap();
+
+        let read = Present::under_named(&root, "codex", CODEX_MEMBER);
+        assert_eq!(
+            read.exposed.as_deref(),
+            Some("1.2"),
+            "this test drives the state; if it stops reproducing, say why here"
+        );
+
+        // And the writer must make that state unreachable: a write that fails
+        // leaves the marker it found, never a fragment of the one it was told
+        // to put there.
+        let marker = root.join("bin").join(".codex.version");
+        fs::write(&marker, "1.2.3").unwrap();
+        let staging = marker.with_extension("version.incoming");
+        fs::create_dir_all(&staging).unwrap(); // the staging path cannot be written
+        let refused = expose(
+            &root.join("1.2").join(CODEX_MEMBER),
+            &root.join("bin").join("codex"),
+            "1.2",
+            "codex",
+        );
+        assert!(
+            refused.is_err(),
+            "the marker write did not stage: {refused:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "1.2.3",
+            "a failed marker write replaced the marker that was there"
         );
     }
 
