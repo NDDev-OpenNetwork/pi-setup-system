@@ -1964,6 +1964,7 @@ pub(crate) mod tests_support {
         vendor: "NDDev",
         documented_config_home: "~/.test",
         config_home_env: "TEST_CONFIG_DIR",
+        updates_off_env: "",
         config_home_note: "",
         control_directory: ".test-setup-system",
         state_file: "NDDEV-TEST-PROVIDER.json",

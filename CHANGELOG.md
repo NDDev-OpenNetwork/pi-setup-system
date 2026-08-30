@@ -20,6 +20,50 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.41] - 2026-08-30
+
+Four corrections, and the two that matter are in the kernel every one of
+these systems shares.
+
+**Removing a version nobody was running took the command that ran the other
+one.** The removal took the version tree, then took the exposed command and the
+version marker whenever that tree existed -- without asking whether either named
+the version being removed. So the ordinary sequence after a bad release, install
+then update then roll back then take the bad one off, deleted the command
+pointing at the good one and left a complete, working installation that nothing
+could start. The sentence above that function has said *"and the exposed command
+if it pointed at it"* since it was written; the code never asked.
+
+**An install that failed destroyed the install that was working.** The installer
+cleared the version directory and extracted into that same path, so between those
+two steps there was no installation at all -- and on a reinstall of the version
+currently exposed, the command pointed into a directory that had just been
+deleted. A crash, a full disk, or an archive that turns out not to carry its
+declared executable took the working program with it. It stages in a sibling and
+promotes with two renames now, in the order that leaves a complete tree at the
+final path at every moment a reader could look.
+
+**Neither could have been caught by the evidence run, and the reason is worth
+more than the fix.** That run rolls back and then moves *forward* before
+removing, so the version it removes is always the exposed one -- the case a
+removal cannot get wrong. The case it did get wrong was the one the happy path
+never enters. It does the other order now, against the vendor's real bytes.
+
+**Six of these seven repositories promised a restore of components their provider
+cannot install.** The sentence naming what a restore returns was written once, by
+hand, and rendered into every tree. Measured against what each build actually
+declares, it was true of one of them -- and it also understated, because six
+route a plugin kind it never mentioned. It is generated from each declaration
+now, which is the repair the neighbouring "does this harness install its product"
+flag already got after being wrong for three of the seven.
+
+Also: a launch no longer hands a product a way to replace the bytes it was pinned
+to, where that product documents such a variable and this estate has read it in
+the shipped artifact; a permission rule described as a boundary now says which
+boundary it is, measured in the product rather than argued from a page; and three
+system policy paths recorded as literals turn out to be none of them, joined at
+runtime like every other path in that record.
+
 ## [0.0.40] - 2026-08-30
 
 Two merges, and both came out of reading an outside review against the product
