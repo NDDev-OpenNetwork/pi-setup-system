@@ -269,6 +269,19 @@ fn files_under(root: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// What [`undescribed`] found, and how many things it looked at.
+///
+/// The count is here because `assert!(problems.is_empty())` cannot tell a clean
+/// tree from an empty walk, and one of the seven harnesses genuinely has
+/// nothing for this guard to examine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Examined {
+    /// One line per entry point that cannot describe itself.
+    pub problems: Vec<String>,
+    /// How many entry points the walk actually reached.
+    pub entry_points: usize,
+}
+
 /// A component entry point that carries no frontmatter, or none the product
 /// reads.
 ///
@@ -290,14 +303,28 @@ fn files_under(root: &std::path::Path) -> Vec<String> {
 ///   `{id, name: filename.replace(".md",""), path, scope}`: the name comes from
 ///   the filename and no frontmatter is read. Requiring it would be a rule the
 ///   product does not have.
+///
+/// **It reports how many entry points it looked at, and that is not decoration.**
+/// `assert!(problems.is_empty())` is green when the walk found nothing, and
+/// codex's own test docstring says outright that it finds nothing there. So six
+/// harnesses were asserting a guard whose subject count nobody stated, and a
+/// layout change that removed every entry point would have left all seven green.
+///
+/// A filter that selects nothing produces output identical to a filter that
+/// selects correctly. The only thing that tells them apart is asking how many
+/// it matched -- and that is a number nobody prints. Returning it forces each
+/// caller to state the number its own tree carries, including the harness whose
+/// number is zero.
 #[must_use]
-pub fn undescribed(setups: &[Setup]) -> Vec<String> {
+pub fn undescribed(setups: &[Setup]) -> Examined {
     let mut found = Vec::new();
+    let mut entry_points = 0_usize;
     for setup in setups {
         for name in files_under(&setup.payload) {
             if !is_entry_point(&name) {
                 continue;
             }
+            entry_points += 1;
             let Ok(text) = std::fs::read_to_string(setup.payload.join(&name)) else {
                 found.push(format!("{} cannot read {name:?}", setup.manifest.id));
                 continue;
@@ -348,7 +375,10 @@ pub fn undescribed(setups: &[Setup]) -> Vec<String> {
             }
         }
     }
-    found
+    Examined {
+        problems: found,
+        entry_points,
+    }
 }
 
 /// Whether a path is a plugin manifest, in the two shapes that have one.
@@ -414,6 +444,36 @@ pub fn dangling_references(setups: &[Setup]) -> Vec<String> {
             let here = relative.rsplit_once('/').map_or("", |(dir, _)| dir);
             for quoted in text.split('`').skip(1).step_by(2) {
                 let named = quoted.trim();
+                // **Only documents, and that scope was measured rather than
+                // assumed.**
+                //
+                // Cursor's hand-written toolkit named two files that exist
+                // nowhere in this estate -- `config/nddev-contract.json` and
+                // `build/manifest.json`, inherited from the program this one
+                // replaced -- and this guard did not see them because they are
+                // not `.md`. The obvious repair is to check every extension.
+                //
+                // Measured before writing it: across all 28 setups that rule
+                // flags **119** backticked paths, of which **117 are correct**.
+                // Prose here legitimately names repository paths a reader is
+                // told to open (`tools/build_nddev_builder.py`,
+                // `scripts/gate.sh`, `references/<harness>-baseline.json`) and
+                // product paths a setup deliberately does not ship
+                // (`config/hooks.json`, `plugins/installed_plugins.json`,
+                // `antigravity-cli/keybindings.json`). A guard with that ratio
+                // is one people learn to ignore.
+                //
+                // The trap inside the trap: two of the 119 are the *corrective*
+                // page, which quotes both dead paths in order to say they are
+                // dead. The extended guard would refuse the sentence that
+                // documents the removal.
+                //
+                // A document is different because a document named in prose is
+                // a file a reader is told to *open*, and the setup either ships
+                // it or the instruction goes nowhere. `.json` has no such
+                // property. The two dead paths were found by reading, and this
+                // note exists so the next author reaches for measurement rather
+                // than for the tidier rule.
                 let is_document = std::path::Path::new(named)
                     .extension()
                     .and_then(std::ffi::OsStr::to_str)
@@ -1255,9 +1315,9 @@ mod tests {
         let listed = Catalog::at(&root).list().unwrap();
 
         assert!(
-            undescribed(&listed).is_empty(),
+            undescribed(&listed).problems.is_empty(),
             "a module plugin was asked for fields it does not have: {:?}",
-            undescribed(&listed)
+            undescribed(&listed).problems
         );
         assert!(
             unreachable_references(&listed).is_empty(),
@@ -1309,7 +1369,7 @@ mod tests {
         );
 
         let listed = Catalog::at(&root).list().unwrap();
-        let found = undescribed(&listed);
+        let found = undescribed(&listed).problems;
 
         assert!(
             found

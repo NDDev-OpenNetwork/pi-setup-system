@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.37"
+version = "0.0.38"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -23,9 +23,9 @@ sha2 = "0.11"
 # `setup-core::archive`); an inflate loop is not, because its bugs are
 # memory-safety bugs and it is not improved by being hand-written here.
 miniz_oxide = "0.9"
-setup-core = { path = "crates/setup-core", version = "0.0.37" }
-provider-v3 = { path = "crates/provider-v3", version = "0.0.37" }
-harness-runtime = { path = "crates/harness-runtime", version = "0.0.37" }
+setup-core = { path = "crates/setup-core", version = "0.0.38" }
+provider-v3 = { path = "crates/provider-v3", version = "0.0.38" }
+harness-runtime = { path = "crates/harness-runtime", version = "0.0.38" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

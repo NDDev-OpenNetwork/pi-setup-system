@@ -20,6 +20,48 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-08-30
+
+A guard that was passing while it examined nothing, and the answer to
+a question two projects had recorded as settled without running it.
+
+**The guard.** Seven of these repositories run a check that walks a setup's
+files, keeps the ones that are a component's entry point, and refuses any that
+cannot describe itself. Each asserted that it found no problems. That assertion
+is also true when the walk found **nothing at all** — and one of the seven says
+so in its own words, because that harness genuinely ships no entry point of this
+kind. So one was knowingly asserting a check with no subjects, six were assuming
+subjects and never saying how many, and a change to the layout that removed
+every entry point would have left all seven green.
+
+The check now reports how many things it looked at, which forced every caller to
+state the number its own tree carries — including the one whose number is zero,
+and which now carries the reason it is zero. Confirmed by making nothing count
+as an entry point: every previous assertion still passes and the new one fails.
+
+**The question.** A manual experiment ships here asking whether a directory
+carrying one particular kind of permission entry can be reached from inside an
+isolated process, when the directory above it deliberately carries none. The
+answer is that it can. It was recorded as settled the other way for four days,
+on both sides, by nobody running it.
+
+Three corrections to the instrument stood in the way and **every one of them
+imitated the finding**: it could not start at all; then it failed while building
+the permission entry, reported at the line that applies it; then it could not
+enter the isolated process, on a directory whose parent grants nothing. Each of
+those, read quickly, is the expected result. The experiment printed *"could not
+be entered"* rather than *"was refused"* only because the two were kept apart
+when it was written.
+
+The debt that answer was justifying is **not** lifted — nothing here builds or
+proves the thing it was blocking. What changed is that the reason recorded
+against it was false, and a false reason is worse than none, because it is what
+stops anyone looking.
+
+Also records a rule that was measured and then **declined**: widening a
+reference check beyond documents would flag 119 paths of which 117 are correct,
+and two of the two real ones are the page that documents their removal.
+
 ## [0.0.37] - 2026-08-30
 
 The manual Windows experiment, corrected a second time, and this

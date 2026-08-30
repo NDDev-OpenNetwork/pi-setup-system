@@ -26,16 +26,41 @@ name: appcontainer-probe
 #
 # Nothing in this repository depends on it and nothing schedules it.
 #
-# `ai_stp#416` records AppContainer isolation as blocked by target DACL
-# traversal. The agreed reading is that the issue answers *"may an installer
-# prepare a parent directory"* -- and that is a different question from *"can
-# the target itself carry an ACE an AppContainer can reach"*. Only the first is
-# in the issue. Bypass-traverse (`SeChangeNotifyPrivilege`) is granted broadly
-# by default, so the second may already be yes.
+# **Answered 2026-08-30, and the answer is `reachable`.**
 #
-# Either answer is worth having. A yes retires a debt on the platform where
-# there is no launcher at all; a no replaces an inherited assumption with a
-# measurement and names what actually blocks it.
+#     ACE placed on the target. The parent's DACL was not touched:
+#     child said: INSIDE-READ-OK:reachable
+#     RESULT: reachable -- an AppContainer read a target carrying only its own
+#     ACE, with no ACE anywhere on the parent. Ancestor traversal did not block
+#     it.
+#
+# The empty line after "The parent's DACL was not touched" is the control: the
+# step below it prints every ACE on the parent matching this SID as
+# `UNEXPECTED`, and none appeared. So the read happened with the parent granting
+# the container nothing. Bypass-traverse is granted broadly by default and that
+# is the mechanism.
+#
+# `ai_stp#416` records AppContainer isolation as blocked by target DACL
+# traversal. It is not wrong about its own question -- it answers *"may an
+# installer prepare a parent directory"*. It was being **cited** for *"can the
+# target itself carry an ACE an AppContainer can reach"*, which is a different
+# question, and that citation is what stopped two projects looking for four
+# days. The consumer has corrected the sentence where it was load-bearing, in
+# their launcher code and in `ADR-0126`, and closed the issue.
+#
+# **The debt it justified is not lifted, and that is right.** No network-denying
+# launcher is built or proved on either side. What changed is that the revision
+# condition is now *reachable* rather than *blocked*, and the reason recorded
+# against it was false -- which is worse than no reason, because a false reason
+# is what stops anyone looking.
+#
+# It is kept, and kept runnable, because a measurement anybody can re-take is
+# worth more than a conclusion about one. Three corrections to this instrument
+# stood between the question and the answer and **every one of them imitated the
+# finding**: it never started; it died constructing the access rule while
+# reporting at the line that places it; and it could not enter the container
+# with a not-found on a parent that grants nothing. Any of the three, skimmed,
+# confirms the assumption and calls it a measurement.
 #
 # Manual only. Nothing depends on it and a red result here is information about
 # Windows rather than about a commit.

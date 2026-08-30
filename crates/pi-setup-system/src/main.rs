@@ -421,8 +421,18 @@ mod tests {
             manifest.join("../../setups")
         };
         let catalog = harness_runtime::Catalog::at(&root);
-        let problems = harness_runtime::catalog::undescribed(&catalog.list().unwrap());
-        assert!(problems.is_empty(), "{}", problems.join("\n  "));
+        let examined = harness_runtime::catalog::undescribed(&catalog.list().unwrap());
+        assert!(
+            examined.problems.is_empty(),
+            "{}",
+            examined.problems.join("\n  ")
+        );
+        // pi ships 1 entry point(s) across its four postures. Stated so that a layout change removing them fails here rather than passing a guard with nothing left to check.
+        assert_eq!(
+            examined.entry_points, 1,
+            "the description guard examined {} entry points, not 1",
+            examined.entry_points
+        );
     }
 
     #[test]
