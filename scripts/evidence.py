@@ -504,7 +504,26 @@ def the_product_reads_our_setup(
     `postures` is the stronger form: the probe must say something *different*
     with `full-auto` installed than with `baseline`, which no constant can do.
     `reads` only asks the product to name our file at our target.
+
+    A marker may join fragments with ` THEN `, and then it is satisfied only
+    when they appear **in that order**. That exists because a marker that only
+    asks whether a fragment is present answers *was our file read*, and for at
+    least one product here the question that decides is *where did what we
+    wrote land*. `opencode` evaluates the last matching permission rule, so a
+    posture that appears in the output and a posture that governs are two
+    different findings, and this estate shipped a setup description asserting
+    the second from a probe that could only see the first.
     """
+    def says(text: str, marker: str) -> bool:
+        """Whether `text` carries the marker -- in order, if it names one."""
+        at = 0
+        for fragment in marker.split(" THEN "):
+            found = text.find(fragment, at)
+            if found < 0:
+                return False
+            at = found + len(fragment)
+        return True
+
     def ask(setup: str) -> str:
         run_text([binary, "select", setup, "--target", str(target)])
         started = subprocess.run(
@@ -549,18 +568,18 @@ def the_product_reads_our_setup(
             )
         print(f"-> the product named {baseline!r} inside our target")
         return
-    if baseline not in said:
+    if not says(said, baseline):
         raise Failed(
             f"with `baseline` installed the product did not report "
             f"{baseline!r}; it said:\n{said[:600]}"
         )
     other = ask("full-auto")
-    if full_auto not in other:
+    if not says(other, full_auto):
         raise Failed(
             f"with `full-auto` installed the product did not report "
             f"{full_auto!r}; it said:\n{other[:600]}"
         )
-    if baseline in other:
+    if says(other, baseline):
         raise Failed(
             f"the product reported {baseline!r} under both postures, so this "
             "probe cannot tell which setup is installed"

@@ -20,6 +20,62 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.45] - 2026-08-31
+
+A posture that said it changed nothing was changing the thing it named, and
+the check that should have caught it was asking a different question.
+
+**A rule you can still see is not a rule that still governs.** One system's
+full-auto posture said seven of the product's own rules could not be moved by
+configuration -- prompts before reading secret files, before reaching outside
+the working directory, before looping, and refusals around planning. Measured
+against the pinned build: that product decides by the **last** matching rule,
+and anything a posture writes is appended *after* the product's own. The
+catch-all this posture installs therefore lands after all seven and overrides
+every one of them.
+
+The measurement behind the old sentence asked whether those seven rules were
+still in the resolved list. They are, every one, and the product still prints
+them. It never asked which one decides.
+
+**The probe could not have disagreed.** The check that runs the real product
+each week asked it to render its resolved *configuration*, and asserted the
+posture's own keys appeared in it. They always did: that command renders back
+what was written. It answered *was our file read* while the description claimed
+*and it changes nothing* -- two questions, one green result, three releases.
+It now reads the ordered rule list the product actually decides by, and a
+posture marker may require its parts **in order**. The reason that is worth
+keeping: the same product with no configuration at all prints both parts, so a
+check that only asked whether they were present would pass there and prove
+nothing.
+
+**A provider can be clean about its own bytes and silent about what runs.**
+That product reads a second spelling of its main settings file and keeps the
+later one, and scans both the singular and plural spelling of every component
+directory. A file this provider does not own can therefore decide, or replace a
+component that it does -- measured in both directions, and which of a colliding
+pair survives followed the order the two were written rather than which name
+belongs to whom. `status` now lists those names when they are present, beside a
+target it still reports as clean, because a clean digest is a statement about
+the bytes this provider wrote and never was a statement about what the product
+obeys. It reports and does not refuse: the file belongs to somebody, and this
+provider does not know whether they meant it.
+
+**Product self-update is switched off where that system offers a switch.** The
+reason not to let a product replace its own bytes was written here three
+releases ago -- this provider pins a version, records its digest and offers the
+one beside it -- and nothing enforced it for that system. It sets the
+documented variable at launch now. It stops the automatic path and not a person
+typing an upgrade command, so it is not the same promise as the entry that
+covers both, and the declaration says so.
+
+**And an authoring guide told four systems a field did not exist.** Agents for
+one product were documented as taking their identity from the filename, with no
+name field. That field exists, and it replaces the filename entirely: an agent
+carrying one is reachable only under it. The comparison table that says how the
+same file differs across systems carried the wrong row into three trees the
+claim was never written for.
+
 ## [0.0.44] - 2026-08-31
 
 One system stops claiming it can start its product, and the reason had been

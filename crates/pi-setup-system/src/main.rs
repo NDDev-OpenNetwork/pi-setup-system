@@ -87,6 +87,10 @@ pub const PI: Harness = Harness {
     // `capture` walks `native_namespaces` and this file is inside none of them
     // -- but a safety list that depends on a namespace never widening is a
     // safety list waiting for one declaration change.
+    // Nothing measured. This product's alternate spellings, if it has
+    // any, have not been asked for -- empty here says nobody looked,
+    // not that the product reads one name.
+    shadowing_names: &[],
     never_touch: &["auth.json", "trust.json", "sessions"],
     // Oh My Pi is a separate product descended from the same code: package
     // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its
