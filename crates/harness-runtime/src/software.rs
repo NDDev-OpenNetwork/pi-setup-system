@@ -287,6 +287,19 @@ pub(crate) fn apply(
     let mut guard = setup_core::lock::TargetLock::acquire(&control)?;
     guard.annotate(&format!("{} {operation}", harness.provider_id))?;
 
+    // **Under the lock, before anything reads the prefix.** An interrupted
+    // install leaves a staged tree, or a tree that stepped aside for a promote
+    // that did not land -- and the second reads as "nothing installed" to every
+    // other function here. Until this call the leftovers were cleared by
+    // whatever ran next, so the resolution was a side effect of the next
+    // operation rather than a decision, and an install could be planned against
+    // a prefix whose real state was a version in quarantine.
+    //
+    // Reported rather than done quietly: a person whose install was interrupted
+    // should be told what was found, and the answer is empty on every ordinary
+    // run.
+    let recovered = setup_core::software::recover(&root)?;
+
     if operation == Operation::SoftwareRemove {
         if !downloaded.is_empty() {
             return Err(Error::refuse(
@@ -297,6 +310,7 @@ pub(crate) fn apply(
         let removed = software::remove(&declared, &root)?;
         return Ok(serde_json::json!({
             "state": "verified",
+            "recovered": recovered,
             "operation": operation.as_str(),
             "command": declared.command,
             "version": declared.version,
@@ -348,6 +362,7 @@ pub(crate) fn apply(
 
     Ok(serde_json::json!({
         "state": "verified",
+        "recovered": recovered,
         "operation": operation.as_str(),
         "command": declared.command,
         "version": installed.version,
@@ -439,6 +454,8 @@ pub(crate) fn launch(
         ));
     }
 
+    verify_installed(&root, declared.command)?;
+
     // One of the two places in this program that may spawn, and the reason it
     // may: `launch` starts the product, which the contract declares
     // `runtime_external` rather than a local phase. The lint refuses the type
@@ -454,6 +471,55 @@ pub(crate) fn launch(
     }
 
     Err(replace_this_process(command, &executable))
+}
+
+/// The bytes under the exposed command are the bytes this provider installed.
+///
+/// `launch` checked that a file was there, that it was a regular file, and that
+/// this host could execute it. None of those is a statement about *which* bytes.
+/// So a product that replaced itself, a package manager that wrote over the
+/// tree, or anything else with the prefix in reach was started and reported as
+/// the pinned release -- and the plan that authorised the install, the digest
+/// recorded beside it and the rollback to the version next door were all still
+/// saying otherwise.
+///
+/// Read from the record `expose` writes, and the executable it names rather
+/// than the exposed command: on Windows the exposure can be a `.cmd` launcher
+/// holding a path rather than a copy of the program, so hashing the exposed
+/// file would check the launcher.
+///
+/// **No record is accepted, and that is not a hole.** A prefix written by an
+/// earlier release of this provider has none, and refusing those would call
+/// every older installation tampered-with. It is the same shape as the version
+/// marker's absence: unknown rather than wrong. What a record cannot do is be
+/// present and disagree.
+fn verify_installed(root: &Path, command: &str) -> Result<()> {
+    let Some(manifest) = setup_core::software::Manifest::read(root, command) else {
+        return Ok(());
+    };
+    let executable = root.join(&manifest.executable);
+    let found = setup_core::digest::of_file(&executable).map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} names {} and it could not be read: {error}",
+                setup_core::software::Manifest::path(root, command).display(),
+                manifest.executable
+            ),
+        )
+    })?;
+    if found != manifest.executable_sha256 {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} is not the {} this provider installed: recorded {}, found {}. \
+                 Nothing has been started. Re-run software_install to put the pinned \
+                 bytes back, or software_remove to take the prefix off.",
+                manifest.executable, manifest.version, manifest.executable_sha256, found
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Everything this provider adds to the environment of the product it starts.
@@ -535,7 +601,75 @@ fn replace_this_process(mut command: std::process::Command, executable: &Path) -
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
+    use std::fs;
+
     use super::*;
+
+    /// A launch refuses bytes that are not the ones this provider installed.
+    ///
+    /// `launch` checked existence, file-ness and an executable bit, none of
+    /// which says *which* bytes. `DISABLE_UPDATES` closed the product's own way
+    /// of replacing them; nothing closed anybody else's.
+    ///
+    /// Three states, because only the set of them means anything:
+    ///
+    /// * the recorded bytes -- accepted;
+    /// * one byte different -- refused, naming both digests;
+    /// * **no record at all -- accepted**, because a prefix written by an
+    ///   earlier release of this provider has none and refusing those would
+    ///   call every older installation tampered-with.
+    ///
+    /// The third is the one that would be missing from a version of this test
+    /// that only proved the refusal, and it is the one that decides whether
+    /// this is a check or an outage.
+    #[test]
+    fn a_launch_refuses_an_executable_that_is_not_the_one_installed() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-runtime-verify-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let version = root.join("1.2.3");
+        fs::create_dir_all(&version).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let executable = version.join("program");
+        fs::write(&executable, b"the installed bytes\n").unwrap();
+
+        // No record: every prefix written before this existed.
+        assert!(
+            verify_installed(&root, "program").is_ok(),
+            "a prefix with no record was refused, which would condemn every \
+             installation made by an earlier release"
+        );
+
+        let manifest = setup_core::software::Manifest {
+            schema_version: 1,
+            version: "1.2.3".to_owned(),
+            executable: "1.2.3/program".to_owned(),
+            executable_sha256: setup_core::digest::of_file(&executable).unwrap(),
+        };
+        fs::write(
+            setup_core::software::Manifest::path(&root, "program"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            verify_installed(&root, "program").is_ok(),
+            "the bytes named by the record were refused"
+        );
+
+        fs::write(&executable, b"the installed bytes?\n").unwrap();
+        let refused = verify_installed(&root, "program").unwrap_err();
+        assert_eq!(refused.reason(), Some(WireReason::ProviderUnavailable));
+        assert!(
+            refused.detail().contains("recorded") && refused.detail().contains("found"),
+            "the refusal does not say which digest was expected: {}",
+            refused.detail()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     /// A launch adds the target and, where the product has one, the updater switch.
     ///
