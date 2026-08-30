@@ -23,7 +23,7 @@ use std::process::ExitCode;
 
 mod software;
 
-use harness_runtime::{Foreign, Harness, Scoped};
+use harness_runtime::{Foreign, Harness, LaunchBinding, Scoped};
 use provider_v3::{ComponentKind, ProjectionKind, TargetScope};
 
 /// Everything specific to Pi Coding Agent, verified against `pi-baseline.json`.
@@ -35,6 +35,16 @@ pub const PI: Harness = Harness {
     vendor: "Earendil Works",
     documented_config_home: "~/.pi/agent",
     config_home_env: "PI_CODING_AGENT_DIR",
+    // **The weakest of the five, and said so rather than levelled up.** The
+    // variable is documented at pi.dev/docs/latest/settings and recorded in the
+    // baseline as `configuration.environment_override`; it has not been measured
+    // by writing, because no credential-free command of this product writes its
+    // home, and there is no command that reports what it resolved. Nothing
+    // contradicts it. Re-measure the day a command does either.
+    launch_binding: LaunchBinding::Complete {
+        how: "documented by the vendor and not contradicted; no credential-free command \
+              of this product writes or reports its home",
+    },
     // Not measured. The two artifacts this estate has read for this question are
     // claude's, which carries `DISABLE_UPDATES`, and codex's, which carries no
     // such literal. This product has been asked nothing, and an empty value here
