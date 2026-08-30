@@ -497,17 +497,30 @@ pub fn install(
     artifact.verify(downloaded)?;
 
     let version_root = root.join(software.version);
-    if version_root.exists() {
-        fs::remove_dir_all(&version_root).map_err(|error| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!(
-                    "the existing {} tree could not be cleared: {error}",
-                    software.version
-                ),
-            )
-            .with_source(error)
-        })?;
+
+    // **Staged beside the final path, never into it.** This used to clear
+    // `<root>/<version>` and extract into that same directory, so between those
+    // two steps there was no installation at all -- and on a reinstall of the
+    // version currently exposed, `bin/<command>` pointed into a directory that
+    // had just been deleted. A crash, a full disk, or an archive that turns out
+    // not to carry its declared executable took the working program with it.
+    //
+    // The names begin with a dot, which is not decoration: `Present::under_on`
+    // skips dotted entries when it lists installed versions, so a staging or
+    // quarantine directory left by an interruption is never read as a version
+    // somebody could roll back to.
+    let staging = root.join(format!(".incoming-{}", software.version));
+    let quarantine = root.join(format!(".replaced-{}", software.version));
+    for leftover in [&staging, &quarantine] {
+        if leftover.exists() {
+            fs::remove_dir_all(leftover).map_err(|error| {
+                Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("{} could not be cleared: {error}", leftover.display()),
+                )
+                .with_source(error)
+            })?;
+        }
     }
 
     let source = fs::File::open(downloaded).map_err(|error| {
@@ -520,20 +533,25 @@ pub fn install(
 
     let (executable, files) = match artifact.shape {
         Shape::Raw => {
-            let placed = version_root.join(software.command);
+            let placed = staging.join(software.command);
             archive::place_executable(source, &placed)?;
             (placed, 1)
         }
         Shape::GzipTar | Shape::Zip => {
             let entries = if artifact.shape == Shape::Zip {
-                archive::extract_zip(source, &version_root, artifact.limits())?
+                archive::extract_zip(source, &staging, artifact.limits())?
             } else {
-                archive::extract_gzip_tar(source, &version_root, artifact.limits())?
+                archive::extract_gzip_tar(source, &staging, artifact.limits())?
             };
             let found = entries
                 .iter()
                 .any(|entry| entry.path == artifact.member && entry.kind == archive::Kind::File);
             if !found {
+                // Refused with the staged tree still in the staging directory
+                // and the installed one untouched. Cleaning up is best-effort:
+                // a leftover `.incoming-*` is cleared by the next attempt and is
+                // never read as an installed version.
+                let _ = fs::remove_dir_all(&staging);
                 return Err(Error::new(
                     ReasonCode::IntegrityMismatch,
                     format!(
@@ -542,9 +560,58 @@ pub fn install(
                     ),
                 ));
             }
-            (version_root.join(artifact.member), entries.len())
+            (staging.join(artifact.member), entries.len())
         }
     };
+
+    // **Promote.** Two renames on one filesystem, in the order that leaves a
+    // complete tree at the final path at every moment a reader could look:
+    // the installed one until the second rename, the new one after it. A rename
+    // onto an existing directory is not portable -- Windows refuses it -- so the
+    // old tree steps aside first rather than being overwritten in place.
+    let replaced = version_root.exists();
+    if replaced {
+        fs::rename(&version_root, &quarantine).map_err(|error| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!(
+                    "the installed {} tree could not be moved aside: {error}",
+                    software.version
+                ),
+            )
+            .with_source(error)
+        })?;
+    }
+    if let Err(error) = fs::rename(&staging, &version_root) {
+        // Put back what was there. If this second rename also fails the tree is
+        // in quarantine under a name nothing reads as a version, and the refusal
+        // says so rather than reporting a success over an empty final path.
+        let restored = !replaced || fs::rename(&quarantine, &version_root).is_ok();
+        return Err(Error::new(
+            ReasonCode::StateUnavailable,
+            format!(
+                "the staged {} tree could not be promoted: {error}{}",
+                software.version,
+                if restored {
+                    ""
+                } else {
+                    ". The previous tree is in .replaced-<version> and was not put back"
+                }
+            ),
+        )
+        .with_source(error));
+    }
+    if replaced {
+        // Best-effort: the install is complete and correct without it, and a
+        // leftover is cleared by the next attempt.
+        let _ = fs::remove_dir_all(&quarantine);
+    }
+
+    let executable = version_root.join(
+        executable
+            .strip_prefix(&staging)
+            .unwrap_or_else(|_| Path::new(software.command)),
+    );
 
     let exposed = root
         .join("bin")
@@ -569,6 +636,21 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     if !version_root.exists() {
         return Ok(false);
     }
+
+    // Asked **before** the tree goes, and that ordering is the whole fix.
+    // `exposed` resolves the command into the version directory it points at,
+    // and a directory that has just been removed resolves to nothing -- so
+    // reading afterwards cannot tell "it named this one" from "it named another
+    // one" and the answer would always be the same.
+    //
+    // The sentence above this function has said *"and the exposed command if it
+    // pointed at it"* since it was written. The code took the command whenever
+    // the tree existed. So the ordinary sequence after a bad release -- install,
+    // update, roll back, take the bad one off -- deleted the command that was
+    // running the good one and left a complete version tree nothing could start.
+    let exposed_version =
+        Present::under_named(root, software.command, software.member_hint()).exposed;
+
     fs::remove_dir_all(&version_root).map_err(|error| {
         Error::new(
             ReasonCode::StateUnavailable,
@@ -579,6 +661,16 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
         )
         .with_source(error)
     })?;
+
+    // Some(this one)  -- the command named what was just taken; it goes too.
+    // Some(another)   -- the command names a version still installed; it stays.
+    // None            -- nothing usable was exposed, so anything left behind is
+    //                    a leftover rather than somebody's entry point.
+    let ours = exposed_version.as_deref() == Some(software.version);
+    if !ours && exposed_version.is_some() {
+        return Ok(true);
+    }
+
     let exposed = root
         .join("bin")
         .join(exposed_name(software.command, software.member_hint()));
@@ -993,6 +1085,116 @@ mod tests {
                 .exposed
                 .as_deref(),
             Some("1.2.3")
+        );
+    }
+
+    /// Removing a version nobody is running leaves the running one runnable.
+    ///
+    /// `remove` took the version tree, then took `bin/<command>` and the marker
+    /// **whenever the tree existed**, without asking whether either named the
+    /// version being removed. So the ordinary sequence after a bad release --
+    /// install, update, roll back, then take the bad one off -- deleted the
+    /// command that was pointing at the good one, and left a complete, working
+    /// version tree that nothing could start.
+    ///
+    /// The evidence workflow could not have caught it: it switches *forward* to
+    /// the newer version before removing it, so the version it removes is always
+    /// the active one. The one case where the guard matters was the one case the
+    /// happy path never enters.
+    #[test]
+    fn removing_an_inactive_version_leaves_the_active_one_exposed() {
+        let (at, artifact) = staged("remove-inactive", b"#!/bin/sh\necho new\n", CODEX_MEMBER);
+        let root = at.join("prefix");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+
+        // The version an update left behind, and the one a rollback selects.
+        let older = root.join("1.2.2");
+        fs::create_dir_all(older.join("package/vendor/x86_64-unknown-linux-musl/bin")).unwrap();
+        fs::write(older.join(CODEX_MEMBER), b"#!/bin/sh\necho old\n").unwrap();
+        rollback(&software(), &root, "1.2.2").unwrap();
+        assert_eq!(
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
+            Some("1.2.2"),
+            "the rollback did not take"
+        );
+
+        // Take off the version nobody is running.
+        assert!(remove(&software(), &root).unwrap());
+
+        assert!(
+            !root.join("1.2.3").exists(),
+            "the removed version's tree is still here"
+        );
+        assert!(
+            root.join("1.2.2").join(CODEX_MEMBER).is_file(),
+            "removing one version took another version's files"
+        );
+        let after = Present::under_named(&root, "codex", CODEX_MEMBER);
+        assert_eq!(
+            after.exposed.as_deref(),
+            Some("1.2.2"),
+            "removing an inactive version took the command that was running the active one"
+        );
+        assert_eq!(after.versions, vec!["1.2.2"]);
+    }
+
+    /// An install that fails leaves the installation that was working.
+    ///
+    /// `install` cleared `<root>/<version>` and then extracted into that same
+    /// path. Between those two steps there is no installation at all, and the
+    /// exposed command points into a directory that has been deleted -- so a
+    /// crash, a full disk, or an archive that turns out not to carry its
+    /// declared executable takes the working program with it.
+    ///
+    /// Driven by the third of those, which is deterministic: an artifact whose
+    /// digest is correct and whose archive does not contain the member the plan
+    /// named. The digest check passes, the clearing happens, and the refusal
+    /// arrives afterwards -- exactly where an interruption would.
+    #[test]
+    fn a_reinstall_that_fails_leaves_the_installation_that_was_working() {
+        let (at, artifact) = staged("reinstall-fails", b"#!/bin/sh\necho good\n", CODEX_MEMBER);
+        let root = at.join("prefix");
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        let good = fs::read(root.join("1.2.3").join(CODEX_MEMBER)).unwrap();
+
+        // Same version, correct digest, and no executable inside.
+        let raw = gzip_tar(
+            &[
+                Item::directory("package"),
+                Item::file("package/README.md", b"no executable here", 0o644),
+            ],
+            Dialect::Gnu,
+        );
+        let broken_at = at.join("broken.tgz");
+        fs::write(&broken_at, &raw).unwrap();
+        let broken = Artifact {
+            bytes: raw.len() as u64,
+            sha256: Box::leak(digest::of_bytes(&raw).into_boxed_str()),
+            ..artifact
+        };
+
+        let refused = install(&software(), &broken, &broken_at, &root).unwrap_err();
+        assert_eq!(
+            refused.reason(),
+            ReasonCode::IntegrityMismatch,
+            "the refusal is not the one this test drives: {refused:?}"
+        );
+
+        assert_eq!(
+            fs::read(root.join("1.2.3").join(CODEX_MEMBER))
+                .ok()
+                .as_deref(),
+            Some(good.as_slice()),
+            "a failed reinstall destroyed the installation that was working"
+        );
+        assert_eq!(
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
+            Some("1.2.3"),
+            "the exposed command no longer names an installed version"
         );
     }
 

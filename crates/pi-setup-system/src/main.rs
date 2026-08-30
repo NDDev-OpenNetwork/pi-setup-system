@@ -35,6 +35,12 @@ pub const PI: Harness = Harness {
     vendor: "Earendil Works",
     documented_config_home: "~/.pi/agent",
     config_home_env: "PI_CODING_AGENT_DIR",
+    // Not measured. The two artifacts this estate has read for this question are
+    // claude's, which carries `DISABLE_UPDATES`, and codex's, which carries no
+    // such literal. This product has been asked nothing, and an empty value here
+    // says the launch environment is untouched rather than that the product
+    // leaves the bytes alone.
+    updates_off_env: "",
     // One home, one variable: nothing here is conditional.
     config_home_note: "",
     control_directory: ".pi-setup-system",

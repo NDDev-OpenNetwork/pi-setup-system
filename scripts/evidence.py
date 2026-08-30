@@ -285,6 +285,21 @@ def cross_two_releases(
         )
     print(f"-> back on {earlier}, and {updated['version']} is still there")
 
+    # **Take off the version nobody is running.** The one sequence this file
+    # never entered: it rolled back and then moved *forward* before removing, so
+    # the version removed was always the exposed one. That is the case a removal
+    # cannot get wrong, and the case it did get wrong was the other one.
+    print("inact ", end="", flush=True)
+    remove_the_program(binary, target, prefix, info, still_running=earlier)
+    print(
+        f"-> {updated['version']} taken off while {earlier} was running, "
+        f"and {earlier} still starts"
+    )
+
+    # Put it back, so the move forward below is a real transition rather than a
+    # reinstall of the only tree left.
+    place(binary, target, prefix, room, info, "software_install", 5)
+
     # Forward again: a move that only goes one way is half an operation.
     run_text(
         [binary, "rollback", "--to", updated["version"], "--prefix", str(prefix)]
@@ -366,8 +381,17 @@ def place(
     return applied
 
 
-def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> None:
+def remove_the_program(
+    binary: str, target: Path, prefix: Path, info: dict, still_running: str | None = None
+) -> None:
     """Take the product back off, and prove the prefix says so.
+
+    `still_running` names the version that must survive. `None` is the ordinary
+    case -- the pinned version is the exposed one, so taking it off leaves the
+    prefix with nothing exposed. A version name is the case the happy path never
+    enters: the pinned version is installed but **not** running, because a
+    rollback selected an older one, and removing it must leave that older one
+    exposed and startable.
 
     `software_remove` is declared by every build here and had never met a real
     vendor's bytes on any platform: the job installed and started a product and
@@ -416,6 +440,26 @@ def remove_the_program(binary: str, target: Path, prefix: Path, info: dict) -> N
         raise Failed(
             f"{applied['version']} was removed and `software` still lists it:\n{said}"
         )
+    if still_running is not None:
+        # The whole point of this branch. Removing a version nobody is running
+        # took the exposed command with it, because the removal asked whether
+        # the tree existed and never whether the command pointed at it -- so a
+        # complete, working installation was left with nothing to start it.
+        if f"runs {still_running}" not in said:
+            raise Failed(
+                f"{applied['version']} was removed while {still_running} was "
+                f"running, and the prefix no longer runs it:\n{said}"
+            )
+        started = run_text(
+            [binary, "launch", "--target", str(target), "--prefix", str(prefix),
+             "--json", "--", "--version"]
+        )
+        if still_running not in started:
+            raise Failed(
+                f"the command survived the removal and does not start "
+                f"{still_running}:\n{started}"
+            )
+        return
     if "Nothing is exposed" not in said and "No version" not in said:
         raise Failed(
             f"the program was removed and a command is still exposed:\n{said}"

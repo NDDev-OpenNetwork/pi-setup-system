@@ -42,6 +42,26 @@ pub struct Harness {
     /// Documentation either way: nothing here resolves a path from it, because
     /// every command takes an explicit target.
     pub config_home_env: &'static str,
+    /// The variable that stops this product replacing the bytes we installed.
+    ///
+    /// Empty where the product has none, which is the ordinary case: of the two
+    /// artifacts this estate has read for it, claude carries `DISABLE_UPDATES`
+    /// nine times and codex carries no such literal at all. Measured rather than
+    /// assumed, with an invented variable searched in the same bytes and absent
+    /// from both, so the search discriminates.
+    ///
+    /// It is set at launch, and it is the one exception to the rule stated at
+    /// that call site -- *nothing else in the environment is touched, because
+    /// only the vendor knows what its program needs*. The exception is narrow
+    /// and is not about what the product needs: this provider pins a version,
+    /// records its digest, and offers a rollback to the version beside it. A
+    /// product that replaces those bytes while running makes all three false,
+    /// and the vendor documents this variable for exactly the case of a
+    /// distribution channel somebody else controls.
+    ///
+    /// Empty means the launch environment is untouched, not that the product
+    /// updates itself.
+    pub updates_off_env: &'static str,
     /// The condition under which [`Self::documented_config_home`] is not where
     /// the product looks, printed beside it in `--help`.
     ///
@@ -552,6 +572,7 @@ mod tests {
         vendor: "NDDev",
         documented_config_home: "~/.sample",
         config_home_env: "SAMPLE_CONFIG_DIR",
+        updates_off_env: "",
         config_home_note: "",
         control_directory: ".sample-setup-system",
         state_file: "NDDEV-SAMPLE-PROVIDER.json",

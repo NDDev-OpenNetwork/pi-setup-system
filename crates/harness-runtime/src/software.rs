@@ -449,13 +449,43 @@ pub(crate) fn launch(
     )]
     let mut command = std::process::Command::new(&executable);
     command.args(arguments);
-    // The target is what this provider configured, and the product's own
-    // documented variable is how it is told. Nothing else in the environment is
-    // touched: filtering another program's environment would be deciding what
-    // it needs, and only its vendor knows that.
-    command.env(harness.config_home_env, target);
+    for (name, value) in launch_environment(harness, target) {
+        command.env(name, value);
+    }
 
     Err(replace_this_process(command, &executable))
+}
+
+/// Everything this provider adds to the environment of the product it starts.
+///
+/// A function returning the pairs rather than four `command.env` calls, for the
+/// reason `exposed_name_on` and `render_mode_for` are functions: a decision made
+/// inline in a builder can only be *demonstrated*, and `launch` ends in an
+/// `exec` that replaces this process, so a test can never look at what it set.
+/// This one can be asserted.
+///
+/// Two entries at most:
+///
+/// * **the configuration home**, because every command here takes an explicit
+///   `--target` and the product's own documented variable is how it is told;
+/// * **the updater switch**, where the product has one.
+///
+/// Nothing else. Filtering another program's environment would be deciding what
+/// it needs, and only its vendor knows that. The updater is the one exception
+/// and it is not a decision about the product's needs: this provider pins a
+/// version, records the digest of the artifact it came from, and offers a
+/// rollback to the version beside it. A product that replaces those bytes while
+/// running makes all three false, and this prefix is a distribution channel its
+/// vendor did not build.
+fn launch_environment(harness: &Harness, target: &Path) -> Vec<(&'static str, String)> {
+    let mut pairs = vec![(
+        harness.config_home_env,
+        target.to_string_lossy().into_owned(),
+    )];
+    if !harness.updates_off_env.is_empty() {
+        pairs.push((harness.updates_off_env, "1".to_owned()));
+    }
+    pairs
 }
 
 /// Whether the mode bits say this host can run it.
@@ -498,5 +528,54 @@ fn replace_this_process(mut command: std::process::Command, executable: &Path) -
             WireReason::ProviderUnavailable,
             format!("{} could not be started: {failure}", executable.display()),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    /// A launch adds the target and, where the product has one, the updater switch.
+    ///
+    /// The switch exists because this provider's three strongest statements
+    /// about an installation -- the version it pins, the digest of the artifact
+    /// it came from, and the rollback to the version beside it -- are all false
+    /// the moment the product replaces those bytes itself. Anthropic documents
+    /// the variable for exactly this case, a distribution channel somebody else
+    /// controls, and the pinned 2.1.251 artifact carries it nine times.
+    ///
+    /// Both directions, because only the pair says anything. A build that added
+    /// the variable to every launch would pass the first assertion while setting
+    /// a name nothing reads on six products, and a build that added it to none
+    /// would pass the second.
+    #[test]
+    fn a_launch_sets_the_updater_switch_only_where_the_product_has_one() {
+        let target = Path::new("/tmp/nddev-launch-environment");
+
+        let with = Harness {
+            config_home_env: "PRODUCT_CONFIG_DIR",
+            updates_off_env: "DISABLE_UPDATES",
+            ..crate::wire::tests_support::TEST
+        };
+        assert_eq!(
+            launch_environment(&with, target),
+            vec![
+                ("PRODUCT_CONFIG_DIR", target.display().to_string()),
+                ("DISABLE_UPDATES", "1".to_owned()),
+            ]
+        );
+
+        let without = Harness {
+            config_home_env: "PRODUCT_CONFIG_DIR",
+            updates_off_env: "",
+            ..crate::wire::tests_support::TEST
+        };
+        assert_eq!(
+            launch_environment(&without, target),
+            vec![("PRODUCT_CONFIG_DIR", target.display().to_string())],
+            "a product with no such variable had its environment written to anyway"
+        );
     }
 }

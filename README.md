@@ -4,8 +4,8 @@ Installs, reselects, restores and removes a complete Pi harness configuration, a
 
 A *setup* here is the complete harness state — the system-prompt components and
 the whole configuration — not a pointer to somewhere the content really lives.
-That is what makes restore mean something: it returns the instructions, skills,
-agents, commands, hooks, MCP entries and settings together, in one step.
+That is what makes restore mean something: it returns the
+instructions, skills, commands, plugins and settings together, in one step.
 
 > **Status: complete for the five core operations and the program lifecycle.**
 >
@@ -177,7 +177,7 @@ release is a convenience, not the authorised copy.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.40 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.41 \
   status --target /config/<dir> --json
 ```
 
