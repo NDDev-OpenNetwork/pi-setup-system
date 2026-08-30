@@ -20,6 +20,53 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-08-30
+
+Two merges, and both came out of reading an outside review against the product
+rather than against the review.
+
+**A capability key that set nothing, in the posture whose whole job is
+capability.** One harness's `full-auto` wrote `view_image` under `[tools]` for
+two pins. That table has three members at the pinned release and this is not one
+of them, and the product denies no unknown fields, so the key parsed, was
+ignored, and left the file claiming a capability it never turned on. The control
+is what makes it certain: the product reports the same feature count for an empty
+file, for that key, and for an invented one, and a different count for the same
+key spelled the way the product reads it. It is also enabled by default, so even
+the correct spelling would have changed nothing. The posture now sets the three
+stable features the build actually leaves off, and reads back as three overrides
+where there were none.
+
+**A component kind withdrawn on a control that could not have failed.** The same
+harness declared no `agent` kind, on the reasoning that a role is irreducibly two
+files. The product had been scanning the directory the whole time. The
+measurement behind the withdrawal planted a Markdown file where the scan filters
+on `.toml`, so the negative it produced was the only answer it could ever have
+given, and a conclusion was written from it. Re-measured against the pinned
+binary with both controls, the kind is declared again, and the toolkit ships its
+own role as the one file the kind installs.
+
+**Guards that had never been seen failing.** Eleven checks in this repository now
+have a control that plants the exact defect each describes into a fresh copy of
+the tree and requires a refusal. Building it found three things and only one was
+a check: its own isolation restored the damage rather than the file, one planted
+defect was legal under the vendor's schema, and three checks answer on a `RESULT`
+line rather than an exit status -- which is deliberate and left alone, with a
+`--strict` added for callers who want the status.
+
+**And the vendor's own schema, asked about the file that cannot name one.** A
+TOML configuration has no `$schema` line, so 143 of 152 shipped files sat outside
+the schema sweep. One vendor publishes a JSON Schema of its configuration types
+as a release asset; asked, it names the defect above in one line. A harness can
+declare that schema now, by a url template filled from the version it pins, so a
+pin refresh cannot leave the two disagreeing.
+
+Also: a scoped operation named the global projection profile in its plan and in
+the state written afterwards; a profile id promised a projection its build does
+not declare; a note recorded a gap that had closed and could not notice; and a
+posture restated two of its three keys as the product's own defaults, measured,
+kept, and now said out loud.
+
 ## [0.0.39] - 2026-08-30
 
 Eight changes, and the ones worth reading are the two where something
