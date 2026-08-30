@@ -31,6 +31,9 @@ target-explicit, reversible, and backed by the repository's own gate.
 - **What this harness owns, declines, and why** — `references/surfaces.md`
 - **The commands, the invariants, and the software half** — `references/lifecycle.md`
 - **The gate, the render check, and the one rule** — `references/validation.md`
+- **Writing this harness's configuration file** — `references/authoring-settings.md`
+- **Writing this harness's instruction file** — `references/authoring-instructions.md`
+- **The second target this harness declares, and how a component reaches it** — `references/second-target.md`
 - **Writing a skill this harness will actually load** — `references/authoring-skills.md`
 - **Writing a command this harness will actually load** — `references/authoring-commands.md`
 - **Writing a plugin this harness will actually load** — `references/authoring-plugins.md`

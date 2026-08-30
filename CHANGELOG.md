@@ -20,6 +20,47 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-08-30
+
+Eight changes, and the ones worth reading are the two where something
+was checked by nothing and the one where a document told a reader to open a file
+that had been deleted.
+
+**A validator shipped into people's homes, wrong three ways, run by nobody.**
+Every install of the authoring toolkit on one harness put a 192-line program
+into a person's configuration directory. Nothing named it -- no entry point, no
+command, no check -- and run against the toolkit it ships beside it reported 28
+errors on a correct installation, because the layout had moved under it twice
+and the pages it demanded had been replaced. Removed rather than repaired:
+repairing would have put a second copy of the expectations into a file nothing
+runs, which is what produced all three faults.
+
+**Eleven pages a reader is never sent to.** The configuration file and the
+instruction file are what a setup spends most of its bytes on, and the pages
+teaching them were written into four harnesses and named by no entry point. A
+check for exactly this already existed on the hand-written half of the
+generator; the generated half had the same omission the whole time, because
+there the generator writes the entry point itself and "it points at what it
+writes" reads as true.
+
+**And the direction of the question this estate did not have.** Every check here
+asked whether a *named* file exists. None asked whether an *existing* file is
+named. Both findings above are that one gap, and it is closed now.
+
+**What a person reads before approving an install is now held.** The digest that
+binds all 28 setups covered the payload tree and nothing else, so the name, the
+sources and the description beside it could change with every check staying
+green -- proved by rewriting one and watching that happen. The description is
+where a posture says what it does and does not do, and on one harness it runs to
+three thousand characters of exactly that.
+
+Also: two limits that guard against hostile input and had never been driven at
+their boundary, one of them a memory bound where the line after the check
+allocates from a number the input supplies; three corrections to what this
+estate teaches about one product, from re-reading the vendor's own pages; and
+eight repository records that now say, in the estate's own vocabulary rather
+than in prose, that they are generated rather than authored.
+
 ## [0.0.38] - 2026-08-30
 
 A guard that was passing while it examined nothing, and the answer to

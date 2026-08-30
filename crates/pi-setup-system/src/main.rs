@@ -210,7 +210,13 @@ mod tests {
             .list()
             .unwrap()
             .iter()
-            .map(|setup| setup.definition_digest.clone())
+            // **Both digests, because one of them holds nothing a person
+            // reads.** `definition_digest` is the payload tree; the manifest --
+            // `id`, `sources`, `description` -- was covered by no digest in this
+            // estate, and those three are what a consumer renders on the surface
+            // that precedes an install. A description was rewritten and the
+            // whole gate stayed clean, which is how this was found.
+            .map(|setup| format!("{}\n{}", setup.definition_digest, setup.manifest_digest))
             .collect();
         digests.sort();
         let joined = digests.join("\n");
@@ -409,6 +415,34 @@ mod tests {
         let catalog = harness_runtime::Catalog::at(&root);
         let problems = harness_runtime::catalog::unreachable_references(&catalog.list().unwrap());
         assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
+    /// Nothing inside a skill is a file no reader is sent to.
+    ///
+    /// Two findings in one hour were of exactly this shape and every guard in
+    /// this estate was silent on both: an executable validator shipped into
+    /// people's homes that nothing named, and eleven authoring pages written
+    /// into four harnesses and routed to from none. The estate asked whether a
+    /// *named* file exists and never whether an *existing* file is named.
+    #[test]
+    fn nothing_inside_a_skill_is_stranded() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../../setups").join(TOOL);
+        let root = if root.is_dir() {
+            root
+        } else {
+            manifest.join("../../setups")
+        };
+        let found = harness_runtime::catalog::stranded(
+            &harness_runtime::Catalog::at(&root).list().unwrap(),
+        );
+        assert!(found.problems.is_empty(), "{}", found.problems.join("\n  "));
+        // pi carries 9 file(s) inside its skill. Stated so that a layout change emptying the skill fails here rather than passing a guard with nothing left to walk.
+        assert_eq!(
+            found.entry_points, 9,
+            "the stranded-file guard walked {} files inside skills, not 9",
+            found.entry_points
+        );
     }
 
     #[test]

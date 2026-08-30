@@ -28,10 +28,11 @@ Generated from the same rows as the section above, for every harness in this est
 |---|---|---|---|---|---|---|
 | `description` | yes | yes | yes | yes | yes | yes |
 | `argument-hint` | yes | yes | yes | — | — | — |
+| `name` | **dropped** | — | — | — | yes | — |
+| `paths` | **dropped** | — | — | — | — | — |
 | `agent` | — | — | — | yes | — | — |
 | `model` | — | — | — | yes | — | — |
 | `subtask` | — | — | — | yes | — | — |
-| `name` | — | — | — | — | yes | — |
 | `title` | — | — | — | — | — | yes |
 
 **The part that travels**: `description`. Everything else is a bet on one product.
