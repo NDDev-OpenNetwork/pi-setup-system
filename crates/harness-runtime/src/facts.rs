@@ -119,6 +119,28 @@ pub struct Harness {
     ///
     /// Everything else is a sibling overlay preserved verbatim.
     pub native_namespaces: &'static [&'static str],
+
+    /// Names the product reads that this provider does not own.
+    ///
+    /// Ownership decides what `remove` takes and what the target digest
+    /// covers. It does not decide what the product obeys, and for one harness
+    /// here those are different sets: measured against the pinned 1.18.25
+    /// binary, `opencode` reads `opencode.jsonc` after `opencode.json` and
+    /// keeps the later one, and globs `{skill,skills}` where only the plural
+    /// is owned. So a target whose owned bytes are clean can be running a file
+    /// this provider never wrote, and `status` answered `managed` with nothing
+    /// beside it to say so.
+    ///
+    /// **This does not make the name owned, and must not.** Owning both
+    /// spellings would let one setup install two files that disagree, and
+    /// deleting a file somebody else put there is not this provider's call. It
+    /// makes the name *visible*, which is the part that was missing: the
+    /// answer was true about what it examined and silent about what decides.
+    ///
+    /// Empty for six of the seven, and empty because they were asked -- a
+    /// product whose alternate spellings nobody has measured belongs here as
+    /// nothing rather than as a guess.
+    pub shadowing_names: &'static [Shadow],
     /// Product-owned paths this provider never reads and never writes.
     ///
     /// Excluded from backups so a slot never holds credentials, and excluded
@@ -232,6 +254,22 @@ pub enum LaunchBinding {
     },
     /// The product documents no way to be pointed at a target at all.
     Undocumented,
+}
+
+/// A name the product reads that sits beside one this provider owns.
+///
+/// See [`Harness::shadowing_names`]. Each of these is measured by running the
+/// pinned product, not read off a page: the question is what the product does
+/// when both names are present, and only the product answers that.
+#[derive(Debug)]
+pub struct Shadow {
+    /// The name as it appears in the target, relative to its root.
+    pub name: &'static str,
+    /// The owned namespace it can take precedence over.
+    pub over: &'static str,
+    /// What the product does when both are there, in the words of the run that
+    /// established it.
+    pub effect: &'static str,
 }
 
 /// One sign that a target is a different product's configuration home.
@@ -750,6 +788,7 @@ mod tests {
         state_file: "NDDEV-SAMPLE-PROVIDER.json",
         profile_id: "sample/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
+        shadowing_names: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],

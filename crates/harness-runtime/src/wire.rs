@@ -200,6 +200,32 @@ fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathB
     Ok((resolved, control, pool))
 }
 
+/// Names the product reads that this provider does not own, and that are here.
+///
+/// `state: "managed"` and a clean `target_digest` are statements about the
+/// bytes this provider wrote. Neither is a statement about what the product
+/// obeys, and for `opencode` those differ: an `opencode.jsonc` beside our
+/// `opencode.json` is the one the product keeps, and the digest cannot see it
+/// because it is not ours to cover. The answer was true about what it examined
+/// and silent about what decides.
+///
+/// Reported, not refused. Refusing would decide for the person whose file it
+/// is, and this provider does not know whether they meant it.
+fn shadowed_here(harness: &Harness, root: &Path) -> Vec<serde_json::Value> {
+    harness
+        .shadowing_names
+        .iter()
+        .filter(|shadow| root.join(shadow.name).exists())
+        .map(|shadow| {
+            serde_json::json!({
+                "name": shadow.name,
+                "over": shadow.over,
+                "effect": shadow.effect,
+            })
+        })
+        .collect()
+}
+
 /// Report the target without changing it, including a schema this build cannot write.
 ///
 /// The shape is the consumer's, not ours. `ai_stp` reads exactly two fields to
@@ -287,9 +313,12 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     // in the target claims. A record that disagreed about the provider it
     // belongs to would be describing someone else, and echoing it would launder
     // that disagreement into an answer the consumer trusts.
+    let shadowed = shadowed_here(harness, resolved.root());
+
     let mut answer = serde_json::Map::new();
     answer.extend(flat);
     for (key, value) in [
+        ("shadowed_by", serde_json::json!(shadowed)),
         ("state", serde_json::json!(state)),
         ("target_digest", serde_json::json!(identity)),
         (
@@ -1971,6 +2000,7 @@ pub(crate) mod tests_support {
         state_file: "NDDEV-TEST-PROVIDER.json",
         profile_id: "test/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
+        shadowing_names: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],
@@ -2022,6 +2052,7 @@ mod tests {
     use provider_v3::argv;
 
     use super::*;
+    use crate::facts::Shadow;
 
     use crate::wire::tests_support::{TEST, TEST_EARLIER_PAYLOAD, TEST_PAYLOAD};
 
@@ -2817,6 +2848,53 @@ mod tests {
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn status_names_a_file_the_product_reads_and_this_provider_does_not_own() {
+        // `state` and `target_digest` are statements about the bytes this
+        // provider wrote. Neither can see a *sibling* the product prefers, and
+        // for `opencode` that sibling decides: an `opencode.jsonc` beside our
+        // `opencode.json` is the one the product keeps.
+        const SHADOWED: Harness = Harness {
+            shadowing_names: &[Shadow {
+                name: "settings.jsonc",
+                over: "settings.json",
+                effect: "the product keeps the later of the two",
+            }],
+            ..TEST
+        };
+        let target = seeded("shadowed");
+
+        // The control first, and it is the whole test: with only the owned
+        // name present the answer must be empty. A field that is always
+        // populated says nothing, and a field that is never populated cannot
+        // be told from one that does not work.
+        let quiet = dispatch(
+            &SHADOWED,
+            argv::parse(args("status", &target, &[])).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            quiet["shadowed_by"].as_array().map(Vec::len),
+            Some(0),
+            "nothing shadows this target and status named something"
+        );
+
+        fs::write(target.join("settings.jsonc"), "{\"model\":\"theirs\"}").unwrap();
+        let loud = dispatch(
+            &SHADOWED,
+            argv::parse(args("status", &target, &[])).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(loud["shadowed_by"][0]["name"], "settings.jsonc");
+        assert_eq!(loud["shadowed_by"][0]["over"], "settings.json");
+
+        // And it stays a report. The owned bytes did not change, so the digest
+        // and the state must not either -- a provider that called this drift
+        // would be claiming the person's own file is damage.
+        assert_eq!(quiet["target_digest"], loud["target_digest"]);
+        assert_eq!(quiet["state"], loud["state"]);
     }
 
     #[test]
