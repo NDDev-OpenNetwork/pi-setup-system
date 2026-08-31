@@ -409,6 +409,19 @@ def remove_the_program(
     a build pinning one version has nothing for an update to move *from* and
     nothing for a rollback to return *to*.
     """
+    launch_before = None
+    if still_running is not None and "launch" in info["supported_commands"]:
+        # Capture what the *same exposed command* says before removal. Not every
+        # vendor puts its release into `--version`: Pi's two Windows standalone
+        # builds both answer `0.0.0`, while their archive digests and provider
+        # manifests correctly distinguish 0.84.3 from 0.84.4. Requiring the
+        # expected version here tests the vendor's string, not whether removing
+        # an inactive tree moved our command.
+        launch_before = run_text(
+            [binary, "launch", "--target", str(target), "--prefix", str(prefix),
+             "--json", "--", "--version"]
+        )
+
     print("remove", end="", flush=True)
     planned = plan(binary, target, prefix, "software_remove", 2)
     body = prefix.parent / "remove.json"
@@ -456,14 +469,14 @@ def remove_the_program(
                 f"running, and the prefix no longer runs it:\n{said}"
             )
         if "launch" in info["supported_commands"]:
-            started = run_text(
+            launch_after = run_text(
                 [binary, "launch", "--target", str(target), "--prefix", str(prefix),
                  "--json", "--", "--version"]
             )
-            if still_running not in started:
+            if launch_after != launch_before:
                 raise Failed(
-                    f"the command survived the removal and does not start "
-                    f"{still_running}:\n{started}"
+                    "removing the inactive version changed what the surviving "
+                    f"command runs:\n  before: {launch_before!r}\n  after:  {launch_after!r}"
                 )
         else:
             # Cursor is the real subject. It installs a program and supports
