@@ -20,6 +20,31 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.50] - 2026-08-31
+
+Each repository now tracks what its default branch is meant to
+enforce, in `.github/rulesets/branch-main.json`, and the GDS anchor states the
+same required contexts. Until this release the live ruleset was the only
+statement of that anywhere: a required check added or dropped through the API
+changed what could merge and left no diff for anyone to read.
+
+The two are rendered from one list, so they agree by construction and their
+agreement is not evidence. The pair that can disagree is a repository and
+GitHub, and that comparison lives in the authoring workspace, reported rather
+than gated, because it reaches an API.
+
+The release path gained the check that matters most to a consumer. `provider-info`
+is compared by exact equality: a name too many and a name too few fail
+identically, and the whole document is refused, taking fetch, conformance, plan,
+apply and status with it. The seven are now compared with the field set read out
+of the *installed released* consumer before any tag moves, so a drift is caught
+here rather than as somebody's refusal. With no consumer installed the release
+refuses to tag: an unasked question is not a passed one.
+
+The GDS anchor line names the schema by its digest rather than by a version that
+matched no release tag, with a behavioural probe kept beside it as the control
+on that digest.
+
 ## [0.0.49] - 2026-08-31
 
 A software operation applied through `ai-stp` now answers with the

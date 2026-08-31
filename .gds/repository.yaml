@@ -81,6 +81,21 @@ verification:
   required:
     - "test"
     - "lint"
+  required_contexts:
+    - "rust / test (ubuntu-latest)"
+    - "rust / test (macos-latest)"
+    - "rust / test (windows-latest)"
+    - "rust / rustfmt"
+    - "rust / clippy"
+    - "supply-chain / cargo-deny"
+    - "supply-chain / cargo-audit"
+    - "supply-chain / cargo-machete"
+    - "actionlint / actionlint"
+    - "codeql / CodeQL (rust)"
+    - "codeql / CodeQL (actions)"
+    - "osv / osv-scan"
+    - "zizmor / zizmor (SARIF)"
+    - "secret-scan / Gitleaks secret scan"
 
 agent:
   context_profile: "public-module"
