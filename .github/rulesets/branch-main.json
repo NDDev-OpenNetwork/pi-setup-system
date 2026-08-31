@@ -1,0 +1,48 @@
+{
+  "_": [
+    "What this repository's `main` is meant to enforce, tracked so a change",
+    "to it is reviewable. Until 2026-08-31 the live ruleset was the only",
+    "statement of this anywhere: a context added or dropped through the API",
+    "changed what could merge and left no diff for anyone to read.",
+    "",
+    "Rendered from `PUBLIC_REQUIRED_CONTEXTS` in the authoring repository's",
+    "`tools/render_public_trees.py`, together with the anchor's",
+    "`verification.required_contexts`. The two agree by construction, so",
+    "their agreement is not evidence of anything.",
+    "",
+    "The pair that can disagree is this file and what GitHub enforces now.",
+    "`tools/check_branch_protection.py`, in the authoring repository, is",
+    "what asks -- and it reports rather than gates, because it reaches an",
+    "API and a gate that depends on somebody else's availability reports",
+    "their outage as this commit's failure.",
+    "",
+    "Two jobs run on every pull request and are deliberately NOT required:",
+    "`rust / msrv` and `rust / rust`, whose names embed a version. A",
+    "required context that renames itself when a config value moves leaves",
+    "every open pull request blocked with nothing red, which happened once."
+  ],
+  "branch": "main",
+  "rule_types": [
+    "deletion",
+    "non_fast_forward",
+    "pull_request",
+    "required_signatures",
+    "required_status_checks"
+  ],
+  "required_status_checks": [
+    "rust / test (ubuntu-latest)",
+    "rust / test (macos-latest)",
+    "rust / test (windows-latest)",
+    "rust / rustfmt",
+    "rust / clippy",
+    "supply-chain / cargo-deny",
+    "supply-chain / cargo-audit",
+    "supply-chain / cargo-machete",
+    "actionlint / actionlint",
+    "codeql / CodeQL (rust)",
+    "codeql / CodeQL (actions)",
+    "osv / osv-scan",
+    "zizmor / zizmor (SARIF)",
+    "secret-scan / Gitleaks secret scan"
+  ]
+}
