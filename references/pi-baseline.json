@@ -191,7 +191,7 @@
   },
   "verified_at": "2026-08-30T22:50:22+00:00",
   "native_surfaces": {
-    "verified_at": "2026-08-27",
+    "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
     "surfaces": [
       {
@@ -201,7 +201,8 @@
         ],
         "shape": "file",
         "source": "https://pi.dev/docs/latest/sdk; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
-        "evidence": "bytes"
+        "evidence": "bytes",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (AGENTS.md 57). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "APPEND_SYSTEM.md",
@@ -226,7 +227,8 @@
         ],
         "shape": "directory",
         "source": "https://pi.dev/docs/latest/extensions; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
-        "evidence": "bytes"
+        "evidence": "bytes",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`extensions` 2158). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "prompts",
@@ -236,7 +238,7 @@
         "shape": "directory",
         "source": "https://pi.dev/docs/latest/prompt-templates; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
         "evidence": "bytes",
-        "note": "~/.pi/agent/prompts/*.md; discovery is non-recursive"
+        "note": "~/.pi/agent/prompts/*.md; discovery is non-recursive\n\n**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`prompt-templates` 50, `prompts` 560). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "settings.json",
@@ -246,7 +248,7 @@
         "shape": "file",
         "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package",
         "evidence": "ran",
-        "note": "paths in this file resolve relative to ~/.pi/agent Confirmed 2026-08-29 by running the 0.84.3 package: `pi config`, which needs no credential where a prompt does, opens on the global-resources scope and names `~/.pi/agent/settings.json` on screen as the file it manages. One caution recorded with it: that label did not change when `PI_CODING_AGENT_DIR` was pointed elsewhere, so it may be display text rather than a resolved path -- which costs this route nothing, because `~/.pi/agent` is the target this provider is handed, but would matter to anyone reading the line as proof that the home follows the variable."
+        "note": "paths in this file resolve relative to ~/.pi/agent Confirmed 2026-08-29 by running the 0.84.3 package: `pi config`, which needs no credential where a prompt does, opens on the global-resources scope and names `~/.pi/agent/settings.json` on screen as the file it manages. One caution recorded with it: that label did not change when `PI_CODING_AGENT_DIR` was pointed elsewhere, so it may be display text rather than a resolved path -- which costs this route nothing, because `~/.pi/agent` is the target this provider is handed, but would matter to anyone reading the line as proof that the home follows the variable.\n\n**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`settings.json` 172). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "skills",
@@ -255,7 +257,8 @@
         ],
         "shape": "directory",
         "source": "https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
-        "evidence": "bytes"
+        "evidence": "bytes",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`skills` 1026). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "themes",
@@ -263,7 +266,7 @@
         "shape": "directory",
         "source": "https://pi.dev/docs/latest/themes; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
         "evidence": "bytes",
-        "note": "`~/.pi/agent/themes/*.json`, a JSON file per theme defining all 51 required colour tokens; `settings.json`'s `theme` names which one is active. Owned so a setup can carry a theme; the key that selects it is a setting, so no component kind routes here"
+        "note": "`~/.pi/agent/themes/*.json`, a JSON file per theme defining all 51 required colour tokens; `settings.json`'s `theme` names which one is active. Owned so a setup can carry a theme; the key that selects it is a setting, so no component kind routes here\n\n**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`themes` 653). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       }
     ],
     "declined": [
@@ -285,17 +288,20 @@
       {
         "path": "auth.json",
         "reason": "Authentication credentials. Pi joins it against its agent directory -- `agentDir, \"auth.json\"` in the 0.84.3 bundle, beside `keybindings.json`, `models.json` and the owned `settings.json`. Never owned and never captured, for the reason the antigravity list gives: a backup of someone else's credentials is a leak with a schedule. Recorded here because the declaration's `never_touch` is checked against this block.",
-        "source": "measured from the 0.84.3 bundle, package/dist/core"
+        "source": "measured from the 0.84.3 bundle, package/dist/core",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`auth.json` 139). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "git",
         "reason": "Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *\"When reconciliation changes the checkout, pi resets and cleans the clone\"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository.",
-        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`/git` 2646, `\"git\"` 87). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "keybindings.json",
         "reason": "A keymap file, joined against the agent directory beside the owned `settings.json`. Not owned, for the reason claude's row gives: no component kind describes a keymap.",
-        "source": "measured from the 0.84.3 bundle, package/dist/core"
+        "source": "measured from the 0.84.3 bundle, package/dist/core",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`keybindings.json` 27). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "managed-config",
@@ -305,7 +311,8 @@
       {
         "path": "models-store.json",
         "reason": "A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface.",
-        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`models-store.json` 14). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "models.json",
@@ -315,22 +322,31 @@
       {
         "path": "npm",
         "reason": "Where user package installs go, beside the git checkouts above and managed the same way. Declined for the same reason: the product puts content here and takes it away again.",
-        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`npm` 977). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "pi-debug.log",
         "reason": "Written by the hidden `/debug` command and holding rendered TUI lines with ANSI codes. A log, never owned and never captured.",
-        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs"
+        "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`pi-debug.log` 2). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "trust.json",
         "reason": "A person's saved decisions about which project folders may load project-local settings and resources and **execute project extensions**. The product's own shipped documentation names it five times and is explicit about what turns on it: *\"pi asks before trusting a project folder that contains project-local settings, resources, or project `.agents/skills` and has no saved decision for the folder or a parent folder in `~/.pi/agent/trust.json`. Trusting a project allows pi to load `.pi/settings.json` and `.pi` resources, install missing project packages, and execute project extensions.\"*\n\nNever owned. It is a security decision a person made, not configuration a setup can carry: installing one would grant execution to folders nobody approved, and a restore returning an older copy would silently re-grant a trust that had been withdrawn. Recorded here because it sits inside the home this provider configures and every other file there is accounted for.\n\n**This product has no sandbox of its own**, which is what makes the row matter. Its documentation says so plainly -- *\"Pi does not include a built-in sandbox. Built-in tools can read files, write files, edit files, and run shell commands with the permissions of the pi process\"* -- and points at containers, VMs and micro-VMs instead. So trust is the only gate between a project folder and code running as the person who started the product, and it is a gate this provider must not touch.",
-        "source": "the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; https://pi.dev/docs/latest/security"
+        "source": "the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; https://pi.dev/docs/latest/security",
+        "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`trust.json` 12). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "working-directories",
         "reason": "One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations.",
-        "source": "measured from the 0.84.3 bundle, package/dist/core"
+        "source": "measured from the 0.84.3 bundle, package/dist/core",
+        "members": [
+          "git",
+          "npm",
+          "tmp"
+        ],
+        "note": "**Re-asked at 0.84.4 on 2026-08-31, and the first search said GONE because the needle was this repository's own label.** `working-directories` is a name given here to one row covering three directories; it is not a string the product carries and never was, so searching for it returns zero at every version. The subjects are `git`, `npm` and `tmp`, and in the pinned package's `dist/core` they appear 31, 21 and 1 times. `members` above exists so the next re-ask searches the subject rather than the label. Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
         "path": "mcp_config.json",
@@ -378,7 +394,8 @@
     ],
     "projection_basis": {
       "package": "extensions"
-    }
+    },
+    "configuration_schema_note": "**One schema is published and it is not for the file we write.** The pinned package carries `https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json`, five times -- a **theme** schema. `settings.json` names none and there is none to name. This estate ships no theme in any of pi's four postures, so the schema has no subject here; it is recorded so a later posture that does ship one knows the schema exists. Surveyed 2026-08-31 across all seven; three publish one and use it, cursor publishes one it must not name, and these three publish none."
   },
   "software_artifacts": {
     "command": "pi",
@@ -427,7 +444,7 @@
     "verified_at": "2026-08-30T22:50:22+00:00",
     "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\n`refresh_software_pins.py` reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared."
   },
-  "setup_catalogue_digest": "sha256:ad9b7aed0683139759cec23d90c2a2b490c8f4ddf2df2d996dc8d282a3697c88",
+  "setup_catalogue_digest": "sha256:cacf9532779597cf54955f9cbff767cb8b1715e238ac6c856761ac11848e6ccd",
   "previous_software_artifacts": {
     "command": "pi",
     "shape": "gzip-tar",
