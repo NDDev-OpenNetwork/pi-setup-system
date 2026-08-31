@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
   "id": "nddev-builder",
-  "description": "A working floor plus the NDDev builder toolkit: what this harness owns, the lifecycle it performs, and the gate a change must pass.",
+  "description": "The harness-native full-auto posture plus the NDDev builder toolkit: autonomous implementation, exact product formats, lifecycle, verification and release handoff.",
   "sources": [
+    "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
     "https://pi.dev/docs/latest/extensions",
     "https://pi.dev/docs/latest/prompt-templates",
     "https://pi.dev/docs/latest/sdk",
