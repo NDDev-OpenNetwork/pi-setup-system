@@ -20,6 +20,146 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.47] - 2026-08-31
+
+A target caught part-way through a change can be recovered from the daily
+command again, and the reason it could not is that neither side of this pair
+had anything to be wrong against.
+
+**An interrupted operation was reported, in a name nothing reads.** Every one
+of these systems has kept a durable record of a mutation in flight since the
+beginning, and published it. The tool that installs and updates them decides
+whether recovery is owed by looking at two other things entirely -- a state
+value none of these systems emits, and a key none of them had. So a target
+holding an unsettled record answered *managed*, both of those questions came
+back no, and the recovery command that exists to settle it was never reached
+from the path anybody uses.
+
+The fact was in the answer the whole time, under a name the reader does not
+know. It is now also under the name the reader does know, saying which of the
+two things is owed: a restore, when the effect may be partial, or a tail to
+clear, when the effect landed and only cleanup remains. A settled target says
+so explicitly rather than staying silent, because silence is what a system
+that does not speak this looks like -- and that is exactly the state these
+were in.
+
+It is a separate field rather than a fourth value of the one that says what is
+in the directory. That one is read by everything, and overloading it would
+make every existing reader wrong about a target that is merely mid-operation,
+which is the failure being closed rather than a new place to put it.
+
+**And the reason this was not catchable.** The kit these systems are built
+against declares the shape of one answer and no others. The response this
+defect lived in has no schema at all, and the case file names none of its
+thirty-three fields. Both sides invented it independently; it works because
+the names happened to agree, and where they did not, nothing failed.
+
+So there is now a record of what that answer actually contains, taken by
+running every one of the seven against a directory that is empty, one holding
+somebody else's files, and one this provider manages. Checked both ways: a
+field published and not recorded is one the far side cannot know about, and a
+field recorded and no longer published is a promise that stopped being kept.
+It does not make the contract -- that belongs to the tool these are built for
+-- but it makes the published set a fact with a reader, so the next field is a
+difference somebody sees rather than a discovery months later.
+
+**Closed before this release published.** The consumer turned that measured
+shape into provider-kit `0.2.7`: a checksummed closed status schema and a
+conformance case carrying the required, verified and enum sets. These trees
+vendor it in the same release. The local status record remains only as a
+derived readable projection, so there is one contract rather than the two this
+section was written about.
+
+**One more name a target can carry that this provider does not own.** Reported
+beside a target still described as clean, for one system whose product reads a
+second spelling of its settings file and both spellings of every component
+directory. Clean is a statement about the bytes this provider wrote and never
+was a statement about what the product obeys.
+
+**A posture stopped emptying directories it could never fill.** Selecting a
+setup replaces everything this provider owns, which is what makes switching
+between them predictable -- and it was doing that to places nothing here could
+ever put anything: no component routes to them and no posture ships files
+there. Every posture agreed they were empty, so the emptiness was not a
+statement any of them made, and the only thing ever in such a directory was
+somebody else's. Twelve of them, across five of these systems; one held a
+person's key bindings and a plain switch of posture took them.
+
+They are still owned, which is the point. A backup captures them, the recorded
+identity notices when they change, and removing the setup takes them --
+returning a directory to unmanaged is a different act from changing posture
+inside it. Only the emptying stopped.
+
+**And the list of things this provider promises never to touch now means it.**
+It named three effects of ownership and prevented two: those paths were not
+copied into a backup and not folded into the recorded identity. The third went
+through, because replacing a directory removed it whole and never asked. One
+product writes a person's marketplace sources inside a directory this provider
+owns, and a change of posture took the file.
+
+**One system stopped installing a program that cannot start.** It was installed
+from a package whose entry point is a script needing an interpreter the host
+supplies, so on a machine without a recent enough one the install succeeded and
+the program could not run, with nothing in between saying so. The vendor also
+publishes complete standalone builds for every platform declared here, and
+those carry their own runtime: the whole lifecycle was exercised with that
+interpreter deliberately unreachable. Two different layouts inside one release,
+read from the archives rather than from the platform names.
+
+**Two files that shape what the model is told** are now owned by that same
+system. Its own documentation names both, and this record had neither -- not
+owned, not declined, absent, which is the one state a surface must not be in.
+They are kept rather than replaced, for the reason above.
+
+**And every one of these products was asked whether it can be told to stop
+updating itself.** Three can, and one of those had been told to since an
+earlier release without the answer ever being written down where anything
+checks it. Four cannot, and that is now recorded as a measured absence rather
+than as an empty field, which reads the same and means something else.
+
+**And one system's record was re-asked at the version it pins.** Every row of
+it described a release eight versions back, of a product that moved those eight
+in a few hours. Re-measured against the pinned bytes rather than re-read: seven
+surfaces hold and now say which release they are about, and the one covering
+plugins gains the shape it was missing -- a plugin there is a directory holding
+a manifest, and a single file with the right name is silently nothing.
+
+That correction went the other way first. The probe that found "nothing loads
+here" was itself malformed, and the control is what said so; without it a
+working namespace would have been changed because an instrument answered about
+itself. The vendor's own installer also writes a pair this record had no row
+for -- an installed-plugin directory and the registry that lists it, useless
+without each other -- and that pair is now named as something never read,
+captured or removed, alongside the credentials.
+
+**The development setup no longer downgrades the development agent.**
+`nddev-builder` used to start from each product's conservative baseline, so
+installing the authoring toolkit brought approval prompts and sandboxes back on
+the very path meant for autonomous implementation. It now starts from that
+product's own `full-auto` posture and adds knowledge without changing authority.
+
+**Every software lifecycle now has two real releases to cross.** Cursor and
+Antigravity were the last two with no previous pin. Their immediately preceding
+artifacts had already been measured in this repository before the pins moved;
+the immutable identifiers still resolve, and the missing Windows bytes were
+fetched and hashed before the records were completed. Cursor's no-launch
+declaration also found a flaw in the evidence script: it tried to prove an
+inactive removal by calling a command the provider intentionally omits. The
+exposure is checked without inventing launch now, and the full two-release
+sequence passes against both products on native Linux x86_64.
+
+**Vendor-byte evidence names all six native hosts.** Exact hosted labels cover
+Linux, Windows and macOS on x86_64 and arm64, and each job asserts the runner
+architecture before it builds. The previous matrix covered three operating
+systems and only half of their architecture pairs, while the release already
+published all six provider binaries.
+
+**And the estate table reads launch from the declaration that decides it.** It
+used to infer from software plus an environment-variable name, which called
+Cursor launchable after its own `LaunchBinding::Partial` had withdrawn the
+capability. The generated README and SUPPORT pages now say five, not six, and
+name Cursor and Antigravity separately.
+
 ## [0.0.45] - 2026-08-31
 
 A posture that said it changed nothing was changing the thing it named, and

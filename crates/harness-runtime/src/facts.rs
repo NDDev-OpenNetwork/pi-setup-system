@@ -141,6 +141,34 @@ pub struct Harness {
     /// product whose alternate spellings nobody has measured belongs here as
     /// nothing rather than as a guess.
     pub shadowing_names: &'static [Shadow],
+
+    /// Owned namespaces this provider can never put content into.
+    ///
+    /// Selecting a setup is exact state: every owned namespace is emptied and
+    /// then filled from the payload, so a posture that ships nothing for a
+    /// namespace is saying *there is nothing here*. That is right wherever the
+    /// provider could have put something -- a component kind routes there, or a
+    /// setup in this build's catalogue carries files there -- because then the
+    /// emptiness is a statement the posture is entitled to make.
+    ///
+    /// **These are the namespaces where it is not entitled to.** Nothing routes
+    /// to them and no setup fills them, so every posture agrees there is
+    /// nothing, and the only content they ever hold is somebody else's.
+    /// Emptying them imputes an opinion no setup has.
+    ///
+    /// Measured 2026-08-31 across the seven: twelve of them, in five harnesses.
+    /// A person's keybindings under one, a plugin directory under another, and
+    /// a `select minimal` took both.
+    ///
+    /// They stay **owned**, which is the point: a backup still captures them,
+    /// the identity still hashes them so drift is visible, and `remove` still
+    /// takes them -- returning the target to unmanaged is a different statement
+    /// from switching posture within it. Only the emptying-on-selection stops.
+    ///
+    /// `no_custody_namespace_could_ever_be_filled` checks both directions
+    /// against the baseline and the embedded catalogue, so this list cannot
+    /// drift from the two facts that define it.
+    pub custody_namespaces: &'static [&'static str],
     /// Product-owned paths this provider never reads and never writes.
     ///
     /// Excluded from backups so a slot never holds credentials, and excluded
@@ -789,6 +817,7 @@ mod tests {
         profile_id: "sample/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         shadowing_names: &[],
+        custody_namespaces: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],

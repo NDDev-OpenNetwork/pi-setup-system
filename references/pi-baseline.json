@@ -15,22 +15,24 @@
     "integrity": "sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w==",
     "shasum": "3a2f04bfc5e463b4cfa36b174a586d11a0bdf9ad",
     "node": ">=22.19.0",
-    "repository_directory": "packages/coding-agent"
+    "repository_directory": "packages/coding-agent",
+    "note": "**This block describes the npm distribution, which this provider no longer installs.** It is kept because it is a true and useful record of the product -- `bin.pi`, `engines.node`, the registry tarball and its integrity -- and because the version it names is the one the standalone release carries. `node: >=22.19.0` is a requirement of *that* distribution: the artifacts installed here carry their own runtime, and the whole lifecycle was measured 2026-08-31 with `node` absent from `PATH`."
   },
   "cli_identity": {
     "command": "pi",
-    "bin": "dist/cli.js",
     "version_probe": {
       "argv": [
         "pi",
         "--version"
       ],
-      "expected_stdout": "0.0.0",
+      "expected_stdout": "0.84.4",
       "package_version_source": "package.version",
       "independent_package_identity_required": true
     },
     "install_docs": "https://pi.dev/docs/latest",
-    "install_script": "https://pi.dev/install.sh"
+    "install_script": "https://pi.dev/install.sh",
+    "note": "**No `bin` here, and its absence is deliberate.** It held `dist/cli.js` while the artifact table said `package/dist/bundle/cli.js`, and the version probe expected `0.0.0` beside a pin of `0.84.4` -- one fact kept twice and allowed to disagree, in both fields. Measured 2026-08-31 from the pinned bytes: the npm package declares `bin.pi = dist/bundle/cli.js` and prints `0.84.4`.\n\n**And then the entry point stopped being one value.** This provider now installs the vendor's standalone release rather than the npm package, and the executable inside it is `pi/pi` in the four gzip-tars and `pi.exe` at the root of the two zips. A single `bin` string cannot hold both, and a copy that can only be right for some platforms is worse than no copy. The artifact table's `member` is the owner of that fact, per platform, and `transcribe_software.py` refuses this block if it grows a second copy that disagrees.\n\n`expected_stdout` stays, because a version the product prints is not derivable from a member and is the one thing a run can check.",
+    "entry_point_source": "software_artifacts.platforms[*].member"
   },
   "launch_scope": {
     "target_role": "configuration-runtime-home",
@@ -187,7 +189,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-29T10:54:48+00:00",
+  "verified_at": "2026-08-30T22:50:22+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-27",
     "config_home": "~/.pi/agent",
@@ -202,23 +204,20 @@
         "evidence": "bytes"
       },
       {
-        "path": "settings.json",
-        "kinds": [
-          "setting"
-        ],
+        "path": "APPEND_SYSTEM.md",
+        "kinds": [],
         "shape": "file",
-        "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package",
-        "evidence": "ran",
-        "note": "paths in this file resolve relative to ~/.pi/agent Confirmed 2026-08-29 by running the 0.84.3 package: `pi config`, which needs no credential where a prompt does, opens on the global-resources scope and names `~/.pi/agent/settings.json` on screen as the file it manages. One caution recorded with it: that label did not change when `PI_CODING_AGENT_DIR` was pointed elsewhere, so it may be display text rather than a resolved path -- which costs this route nothing, because `~/.pi/agent` is the target this provider is handed, but would matter to anyone reading the line as proof that the home follows the variable."
+        "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
+        "evidence": "bytes",
+        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the pinned 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
-        "path": "skills",
-        "kinds": [
-          "skill"
-        ],
-        "shape": "directory",
-        "source": "https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
-        "evidence": "bytes"
+        "path": "SYSTEM.md",
+        "kinds": [],
+        "shape": "file",
+        "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
+        "evidence": "bytes",
+        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the pinned 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
         "path": "extensions",
@@ -238,6 +237,25 @@
         "source": "https://pi.dev/docs/latest/prompt-templates; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
         "evidence": "bytes",
         "note": "~/.pi/agent/prompts/*.md; discovery is non-recursive"
+      },
+      {
+        "path": "settings.json",
+        "kinds": [
+          "setting"
+        ],
+        "shape": "file",
+        "source": "https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package",
+        "evidence": "ran",
+        "note": "paths in this file resolve relative to ~/.pi/agent Confirmed 2026-08-29 by running the 0.84.3 package: `pi config`, which needs no credential where a prompt does, opens on the global-resources scope and names `~/.pi/agent/settings.json` on screen as the file it manages. One caution recorded with it: that label did not change when `PI_CODING_AGENT_DIR` was pointed elsewhere, so it may be display text rather than a resolved path -- which costs this route nothing, because `~/.pi/agent` is the target this provider is handed, but would matter to anyone reading the line as proof that the home follows the variable."
+      },
+      {
+        "path": "skills",
+        "kinds": [
+          "skill"
+        ],
+        "shape": "directory",
+        "source": "https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
+        "evidence": "bytes"
       },
       {
         "path": "themes",
@@ -367,88 +385,93 @@
     "shape": "gzip-tar",
     "platforms": {
       "linux/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-arm64.tar.gz",
+        "bytes": 42529658,
+        "sha256": "sha256:135580f6b942151646e67b8b866d987d28ce3cff5a497030775ddd29659f943d",
+        "member": "pi/pi"
       },
       "linux/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz",
+        "bytes": 42464648,
+        "sha256": "sha256:c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972",
+        "member": "pi/pi"
       },
       "macos/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-darwin-arm64.tar.gz",
+        "bytes": 30928407,
+        "sha256": "sha256:c68e3ac4d05b4e282aaab2e6c76f161d3e9e68f19a22e38913cbfaadb6c800f0",
+        "member": "pi/pi"
       },
       "macos/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-darwin-x64.tar.gz",
+        "bytes": 33440191,
+        "sha256": "sha256:7a042d6413065421387001a4986190a1a03186c95a695f4dee0bdc76e60de8f7",
+        "member": "pi/pi"
       },
       "windows/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-windows-arm64.zip",
+        "bytes": 43455125,
+        "sha256": "sha256:6b2726efc34a9158ab06bf7b981f7bcccf15de9ea236a3f4ef7a894a78aa386e",
+        "shape": "zip",
+        "member": "pi.exe"
       },
       "windows/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-        "bytes": 6882502,
-        "sha256": "sha256:5bce766d19c3ceba18f3fbaad91c449c9f9d73981f9e3400ecef932006f06968",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-windows-x64.zip",
+        "bytes": 44907374,
+        "sha256": "sha256:03b2318774f18721e959d9f8f3340a9f942e7aa516fb7030d3007a12a40a4a97",
+        "shape": "zip",
+        "member": "pi.exe"
       }
     },
     "version": "0.84.4",
-    "verified_at": "2026-08-29T10:54:48+00:00"
+    "verified_at": "2026-08-30T22:50:22+00:00",
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\n`refresh_software_pins.py` reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared."
   },
-  "setup_catalogue_digest": "sha256:ea662dbe0106a5679c57c137a9e612c7a758c4a1b957baee059ecab227bfdcc7",
+  "setup_catalogue_digest": "sha256:ad9b7aed0683139759cec23d90c2a2b490c8f4ddf2df2d996dc8d282a3697c88",
   "previous_software_artifacts": {
     "command": "pi",
     "shape": "gzip-tar",
+    "version": "0.84.3",
+    "verified_at": "2026-08-30T22:44:15+00:00",
     "platforms": {
       "linux/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-linux-arm64.tar.gz",
+        "bytes": 42521548,
+        "sha256": "sha256:e7cd48cd6f64b708e8459a890882b1007332f6e6b876fe1fd5c5203abd0addb7",
+        "member": "pi/pi"
       },
       "linux/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-linux-x64.tar.gz",
+        "bytes": 42458773,
+        "sha256": "sha256:6f8bb67c21bc6b8a8a106d354f56d7fd4a190a3cd8ad3a32db45f6d281a5d008",
+        "member": "pi/pi"
       },
       "macos/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-darwin-arm64.tar.gz",
+        "bytes": 30919980,
+        "sha256": "sha256:0120c9f99ea05fe801e6e7c2c9d91dd65636563ca0803711b37b9f32920d4b63",
+        "member": "pi/pi"
       },
       "macos/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-darwin-x64.tar.gz",
+        "bytes": 33434213,
+        "sha256": "sha256:b99706b3254faaf3695395ecb69cb7e1f4d4822bd3f832e6d1f2636d896b6bde",
+        "member": "pi/pi"
       },
       "windows/arm64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-windows-arm64.zip",
+        "bytes": 43448675,
+        "sha256": "sha256:d0f28a5bbeddcaee25fb7f4d8c70917d2c287d02b815614382aac9ac55a8fe39",
+        "shape": "zip",
+        "member": "pi.exe"
       },
       "windows/x86_64": {
-        "url": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
-        "bytes": 6866230,
-        "sha256": "sha256:d07dc417f78a14dac376a878b6556b51961f118f79771ee375333dc51356bc75",
-        "member": "package/dist/bundle/cli.js"
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-windows-x64.zip",
+        "bytes": 44900235,
+        "sha256": "sha256:636a56f546c8bb1f2cb327964b7afbd9302efcd45c1704922a097cd8bd935fb9",
+        "shape": "zip",
+        "member": "pi.exe"
       }
-    },
-    "version": "0.84.3",
-    "verified_at": "2026-08-28T04:43:37+00:00"
+    }
   }
 }

@@ -25,13 +25,36 @@ concurrency:
 
 jobs:
   lifecycle:
-    name: lifecycle (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: lifecycle (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The release publishes six native provider binaries and every product
+        # table names the same six host ids. Three runners exercised vendor
+        # bytes until 2026-08-31, leaving Linux arm64, Windows arm64 and macOS
+        # x86_64 as build-only claims. Use exact hosted labels rather than
+        # `*-latest`, whose architecture can move without this file changing.
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/x86_64
+            runner_arch: X64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            runner_arch: ARM64
+          - runner: windows-2025
+            platform: windows/x86_64
+            runner_arch: X64
+          - runner: windows-11-arm
+            platform: windows/arm64
+            runner_arch: ARM64
+          - runner: macos-15-intel
+            platform: macos/x86_64
+            runner_arch: X64
+          - runner: macos-15
+            platform: macos/arm64
+            runner_arch: ARM64
     defaults:
       run:
         shell: bash
@@ -45,6 +68,16 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
           toolchain: '1.98.0'
+
+      - name: Prove this is the native architecture, not emulation
+        env:
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner_arch }}
+          EVIDENCE_PLATFORM: ${{ matrix.platform }}
+          EVIDENCE_RUNNER: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
+          echo "native $EVIDENCE_PLATFORM on $EVIDENCE_RUNNER ($RUNNER_ARCH)"
 
       - run: cargo build --locked --release
 

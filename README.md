@@ -40,20 +40,22 @@ to a configuration home: a change aimed at a guessed path is a change aimed at
 someone else's state. The documented home is printed by `--help` so it can be
 copied, not resolved.
 
-## Three postures
+## Four setups
 
-`list` names every setup this build carries. Three of them mean the same thing
-on all seven setup systems, so what you learn here you know there:
+`list` names every setup this build carries. All four mean the same thing on all
+seven setup systems, expressed in each product's own format:
 
 | | |
 | --- | --- |
 | `baseline` | a working floor: instructions plus a conservative configuration |
 | `minimal` | the product's own defaults, and the state a restore proves it can reach |
 | `full-auto` | nothing asked and nothing sandboxed, in this product's own keys |
+| `nddev-builder` | the full-auto posture plus the product-native NDDev authoring toolkit |
 
 `full-auto` is a **setup posture** — keys in a configuration file this product
-reads. It is not an execution profile and it grants no environment: what it
-changes is what the product asks *you*.
+reads. `nddev-builder` keeps that posture and adds authoring knowledge; selecting
+the toolkit must not silently return development to an approval loop. Neither is
+an external execution profile and neither grants environment by itself.
 
 **A backup is captured before every change**, so `restore` always has something
 to return to. `restore` with no reference means the most recent backup that
@@ -177,7 +179,7 @@ release is a convenience, not the authorised copy.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.45 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.47 \
   status --target /config/<dir> --json
 ```
 

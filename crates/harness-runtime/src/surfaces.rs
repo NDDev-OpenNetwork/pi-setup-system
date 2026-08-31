@@ -512,11 +512,6 @@ fn the_home_and_what_moves_it(
     }
 }
 
-/// Every way a declaration and its baseline can disagree, in a stable order.
-///
-/// Empty is the only passing answer. Each string names one disagreement and is
-/// written to be read on its own, because a test failure shows the list and
-/// nothing else.
 /// One owned surface, after its row has been checked.
 struct Owned<'a> {
     path: &'a str,
@@ -1101,10 +1096,11 @@ fn evidence_is_recorded(harness: &Harness, baseline: &Value, found: &mut Vec<Str
 
 /// A baseline may not record a gap it no longer has.
 ///
-/// `second_pin_absent` exists so a reader can tell a gap from a fact: three of
-/// the seven pinned only one release, and a `software_update` that crosses two
-/// of them had nothing to cross. The block says so, and says how it will fill --
-/// by rotation, on the vendor's next bump.
+/// `second_pin_absent` exists so a reader can tell a gap from a fact: a provider
+/// pinning only one release has nothing for a real `software_update` to cross.
+/// The block says so, and says how it will fill -- normally by rotation on the
+/// vendor's next bump, or by recovering an earlier exact measurement already
+/// present in this repository.
 ///
 /// It filled. Codex's next bump assigned `previous = 0.150.1` exactly as
 /// predicted, and the block stayed, so the file both carried a second pin and
@@ -1131,6 +1127,124 @@ fn an_absence_is_not_recorded_beside_the_thing(baseline: &Value, found: &mut Vec
         );
     }
 }
+/// Whether [`Harness::custody_namespaces`] is exactly what nothing can fill.
+///
+/// A namespace is *fillable* when a component kind routes to it, or when a
+/// setup in this build's catalogue carries a file under it. Selecting a setup
+/// empties every owned namespace and refills it from the payload, so for a
+/// fillable one an empty payload is a statement the posture is entitled to
+/// make: *there is nothing here*.
+///
+/// For the rest it is not. Nothing the provider can install ever lands there,
+/// every posture agrees, and the only content is somebody else's -- so the
+/// emptying was an opinion no setup held. Twelve of them existed across five
+/// harnesses when this was measured, and a `select minimal` took a person's
+/// keybindings out of one.
+///
+/// Checked in **both** directions, because a list like this fails in both: an
+/// entry that became fillable would stop being emptied when it should be, and
+/// one that stopped being filled would start being emptied when it should not.
+/// Neither would be visible in the declaration.
+fn custody_is_what_nothing_can_fill(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    let Some(rows) = baseline
+        .get(BLOCK)
+        .and_then(|block| block.get("surfaces"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    // A build with no catalogue cannot answer what is fillable: every namespace
+    // would read as unfillable because no setup exists to fill it. Test
+    // fixtures are the only builds in that state, and a guard that reports on
+    // one is reporting about the fixture rather than about a harness.
+    if harness.embedded_setups.is_empty() {
+        return;
+    }
+    let under = |namespace: &str, relative: &str| {
+        relative == namespace
+            || relative
+                .strip_prefix(namespace)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    for namespace in harness.native_namespaces {
+        let routes = rows.iter().any(|row| {
+            row.get("path").and_then(Value::as_str) == Some(*namespace)
+                && row
+                    .get("kinds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|kinds| !kinds.is_empty())
+        });
+        let filled = harness.embedded_setups.iter().any(|(embedded, _)| {
+            embedded
+                .split_once("/home/")
+                .is_some_and(|(_, relative)| under(namespace, relative))
+        });
+        let listed = harness.custody_namespaces.contains(namespace);
+        if listed && (routes || filled) {
+            found.push(format!(
+                "{namespace:?} is declared as custody and something can fill it: \
+                 {}. A posture is entitled to say a fillable namespace is empty.",
+                if routes {
+                    "a kind routes there"
+                } else {
+                    "a setup carries files there"
+                }
+            ));
+        }
+        if !listed && !routes && !filled {
+            found.push(format!(
+                "{namespace:?} is owned, routes no kind and no setup fills it, and is \
+                 not declared as custody -- so selecting any posture empties it, and \
+                 the only thing ever in it is somebody else's"
+            ));
+        }
+    }
+    for namespace in harness.custody_namespaces {
+        if !harness.native_namespaces.contains(namespace) {
+            found.push(format!(
+                "{namespace:?} is declared as custody and is not owned at all"
+            ));
+        }
+    }
+}
+
+/// Whether the update switch a launch forces is one the baseline measured.
+///
+/// `updates_off_env` puts a literal into every provider-managed launch. A name
+/// one letter from the real one -- `DISABLE_AUTOUPDATER` where the product
+/// reads `DISABLE_AUTOUPDATE`, or the reverse -- looks right, changes nothing,
+/// and leaves the product free to replace bytes this provider pinned, recorded
+/// the digest of, and offers a rollback beside.
+///
+/// The list it is checked against exists to hold what was read out of a pinned
+/// artifact. It had no reader until 2026-08-31, which is the condition a stale
+/// fact needs: the `windows` host row sat under `unsupported` for weeks while
+/// the provider installed Windows, for exactly that reason.
+fn the_switch_it_sets_was_measured(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    if harness.updates_off_env.is_empty() {
+        return;
+    }
+    let measured = baseline
+        .get("source_verified_runtime_flags")
+        .and_then(Value::as_array)
+        .map(|flags| {
+            flags
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|flag| flag == harness.updates_off_env)
+        });
+    match measured {
+        Some(true) => {}
+        Some(false) => found.push(format!(
+            "launch sets {} and the baseline's measured runtime flags do not name it",
+            harness.updates_off_env
+        )),
+        None => found.push(format!(
+            "launch sets {} and this baseline records no source-verified runtime flags at all",
+            harness.updates_off_env
+        )),
+    }
+}
 
 /// Every way a declaration and its baseline can disagree, in a stable order.
 ///
@@ -1148,6 +1262,8 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     owned_paths_fold_together(harness, &mut found);
     silent_about_routing_nothing(harness, baseline, &mut found);
     writes_where_nothing_is_routed(harness, baseline, &mut found);
+    custody_is_what_nothing_can_fill(harness, baseline, &mut found);
+    the_switch_it_sets_was_measured(harness, baseline, &mut found);
     evidence_is_recorded(harness, baseline, &mut found);
     an_absence_is_not_recorded_beside_the_thing(baseline, &mut found);
 

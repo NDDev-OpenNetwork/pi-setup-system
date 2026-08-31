@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use provider_v3::argv::{Bundle as ArgvBundle, Invocation, PlanRequest};
@@ -200,6 +200,35 @@ fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathB
     Ok((resolved, control, pool))
 }
 
+/// What an unsettled operation owes, in the vocabulary the consumer reads.
+///
+/// `state` answers *what is in this directory* and has three values that
+/// say nothing about the last operation. The journal has always carried
+/// that, and `status` has always published it -- under `journal`, a key the
+/// consumer never reads. Measured 2026-08-31 against `ai-stp-cli 0.0.10`:
+/// both of its recovery paths gate on `state == "recovery_required"` or on
+/// `cleanup_state`, and a target of ours holding a `prepared` journal
+/// answers `managed` with neither. So the fact was in the answer, under a
+/// name the reader does not know, and the recovery it exists to trigger
+/// could not fire against any of the seven.
+///
+/// A separate key rather than a fourth `state`: `state` is read by
+/// everything and means the directory, and overloading it would make every
+/// existing reader wrong about a target that is merely mid-operation.
+fn cleanup_owed(journal: Option<&Journal>) -> &'static str {
+    match journal.map(|entry| entry.phase) {
+        // The effect may be partial and `recover-operation` restores the
+        // pre-operation target. Something is owed before this target is read
+        // as anything.
+        Some(Phase::Prepared) => "required",
+        // The effect is complete; recovery clears the tail only.
+        Some(Phase::Committed) => "pending",
+        // Said rather than omitted. An absent key is what a provider that does
+        // not speak this looks like, and that is the state this one was in.
+        None => "none",
+    }
+}
+
 /// Names the product reads that this provider does not own, and that are here.
 ///
 /// `state: "managed"` and a clean `target_digest` are statements about the
@@ -315,10 +344,13 @@ fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     // that disagreement into an answer the consumer trusts.
     let shadowed = shadowed_here(harness, resolved.root());
 
+    let cleanup_state = cleanup_owed(journal.as_ref());
+
     let mut answer = serde_json::Map::new();
     answer.extend(flat);
     for (key, value) in [
         ("shadowed_by", serde_json::json!(shadowed)),
+        ("cleanup_state", serde_json::json!(cleanup_state)),
         ("state", serde_json::json!(state)),
         ("target_digest", serde_json::json!(identity)),
         (
@@ -1248,8 +1280,22 @@ fn replace_managed_from(
     let mut written = Vec::new();
     for namespace in harness.native_namespaces {
         let destination = target.root().join(namespace);
-        remove_path(&destination)?;
         let source = payload.join(namespace);
+        // **A posture may assert emptiness only where it could have put
+        // something.** Exact state empties every owned namespace and refills it
+        // from the payload, which is what makes switching posture
+        // deterministic. For a namespace no kind routes to and no setup fills,
+        // every posture agrees there is nothing -- so the emptiness is not a
+        // statement any of them made, and the only content there is somebody
+        // else's. Measured: a `select minimal` took a person's keybindings.
+        //
+        // Still owned, and the payload branch below still runs: a backup
+        // captures it, the identity hashes it, and `remove` takes it. Switching
+        // posture and returning a target to unmanaged are different statements.
+        if harness.custody_namespaces.contains(namespace) && !source.exists() {
+            continue;
+        }
+        remove_keeping(&destination, target.root(), harness.never_touch)?;
         if !source.exists() {
             continue;
         }
@@ -1629,6 +1675,48 @@ fn remove_managed(
     Ok(())
 }
 
+/// Remove `path`, keeping anything the harness promised never to touch.
+///
+/// `never_touch` named three effects of ownership and protected two of them: a
+/// backup does not capture these paths and an identity does not hash them.
+/// The third -- deletion -- went straight through, because replacement removes
+/// a namespace whole and never asked. The name promised more than it did.
+///
+/// It matters where a product writes its own record inside a directory this
+/// provider owns: grok's `plugins/known_marketplaces.json` is a person's
+/// marketplace sources, and a posture switch took it. Measured 2026-08-31 with
+/// the released binary.
+///
+/// Only paths *under* `path` are considered, and each is spared in place: the
+/// directory that holds one survives with that file in it and nothing else,
+/// which is what preserving a sibling means.
+fn remove_keeping(path: &Path, root: &Path, spared: &[&str]) -> Result<()> {
+    let keep: Vec<PathBuf> = spared.iter().map(|name| root.join(name)).collect();
+    if !keep.iter().any(|held| held.starts_with(path)) {
+        return remove_path(path);
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if !metadata.is_dir() {
+        // A file that is itself spared, or one nothing spares.
+        return if keep.iter().any(|held| held == path) {
+            Ok(())
+        } else {
+            remove_path(path)
+        };
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        remove_keeping(&entry.path(), root, spared)?;
+    }
+    // Gone when the last thing in it went; kept when something is still held.
+    let _ = fs::remove_dir(path);
+    Ok(())
+}
+
 fn remove_path(path: &Path) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -2001,6 +2089,7 @@ pub(crate) mod tests_support {
         profile_id: "test/native-files/1",
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         shadowing_names: &[],
+        custody_namespaces: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],
@@ -2847,6 +2936,45 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             before
+        );
+    }
+
+    #[test]
+    fn replacement_spares_a_never_touch_path_inside_a_namespace_it_empties() {
+        const SPARES: Harness = Harness {
+            never_touch: &["skills/their-record.json"],
+            ..TEST
+        };
+        // `never_touch` named three effects of ownership and stopped two: a
+        // backup does not capture these and an identity does not hash them.
+        // Replacement removed a namespace whole and never asked, so the third
+        // went through. Measured with the released grok binary: a posture
+        // switch took `plugins/known_marketplaces.json`, which the product's
+        // own `plugin marketplace` command writes for a person.
+        let target = seeded("spared");
+        let inside = target.join("skills").join("their-record.json");
+        fs::write(&inside, b"a person's own file, inside a namespace we own").unwrap();
+        let beside = target.join("skills").join("nothing-spares-this.md");
+        fs::write(&beside, b"an ordinary sibling").unwrap();
+
+        // The control first: with nothing spared, replacement takes both.
+        let payload = scratch("spared-payload").join("target");
+        fs::create_dir_all(payload.join("skills")).unwrap();
+        fs::write(payload.join("skills").join("ours.md"), b"ours").unwrap();
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        replace_managed_from(&TEST, &resolved, &payload, None).unwrap();
+        assert!(!inside.exists(), "nothing spared it and it survived");
+        assert!(!beside.exists());
+
+        // And with it named, exactly it survives.
+        fs::write(&inside, b"a person's own file, inside a namespace we own").unwrap();
+        fs::write(&beside, b"an ordinary sibling").unwrap();
+        replace_managed_from(&SPARES, &resolved, &payload, None).unwrap();
+        assert!(inside.exists(), "the named path was taken anyway");
+        assert!(!beside.exists(), "a sibling nothing names survived");
+        assert!(
+            target.join("skills").join("ours.md").exists(),
+            "our own payload did not land beside it"
         );
     }
 
@@ -4019,6 +4147,74 @@ mod tests {
             ],
         ));
         assert_eq!(error.reason(), Some(WireReason::RecoveryRequired));
+    }
+
+    #[test]
+    fn an_unsettled_operation_is_named_in_the_key_the_consumer_reads() {
+        // `status` has published the journal since the beginning, under
+        // `journal`. Measured 2026-08-31 against `ai-stp-cli 0.0.10`: it never
+        // reads that key. Both of its recovery paths gate on
+        // `state == "recovery_required"` or on `cleanup_state`, and a target
+        // holding a prepared journal answered `managed` with neither -- so the
+        // fact was in the answer, under a name the reader does not know, and
+        // the recovery it exists to trigger could not fire.
+        //
+        // This asserts the consumer's own condition rather than our field, so
+        // it fails if the value stops satisfying the thing that reads it.
+        fn recovery_fires(answer: &serde_json::Value) -> bool {
+            answer["state"] == "recovery_required"
+                || matches!(
+                    answer["cleanup_state"].as_str(),
+                    Some("pending" | "required" | "in_progress")
+                )
+        }
+
+        let target = seeded("cleanup-state");
+        plan_then_apply(&target, "backup", &[]);
+
+        // The control, and the half that matters: a settled target must not
+        // ask for recovery. A field that always fires sends every caller into
+        // a restore it does not need.
+        let settled = run(args("status", &target, &[]));
+        assert_eq!(settled["cleanup_state"], "none");
+        assert!(
+            !recovery_fires(&settled),
+            "a settled target asked for recovery"
+        );
+
+        let control = target.join(TEST.control_directory);
+        let entry = |phase| Journal {
+            schema_version: JOURNAL_SCHEMA,
+            phase,
+            operation_id: "operation_01INTERRUPTED".to_owned(),
+            operation: "restore".to_owned(),
+            plan_digest: RELEASE.to_owned(),
+            target_precondition_digest: RELEASE.to_owned(),
+            backup_ref: None,
+            target_scope: None,
+        };
+
+        // Prepared: the effect may be partial and a restore is owed.
+        entry(Phase::Prepared).publish_prepared(&control).unwrap();
+        let interrupted = run(args("status", &target, &[]));
+        assert_eq!(interrupted["cleanup_state"], "required");
+        assert_eq!(
+            interrupted["state"], "managed",
+            "state still describes the directory"
+        );
+        assert!(recovery_fires(&interrupted));
+
+        // Committed: the effect landed and only the tail is left. Promoted
+        // rather than written, because `publish_prepared` sets the phase
+        // itself -- the first draft of this test wrote `Phase::Committed` into
+        // it and got `required` back, which is the API refusing to let a test
+        // fake a phase the program never reaches that way.
+        entry(Phase::Prepared)
+            .promote_to_committed(&control)
+            .unwrap();
+        let tail = run(args("status", &target, &[]));
+        assert_eq!(tail["cleanup_state"], "pending");
+        assert!(recovery_fires(&tail));
     }
 
     #[test]

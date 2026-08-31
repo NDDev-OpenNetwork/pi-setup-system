@@ -45,18 +45,24 @@ pub const PI: Harness = Harness {
         how: "documented by the vendor and not contradicted; no credential-free command \
               of this product writes or reports its home",
     },
-    // Not measured. The two artifacts this estate has read for this question are
-    // claude's, which carries `DISABLE_UPDATES`, and codex's, which carries no
-    // such literal. This product has been asked nothing, and an empty value here
-    // says the launch environment is untouched rather than that the product
-    // leaves the bytes alone.
+    // **Asked, and there is none.** Measured 2026-08-31 against the pinned
+    // 0.84.4 artifact, its digest checked against the artifact table:
+    // 30 `PI_*` names appear in it, and not one of them
+    // carries `UPDATE` or `UPGRADE`. An invented name was searched in the
+    // same run and found zero times, so the search discriminates.
+    //
+    // Empty here used to mean nobody had looked, which reads the same as
+    // this and is a different statement. Three of the seven do carry one --
+    // claude's `DISABLE_UPDATES`, opencode's `OPENCODE_DISABLE_AUTOUPDATE`,
+    // grok's `GROK_DISABLE_AUTOUPDATER` -- so the absence is a property of
+    // this product rather than of the question.
     updates_off_env: "",
     // One home, one variable: nothing here is conditional.
     config_home_note: "",
     control_directory: ".pi-setup-system",
     state_file: "NDDEV-PI-PROVIDER.json",
     predecessor_state_file: "NDDEV-PI-SETUP.json",
-    profile_id: "pi/native-files/1",
+    profile_id: "pi/native-files/2",
     // Everything outside this list is a sibling overlay preserved verbatim.
     // `extensions` is where Pi's plugins live. It was missing here while the
     // consumer's own two descriptions of that route disagreed -- the composition
@@ -72,6 +78,23 @@ pub const PI: Harness = Harness {
     // one that does not exist.
     native_namespaces: &[
         "AGENTS.md",
+        // The two system-prompt files, added 2026-08-31 from the product's own
+        // shipped `docs/usage.md` at the current pin: *"`~/.pi/agent/SYSTEM.md`
+        // globally"*, and *"Append to the default prompt without replacing it
+        // with `APPEND_SYSTEM.md` in either location"*. Both are global
+        // surfaces inside the directory this provider configures, and neither
+        // was owned or declined -- absent from the record entirely.
+        //
+        // Owned as **custody**: no component kind can reach them, because
+        // `instruction` already routes to `AGENTS.md` and the protocol has one
+        // destination per kind. That would once have made owning them purely
+        // destructive -- a posture selecting itself would empty a person's
+        // system prompt. It no longer does, which is what makes declaring them
+        // the right answer rather than declining them: a backup captures them,
+        // the identity hashes them so drift is visible, `remove` returns the
+        // target to unmanaged, and no posture switch touches them.
+        "SYSTEM.md",
+        "APPEND_SYSTEM.md",
         "settings.json",
         "skills",
         "extensions",
@@ -91,6 +114,12 @@ pub const PI: Harness = Harness {
     // any, have not been asked for -- empty here says nobody looked,
     // not that the product reads one name.
     shadowing_names: &[],
+    // Owned, and nothing this build can install ever lands here: no
+    // component kind routes to them and no setup in this catalogue
+    // carries files there. So a posture selecting itself must not empty
+    // them -- every posture agrees there is nothing, which makes the
+    // emptiness a statement none of them made.
+    custody_namespaces: &["APPEND_SYSTEM.md", "SYSTEM.md", "themes"],
     never_touch: &["auth.json", "trust.json", "sessions"],
     // Oh My Pi is a separate product descended from the same code: package
     // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its

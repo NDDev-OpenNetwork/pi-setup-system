@@ -167,10 +167,12 @@ Configuration home as the product documents it: `~/.pi/agent`.
 | Path | Component kinds routed here | Decided by |
 | --- | --- | --- |
 | `AGENTS.md` | `instruction` | [source](https://pi.dev/docs/latest/sdk; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
-| `settings.json` | `setting` | [source](https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package) |
-| `skills` | `skill` | [source](https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `APPEND_SYSTEM.md` | -- | [source](https://github.com/earendil-works/pi/releases/tag/v0.84.4) |
+| `SYSTEM.md` | -- | [source](https://github.com/earendil-works/pi/releases/tag/v0.84.4) |
 | `extensions` | `plugin` | [source](https://pi.dev/docs/latest/extensions; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
 | `prompts` | `command` | [source](https://pi.dev/docs/latest/prompt-templates; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
+| `settings.json` | `setting` | [source](https://pi.dev/docs/latest/settings; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package) |
+| `skills` | `skill` | [source](https://pi.dev/docs/latest/skills; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
 | `themes` | -- | [source](https://pi.dev/docs/latest/themes; confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs) |
 
 A path routing no component kind is owned so a setup can carry it;

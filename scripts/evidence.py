@@ -291,9 +291,14 @@ def cross_two_releases(
     # cannot get wrong, and the case it did get wrong was the other one.
     print("inact ", end="", flush=True)
     remove_the_program(binary, target, prefix, info, still_running=earlier)
+    survivor = (
+        "still starts"
+        if "launch" in info["supported_commands"]
+        else "remains the exposed version"
+    )
     print(
-        f"-> {updated['version']} taken off while {earlier} was running, "
-        f"and {earlier} still starts"
+        f"-> {updated['version']} taken off while {earlier} was exposed, "
+        f"and {earlier} {survivor}"
     )
 
     # Put it back, so the move forward below is a real transition rather than a
@@ -391,7 +396,7 @@ def remove_the_program(
     prefix with nothing exposed. A version name is the case the happy path never
     enters: the pinned version is installed but **not** running, because a
     rollback selected an older one, and removing it must leave that older one
-    exposed and startable.
+    exposed and, where this provider declares launch, startable.
 
     `software_remove` is declared by every build here and had never met a real
     vendor's bytes on any platform: the job installed and started a product and
@@ -450,15 +455,25 @@ def remove_the_program(
                 f"{applied['version']} was removed while {still_running} was "
                 f"running, and the prefix no longer runs it:\n{said}"
             )
-        started = run_text(
-            [binary, "launch", "--target", str(target), "--prefix", str(prefix),
-             "--json", "--", "--version"]
-        )
-        if still_running not in started:
-            raise Failed(
-                f"the command survived the removal and does not start "
-                f"{still_running}:\n{started}"
+        if "launch" in info["supported_commands"]:
+            started = run_text(
+                [binary, "launch", "--target", str(target), "--prefix", str(prefix),
+                 "--json", "--", "--version"]
             )
+            if still_running not in started:
+                raise Failed(
+                    f"the command survived the removal and does not start "
+                    f"{still_running}:\n{started}"
+                )
+        else:
+            # Cursor is the real subject. It installs a program and supports
+            # rollback, but deliberately omits launch because only one of its
+            # configuration surfaces follows the target override. Calling the
+            # absent operation here made the new two-release evidence fail on
+            # the declaration doing its job. `software` has already proved the
+            # exposed command still names the older version; starting it is not
+            # an assertion this provider is allowed to make.
+            print("      -> launch not declared; exposure verified without starting a mixed target")
         return
     if "Nothing is exposed" not in said and "No version" not in said:
         raise Failed(
