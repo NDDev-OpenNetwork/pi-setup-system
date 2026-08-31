@@ -20,6 +20,21 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.48] - 2026-08-31
+
+Antigravity's official updater publishes native Windows x86_64 and
+arm64 executables for both releases this provider can move between. Those exact
+PE files, their lengths and their digests were already present in the provider,
+but stale availability metadata still named both Windows platforms as
+unpublished, so a valid software plan was refused before it could name the
+artifact.
+
+The stale refusal is gone. Install, update, status, rollback and removal now use
+the same measured two-release lifecycle on all six native platform pairs. A
+generated invariant also rejects any current or previous release that calls a
+platform both published and unpublished, preventing the artifact table and the
+capability declaration from silently disagreeing again.
+
 ## [0.0.47] - 2026-08-31
 
 A target caught part-way through a change can be recovered from the daily

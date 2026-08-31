@@ -245,4 +245,27 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(unpublished, SOFTWARE.unsupported);
     }
+
+    #[test]
+    fn no_release_calls_a_platform_both_published_and_unpublished() {
+        let baseline = measured();
+        for name in ["software_artifacts", "previous_software_artifacts"] {
+            let Some(block) = baseline.get(name) else {
+                continue;
+            };
+            let published = block["platforms"].as_object().unwrap();
+            let unpublished = block
+                .get("unpublished")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str);
+            for platform in unpublished {
+                assert!(
+                    !published.contains_key(platform),
+                    "{name}: {platform} is both published and unpublished"
+                );
+            }
+        }
+    }
 }
