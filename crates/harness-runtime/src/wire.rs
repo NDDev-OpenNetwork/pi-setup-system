@@ -940,7 +940,7 @@ fn apply(
     // touches the namespaces the effect machinery below exists to mutate, so it
     // parts company here rather than pretending to be one of those effects.
     if Operation::SOFTWARE.contains(&operation) {
-        return software::apply(harness, prefix, operation, downloaded);
+        return apply_software(harness, prefix, operation, plan_digest, downloaded);
     }
     if let Some(named) = prefix {
         return Err(Error::refuse(
@@ -1164,6 +1164,46 @@ pub(crate) fn perform(
         "backup_ref": captured.backup_ref.as_str(),
         "setup_id": applied.setup_id,
     }))
+}
+
+/// The program lifecycle's answer, carrying the plan echo the wire owes.
+///
+/// The echo is added here rather than inside `software::apply`, because it is a
+/// fact about the wire call and not about the prefix: this layer is where the
+/// plan artifact and its digest exist, and `software::apply` deliberately knows
+/// about neither.
+///
+/// **It was missing from both of `software::apply`'s answer shapes, and the cost
+/// was carried by every one of the seven.** The consumer requires the echo for
+/// every operation, so `harness install`, `harness update` and `harness remove`
+/// through `ai-stp` refused *after* the program was installed -- the effect
+/// landed and the operation stayed `applied_unverified` over a prefix holding a
+/// working build. Reported by the consumer's own session on 2026-08-31 after
+/// running the released `0.0.48` through `harness install`, and confirmed here
+/// by reading both sites rather than by taking the report: the configuration
+/// answer carries `plan_digest`; neither software answer did.
+///
+/// Nothing on this side could have raised it. The producer tests asked whether
+/// the provider does what its own answer says, which it did, and the contract
+/// sentence saying the program lifecycle carries *"the same journal, backup and
+/// plan-digest"* was read as being about `plan-operation` alone. That is why the
+/// test beside it asserts the **wire** shape against the contract's list rather
+/// than against this function's output.
+fn apply_software(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    operation: Operation,
+    plan_digest: &str,
+    downloaded: &[std::path::PathBuf],
+) -> Result<serde_json::Value> {
+    let mut answer = software::apply(harness, prefix, operation, downloaded)?;
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert(
+            "plan_digest".to_owned(),
+            serde_json::Value::String(plan_digest.to_owned()),
+        );
+    }
+    Ok(answer)
 }
 
 /// What the target's own state says before this operation touches it.
@@ -5467,6 +5507,51 @@ mod tests {
             effects.iter().any(|effect| effect.contains("leave 0.9.0")),
             "{effects:?}"
         );
+    }
+
+    #[test]
+    fn every_software_apply_echoes_the_plan_digest_it_was_handed() {
+        // **Red before 2026-08-31, and no test here could have been.**
+        //
+        // The consumer requires the plan echo on *every* apply, and neither of
+        // `software::apply`'s two answer shapes carried it. So `harness
+        // install`, `harness update` and `harness remove` through `ai-stp`
+        // refused after the program had already been installed: the effect
+        // landed, and the operation stayed `applied_unverified` over a prefix
+        // holding a working build. All seven released providers, and it reached
+        // this repository as a measurement from the consumer's own session
+        // rather than from anything here.
+        //
+        // Why nothing caught it: every test around this one asks whether the
+        // provider does what its own answer *says*, and it did. The contract
+        // owns the list of what an answer must carry -- "the same journal,
+        // backup and plan-digest" -- and that sentence was read as being about
+        // `plan-operation`. So this asserts the echo against the digest the wire
+        // was handed, which is the only value that can disagree, and it does it
+        // for all three operations rather than the one that was reported.
+        for operation in ["software_install", "software_update", "software_remove"] {
+            let target = seeded(&format!("software-echo-{operation}"));
+            let file = downloaded(&target, TEST_PAYLOAD);
+            if operation != "software_install" {
+                plan_then_install(&target, "software_install", Some(&file));
+            }
+            let prefix = ready_prefix(&target);
+            let planned = software_plan(&target, operation);
+            assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+            let digest = planned["plan_digest"].as_str().unwrap().to_owned();
+            let artifact = if operation == "software_remove" {
+                None
+            } else {
+                Some(file.as_path())
+            };
+            let applied = apply_planned(&target, &prefix, operation, &planned, artifact);
+            assert_eq!(applied["state"], "verified", "apply refused: {applied}");
+            assert_eq!(
+                applied["plan_digest"],
+                serde_json::Value::String(digest),
+                "{operation} answered without the plan echo the wire owes: {applied}"
+            );
+        }
     }
 
     #[test]

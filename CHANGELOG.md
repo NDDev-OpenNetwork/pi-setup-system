@@ -20,6 +20,37 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.49] - 2026-08-31
+
+A software operation applied through `ai-stp` now answers with the
+plan digest it was handed. It did not before, in any of the seven, so `harness
+install`, `harness update` and `harness remove` through the consumer refused
+after the program had already been installed: the effect landed and the
+operation stayed unverified over a prefix holding a working build. The
+configuration operations always carried the echo; the program lifecycle owes the
+same one, and the contract says so.
+
+The consumer released tolerance ahead of this, as 0.0.12: a missing echo is
+accepted for the three program operations, a mismatched one is still refused,
+and a configuration operation must still carry both. That tolerance exists in
+0.0.12 and in no earlier published version, so 0.0.11 and before refuse this
+release's predecessor and 0.0.12 accepts both.
+
+Nothing here could have found it. Every test asked whether the provider does
+what its own answer says, and it did -- the answer was consistent with itself and
+identical across all seven. The consumer found it by running the released
+0.0.48 through its own install path. The new test asserts the echo against the
+digest the wire was handed, for all three program operations.
+
+Beside it, the rendered lock file is now projected from this workspace's own
+committed resolution rather than re-resolved inside each tree, so a published
+tree no longer depends on which machine rendered it; twenty-one recorded product
+measurements were re-asked against the artifacts their baselines pin, three of
+which returned a false negative because the search term was a label this project
+invented rather than a string the product carries; and the schema survey was
+completed for the four harnesses that had never been asked, including one that
+publishes a manifest schema this provider must not declare.
+
 ## [0.0.48] - 2026-08-31
 
 Antigravity's official updater publishes native Windows x86_64 and
