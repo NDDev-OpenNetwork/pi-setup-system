@@ -20,6 +20,29 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.51] - 2026-09-01
+
+`remove` names both of its cases. It said *"anything you put under
+those"*, which is directory language: a person's own keys live **in**
+`config.toml`, not under it, so the file half of the sentence read as not
+applying to them. The consumer measured that these lines reach their approval
+surface verbatim, so the sentence is the contract. It now says: your own keys
+in a file it names go, your own files in a directory it names go, and the
+backup slot captured first holds all of it.
+
+The marker between a report and its reader is held from both sides now. Every
+tool prints a machine `RESULT` line; a test binds each tool to the exact keys
+it prints, and — since one rename cost a scheduled run — also requires the
+workflow that parses a marker to parse the key that is actually printed. The
+conformance report's third state is part of the same change: a sweep that
+could not run says `unmeasured=` apart from `refused=`, and nothing downstream
+may read its silence as a pass. The kit check's count is `differs=` rather
+than `behind=`, because a byte comparison cannot say which side moved — and
+the day it was renamed, the side that had moved was the vendor's.
+
+The vendored provider-kit README follows the consumer's current copy, which
+dropped a passage superseded on their side.
+
 ## [0.0.50] - 2026-08-31
 
 Each repository now tracks what its default branch is meant to

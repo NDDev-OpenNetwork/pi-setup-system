@@ -564,7 +564,17 @@ mod tests {
         let sweeps = [
             ("tools/validate_setup_schemas.py", "failed="),
             ("tools/conformance_report.py", "refused="),
-            ("tools/check_vendored_kit.py", "behind="),
+            // And the third state beside it. A sweep that could not run reports
+            // `refused=0`, and without this count the workflow would close its
+            // issue saying every harness conforms again -- an absent instrument
+            // reading as a clean result, one layer up from where this estate
+            // usually finds it.
+            ("tools/conformance_report.py", "unmeasured="),
+            // `differs=` and not `behind=`. The word was renamed on 2026-08-31
+            // because a byte comparison cannot say which side moved, and that
+            // day it was the vendor: their README dropped a file their own
+            // KIT-IDENTITY still names, while the copy here stayed correct.
+            ("tools/check_vendored_kit.py", "differs="),
             ("tools/check_authored_keys.py", "unsourced="),
         ];
 
@@ -578,6 +588,26 @@ mod tests {
             assert!(
                 source.contains(key),
                 "{tool}'s RESULT line no longer carries {key}"
+            );
+        }
+
+        // **And the reader, which this guard did not hold until it cost
+        // something.** Renaming `behind=` to `differs=` in the kit check passed
+        // the loop above the moment the tool and this list agreed -- while
+        // `conformance.yml` still parsed the old marker with `sed` and would
+        // have reported "the kit check printed no RESULT line" on the next
+        // scheduled run. A marker is a contract between a writer and a reader,
+        // and a test naming only the writer holds one half of a pair.
+        let conformance_workflow =
+            std::fs::read_to_string(root.join(".github/workflows/conformance.yml"))
+                .expect("the conformance workflow is missing");
+        for (tool, key) in sweeps {
+            if !conformance_workflow.contains(tool) {
+                continue;
+            }
+            assert!(
+                conformance_workflow.contains(key),
+                "the conformance workflow reads {tool} and does not parse {key}"
             );
         }
 

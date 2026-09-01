@@ -620,7 +620,24 @@ pub(crate) fn taken_before_writing(
         // it on the fourth. The first version said "the capture above holds
         // it", which was false on the one that reads it after the fact -- a
         // word describing layout inside a sentence describing behaviour.
-        "anything you put under those goes too, and the backup slot holds it".to_owned(),
+        //
+        // **And shape-free, since 2026-08-31.** It said *"anything you put
+        // under those"*, which is directory language: a person's own keys are
+        // **in** `config.toml`, not under it, so the file half of the list read
+        // as not applying to them. The consumer measured that these three lines
+        // reach their approval point unchanged -- `InstallationView.effects`
+        // carries the provider's plan verbatim -- and then found the reading it
+        // produces: a contribution owning one key in `config.toml` is removed
+        // by taking the whole file, and *"config.toml goes whole"* is heard as
+        // *"what you installed goes"*.
+        //
+        // The list mixes files and directories and this runtime does not carry
+        // which is which; inferring it from an extension would be deciding by
+        // shape, which is the habit this estate refuses. So the sentence names
+        // both cases instead of assuming one.
+        "whatever else is in them goes too -- your own keys in a file it names, \
+         your own files in a directory it names -- and the backup slot holds it"
+            .to_owned(),
     ]
 }
 

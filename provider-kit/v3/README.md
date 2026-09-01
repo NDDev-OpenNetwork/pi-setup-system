@@ -35,22 +35,4 @@
 называет SHA-256 самого файла `SHA256SUMS` без нормализации. Для этого комплект
 их и несёт.
 
-## Status response
-
-Всегда обязательны protocol/provider/harness identity, canonical target,
-`state`, оба target digests, `cleanup_state`, `journal`, `backups`,
-`provider_state` и `shadowed_by`.
-
-Полный flat provenance обязателен условно: только когда вложенный
-`provider_state` сообщает `present=true`, `readable=true` и
-`drift_state=clean`. Тогда ответ называет state schema, provider build/release,
-setup definition/version/passport, components, bundle/artifact, projection/plan,
-operation/precondition, native ownership, written paths, backup и previous
-verified identity. Missing, foreign-schema и local-drift состояния не заполняют
-эти поля выдуманными значениями.
-
-Эта ревизия сначала публикует schema и conformance cases. Consumer enforcement
-включается только после того, как provider systems вендорят и выпускают kit;
-одного присутствия файла недостаточно, чтобы считать старый status отвергнутым.
-
 Редактировать generated JSON вручную нельзя.
