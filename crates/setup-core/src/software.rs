@@ -357,7 +357,7 @@ impl Software {
     /// wrote. [`rollback`] tries it, then the flat shape, and refuses naming
     /// both rather than pointing a command at a path it did not verify.
     #[must_use]
-    pub fn member_hint(&self) -> &'static str {
+    fn member_hint(&self) -> &'static str {
         match self.delivery {
             Delivery::Artifacts(artifacts) => {
                 artifacts.first().map_or(self.command, |entry| entry.member)
