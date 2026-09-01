@@ -366,6 +366,33 @@ impl Software {
         }
     }
 
+    /// The member of **this platform's** artifact, or the hint when the table
+    /// has no row for it.
+    ///
+    /// The hint is the first row of the table, and deriving an exposed name
+    /// from it is correct exactly until one platform's member classifies
+    /// differently from the first row's. Cursor is that shape: Unix members
+    /// carry no extension, the Windows member is a `.cmd` — so a plan built
+    /// from the hint promised `bin/agent` while the apply, which resolves this
+    /// host's artifact, wrote `bin/agent.cmd`. The consumer's six-leg matrix
+    /// found it on released `0.0.50`, Windows only, both architectures, with
+    /// *"the planned entry point is not on disk"*. Every reader of an exposed
+    /// name goes through here now; the hint remains only as the fallback for
+    /// a platform the vendor never published for, where nothing was ever
+    /// installed under any name.
+    #[must_use]
+    pub fn member_on(&self, os: &str, arch: &str) -> &'static str {
+        self.artifact_for(os, arch)
+            .map_or_else(|_| self.member_hint(), |artifact| artifact.member)
+    }
+
+    /// [`Self::member_on`] for the machine this process runs on.
+    #[must_use]
+    pub fn member_here(&self) -> &'static str {
+        let (os, arch) = crate::platform_of_this_host();
+        self.member_on(os, arch)
+    }
+
     /// The artifact for one platform, or the reason there is not one.
     ///
     /// # Errors
@@ -744,7 +771,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     // update, roll back, take the bad one off -- deleted the command that was
     // running the good one and left a complete version tree nothing could start.
     let exposed_version =
-        Present::under_named(root, software.command, software.member_hint()).exposed;
+        Present::under_named(root, software.command, software.member_here()).exposed;
 
     fs::remove_dir_all(&version_root).map_err(|error| {
         Error::new(
@@ -768,7 +795,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
 
     let exposed = root
         .join("bin")
-        .join(exposed_name(software.command, software.member_hint()));
+        .join(exposed_name(software.command, software.member_here()));
     if exposed.symlink_metadata().is_ok() {
         fs::remove_file(&exposed).map_err(|error| {
             Error::new(
@@ -851,7 +878,7 @@ fn executable_candidates(
 /// Refuses a version that is not installed, naming the ones that are, and a
 /// version tree that holds no executable this build can find.
 pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed> {
-    let present = Present::under_named(root, software.command, software.member_hint());
+    let present = Present::under_named(root, software.command, software.member_here());
     if !present.versions.iter().any(|found| found == to) {
         return Err(Error::new(
             ReasonCode::InvalidTarget,
@@ -891,7 +918,7 @@ pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed>
 
     let exposed = root
         .join("bin")
-        .join(exposed_name(software.command, software.member_hint()));
+        .join(exposed_name(software.command, software.member_here()));
     expose(executable, &exposed, to, software.command)?;
     Ok(Installed {
         version: to.to_owned(),
@@ -1253,6 +1280,75 @@ mod tests {
             }),
             ..software()
         }
+    }
+
+    /// A cursor-shaped table: Unix members extensionless, the Windows member a
+    /// batch launcher. The one shape in the estate where the first row's member
+    /// and the Windows row's member classify differently.
+    const MIXED_ARTIFACTS: &[Artifact] = &[
+        Artifact {
+            platform: "linux/arm64",
+            url: "https://example.invalid/linux-arm64.tgz",
+            bytes: 0,
+            sha256: "sha256:0",
+            shape: Shape::GzipTar,
+            member: "dist-package/cursor-agent",
+        },
+        Artifact {
+            platform: "windows/x86_64",
+            url: "https://example.invalid/windows-x86_64.zip",
+            bytes: 0,
+            sha256: "sha256:0",
+            shape: Shape::Zip,
+            member: "dist-package/cursor-agent.cmd",
+        },
+    ];
+
+    /// The name a plan states on Windows is the name Windows actually gets.
+    ///
+    /// Found by the consumer's six-leg matrix on released `0.0.50`, cursor,
+    /// both Windows architectures: `software_install` answered success and
+    /// their postcondition read *"the planned entry point is not on disk"*.
+    /// The plan derived its entry point from `member_hint()` — the **first**
+    /// artifact in the table, a Unix member with no extension, so
+    /// `exposed_name_on(.., windows)` classified it `Native` and the plan
+    /// promised `bin/agent`; the apply resolved this host's artifact, whose
+    /// member is a `.cmd`, and wrote `bin/agent.cmd`. Four Unix legs agreed
+    /// with themselves; the one platform where the two derivations differ is
+    /// the one the plan lied on. Our own evidence stayed green because its
+    /// readback derives the name the same way the apply does — self-consistent
+    /// is not correct.
+    #[test]
+    fn the_windows_entry_point_names_the_member_windows_actually_gets() {
+        let sw = Software {
+            command: "agent",
+            delivery: Delivery::Artifacts(MIXED_ARTIFACTS),
+            ..software()
+        };
+        // The derivation the plan uses for this platform.
+        let planned = exposed_name_on(sw.command, sw.member_on("windows", "x86_64"), true);
+        // The derivation the apply uses: this platform's artifact, directly.
+        let written = exposed_name_on(
+            sw.command,
+            sw.artifact_for("windows", "x86_64").unwrap().member,
+            true,
+        );
+        assert_eq!(planned, written, "the plan and the apply name one file");
+        assert_eq!(planned, "agent.cmd");
+        // The control: the first-row derivation this replaced answers wrongly
+        // on exactly this shape, which is what made the defect Windows-only
+        // and cursor-only.
+        assert_eq!(exposed_name_on(sw.command, sw.member_hint(), true), "agent");
+    }
+
+    /// A platform the table does not carry falls back to the hint.
+    ///
+    /// `software_remove` plans on hosts the vendor never published for, and a
+    /// name that errors there would refuse a removal of nothing.
+    #[test]
+    fn a_platform_without_an_artifact_falls_back_to_the_hint() {
+        let sw = software();
+        assert_eq!(sw.member_on("windows", "x86_64"), sw.member_hint());
     }
 
     /// A build that has never been bumped names exactly one version.
