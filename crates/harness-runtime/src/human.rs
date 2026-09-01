@@ -530,10 +530,14 @@ fn named_slot(
 /// can be commands someone types.
 fn software(harness: &Harness, prefix: &Path) -> Result<()> {
     let declared = declared_software(harness)?;
+    // This platform's member, not the table's first row: the hint said `agent`
+    // where Windows holds `agent.cmd`, so this surface answered "Nothing is
+    // exposed" over a prefix with a working install -- found by our own
+    // evidence the day the wire half of the same defect shipped as fixed.
     let present = setup_core::software::Present::under_named(
         prefix,
         declared.command,
-        declared.member_hint(),
+        declared.member_here(),
     );
 
     if present.versions.is_empty() {
@@ -584,10 +588,11 @@ fn software(harness: &Harness, prefix: &Path) -> Result<()> {
 /// Point the exposed command back at a version that is already on disk.
 fn rollback(harness: &Harness, prefix: &Path, to: Option<&str>) -> Result<()> {
     let declared = declared_software(harness)?;
+    // Same fact as `software` above: the member Windows actually gets.
     let present = setup_core::software::Present::under_named(
         prefix,
         declared.command,
-        declared.member_hint(),
+        declared.member_here(),
     );
 
     // Named, never inferred. There is no record of what was previous -- only

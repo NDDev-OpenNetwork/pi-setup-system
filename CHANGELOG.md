@@ -20,6 +20,23 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.53] - 2026-09-01
+
+The other two readers of the exposed name, and the boundary that
+stops a third. `0.0.52` moved the wire path — plan, apply's answer, launch,
+remove, rollback — onto this platform's member; the human `software` and
+`rollback` surfaces still derived the name from the table's first row, so on
+Windows they answered *"Nothing is exposed"* over a prefix holding a working
+cursor install. Found by this repository's own evidence matrix within the
+hour of `0.0.52` shipping: the wire legs went green and the human legs went
+red, which is the two halves of one defect being fixed one wave apart.
+
+Both surfaces read this platform's member now, and the first-row hint is
+**private to the kernel crate**: the fallback inside the platform accessor
+and the deliberately-ordered candidate list for older trees are its only
+callers, and a new reader reaching for it does not compile. A grep sweep
+missed two call sites once; a crate boundary cannot.
+
 ## [0.0.52] - 2026-09-01
 
 An operation that reads no bundle refuses one by name. Only
