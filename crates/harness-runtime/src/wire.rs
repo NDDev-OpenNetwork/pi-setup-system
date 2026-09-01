@@ -525,6 +525,30 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
         }
     }
 
+    // The same rule for a bundle, and this one was worse than silently
+    // dropped: only `install` and `replace` read one, but the plan **bound**
+    // the five names into its artifact for every operation, so a remove plan
+    // echoed a `bundle_digest` its apply would never read. Measured on the
+    // released 0.0.50 while the consumer designed remove's `end_state`
+    // extension (their ADR-0129): plan `planned, valid: true`, apply removed
+    // everything, dummy bundle untouched -- accept and ignore, twice, exit 0.
+    // Their rollout story assumed the loud refusal existed; now it does. When
+    // remove learns to read a bundle (kit 0.2.8+, `end_state`), this narrows
+    // to the operations that still read none.
+    if request.bundle.is_some()
+        && !matches!(request.operation, Operation::Install | Operation::Replace)
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} reads no bundle, so one named for it would be echoed into \
+                 the plan and never read; install and replace are the \
+                 operations that take one",
+                request.operation
+            ),
+        ));
+    }
+
     // A profile this build never advertised cannot be honoured, and recording
     // it in a plan would be worse than refusing: the apply would run under the
     // only posture this build has while the artifact claimed another.
@@ -4607,6 +4631,50 @@ mod tests {
             answer["detail"].as_str().is_some_and(|d| !d.is_empty()),
             "a refusal carrying only a code says a bundle was wrong without \
              saying which part: {answer}"
+        );
+    }
+
+    #[test]
+    fn a_bundle_on_an_operation_that_reads_none_is_refused_not_echoed() {
+        // Measured on the released 0.0.50 before this refusal existed, while
+        // the consumer designed remove's `end_state` extension (their
+        // ADR-0129): a remove plan carrying all five bundle names answered
+        // `planned, valid: true` with the digests echoed, and the apply then
+        // removed everything with the bundle bytes untouched -- accept and
+        // ignore, exit 0 twice, even for a 20-byte dummy ZIP. A plan that
+        // echoes inputs apply will never read lies about what approving it
+        // means, and the consumer's rollout story for `end_state` assumed a
+        // loud refusal that did not exist. This is that refusal. When remove
+        // learns to read a bundle (kit 0.2.8+), it narrows rather than lifts:
+        // the operations that read none keep refusing.
+        let target = seeded("bundle-on-remove");
+        let (bytes, bundle_digest, artifact) = bundle_bytes(&[("AGENTS.md", "x\n", 0o644)]);
+        let artifact_path = target.join("..").join("bundle-on-remove.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "remove".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01NOBUNDLE".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        plan_args.extend(bundle_flags(
+            &artifact_path,
+            &bundle_digest,
+            &artifact,
+            bytes.len(),
+        ));
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let error = refuse(args("plan-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("reads no bundle"),
+            "{}",
+            error.detail()
         );
     }
 

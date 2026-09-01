@@ -20,6 +20,40 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.52] - 2026-09-01
+
+An operation that reads no bundle refuses one by name. Only
+`install` and `replace` read a bundle, and the plan bound the five bundle
+names into its artifact for every operation — so a `remove` plan carrying a
+fully-named bundle answered `planned, valid: true` with the digests echoed,
+and the apply removed everything with the bundle bytes untouched. Accept and
+ignore, measured on the released 0.0.50; the only loud refusal was the argv
+parser's, on a partial flag set.
+
+A plan that echoes inputs its apply will never read lies about what approving
+it means. The consumer's `end_state` design for `remove` (their ADR-0129)
+assumed the loud refusal existed for providers that do not yet declare the
+field; their declaration gate was in fact the only net. This release is the
+second: `unsupported_operation`, naming the two operations that do take a
+bundle. When `remove` learns to read one — the agreed `end_state` extension,
+kit 0.2.8+ — the refusal narrows to the operations that still read none.
+
+No released consumer sends a bundle on `remove`; their remove plans are built
+with no bundle bound, so nothing anyone runs changes behaviour under this
+release except the request that was already a contradiction.
+
+And the plan's software entry point names the member **this platform**
+actually gets. It was derived from the table's first row — a Unix member —
+so on Windows a cursor plan promised `bin/agent` while the apply, resolving
+this host's artifact, wrote `bin/agent.cmd`; `remove` looked for the wrong
+name too and left the launcher behind. Found by the consumer's six-leg
+matrix on `0.0.50`, Windows only, both architectures, cursor only — the one
+harness whose Windows member is a batch launcher while its Unix members are
+extensionless. Every reader of the exposed name — plan, apply's answer,
+launch, remove, rollback — now derives it from this platform's artifact,
+with the first-row hint kept only for a platform the vendor never published
+for.
+
 ## [0.0.51] - 2026-09-01
 
 `remove` names both of its cases. It said *"anything you put under

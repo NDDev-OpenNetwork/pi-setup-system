@@ -149,10 +149,17 @@ pub(crate) fn plan(
     // Not always the command: pi's entry point is JavaScript, and Windows runs
     // a file by its extension rather than by a shebang, so what is exposed
     // there is `pi.cmd`. The plan states what a caller will actually be able to
-    // run, which is the whole point of naming it.
+    // run, which is the whole point of naming it -- and it is derived from
+    // **this platform's** member, not the table's first row. The hint
+    // derivation promised `bin/agent` on Windows while the apply wrote
+    // `bin/agent.cmd`, because cursor's Windows member is a `.cmd` and its
+    // Unix members are extensionless; the consumer's matrix caught the plan
+    // lying on exactly the one platform where the two rows classify apart.
+    let (os, arch) = platform_of_this_host();
+    let member = declared.member_on(os, arch);
     let entry_point = format!(
         "bin/{}",
-        setup_core::software::exposed_name(declared.command, declared.member_hint())
+        setup_core::software::exposed_name(declared.command, member)
     );
     let exposed = root.join(&entry_point);
 
@@ -160,7 +167,7 @@ pub(crate) fn plan(
     // is already under the prefix belongs in the plan. Without it an install
     // and an update produced byte-identical effects -- two names for one act,
     // and neither said what was about to be replaced.
-    let present = software::Present::under_named(&root, declared.command, declared.member_hint());
+    let present = software::Present::under_named(&root, declared.command, member);
 
     if operation == Operation::SoftwareRemove {
         let mut effects = vec![
@@ -205,7 +212,6 @@ pub(crate) fn plan(
         ));
     }
 
-    let (os, arch) = platform_of_this_host();
     let artifact = declared.artifact_for(os, arch)?;
     let mut effects = Vec::new();
     if present.holds(declared.version) {
@@ -336,7 +342,7 @@ pub(crate) fn apply(
     // the prefix could have been emptied in between. The plan's digest binds
     // what was decided, not what the disk still holds.
     if operation == Operation::SoftwareUpdate
-        && software::Present::under_named(&root, declared.command, declared.member_hint())
+        && software::Present::under_named(&root, declared.command, declared.member_here())
             .versions
             .is_empty()
     {
@@ -368,7 +374,7 @@ pub(crate) fn apply(
         "version": installed.version,
         "entry_point": format!(
             "bin/{}",
-            setup_core::software::exposed_name(declared.command, declared.member_hint())
+            setup_core::software::exposed_name(declared.command, artifact.member)
         ),
         "executable": installed.executable.to_string_lossy(),
         "files": installed.files,
@@ -420,7 +426,7 @@ pub(crate) fn launch(
     // one platform where they differ.
     let executable = root.join("bin").join(setup_core::software::exposed_name(
         declared.command,
-        declared.member_hint(),
+        declared.member_here(),
     ));
 
     let found = executable.metadata().map_err(|error| {
