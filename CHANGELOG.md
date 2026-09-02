@@ -20,6 +20,25 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.55] - 2026-09-02
+
+A plan whose scope contradicts the target's record is refused by
+name. A target managed under `project` used to accept a plan naming the
+global profile, measure the global inventory at a workspace where those
+namespaces are simply absent, and — had it been applied — rewrite the record
+with the wrong ownership. The consumer met the first half as a bare
+`expected_target_digest` mismatch when their remove plan carried no scope;
+the refusal now says which scope to send (`unsupported_operation`). One
+direction only: a home managed globally may still be asked about a scope.
+
+`status --target-scope <scope>` is honoured: asked, `status` measures the
+inventory the plan will, instead of the global namespaces at a workspace
+root that a repository may spell for its own reasons. Absent the flag,
+`status` is exactly what it was. The `provider-info` member that lets a
+consumer send it, `status_request_fields`, is present in the build and
+empty until the kit names it and a released consumer accepts it; this
+release publishes the same thirteen names 0.0.54 did.
+
 ## [0.0.54] - 2026-09-02
 
 `remove` reads a bundle, and the plan says per path what stays.

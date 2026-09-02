@@ -132,7 +132,15 @@ pub const fn usage(command: Command) -> Usage {
         Command::Status => Usage {
             command,
             required: &["--target", "--json"],
-            optional: &[],
+            // Accepted since 0.0.55, declared through `status_request_fields`
+            // once the kit names the member: a workspace that nobody has
+            // installed into yet has no record to read a scope from, and the
+            // consumer binds a plan to the identity `status` reports -- so it
+            // must be able to ask about the scope it is about to plan under.
+            optional: &[(
+                "--target-scope",
+                "which scope to measure the target under; absent, the target's own record decides",
+            )],
             note: "Report the target's current state. Never changes it.",
         },
         Command::RecoverOperation => Usage {
@@ -267,6 +275,9 @@ pub enum Invocation {
     Status {
         /// The target the caller named.
         target: PathBuf,
+        /// The scope the caller is asking about, when it said. Absent, the
+        /// scope is read from the target's own record, as it always was.
+        target_scope: Option<TargetScope>,
     },
     /// Start the product. Optional command.
     Launch {
@@ -386,7 +397,7 @@ impl Invocation {
             | Self::PlanOperation { target, .. }
             | Self::ApplyOperation { target, .. }
             | Self::RecoverOperation { target }
-            | Self::Status { target }
+            | Self::Status { target, .. }
             | Self::Launch { target, .. } => Some(target),
         }
     }
@@ -466,7 +477,10 @@ where
 
     let invocation = match command {
         Command::ProviderInfo => return Err(local("provider-info never reaches this branch")),
-        Command::Status => Invocation::Status { target },
+        Command::Status => Invocation::Status {
+            target,
+            target_scope: take_target_scope(&mut flags)?,
+        },
         Command::RecoverOperation => Invocation::RecoverOperation { target },
         Command::Launch => Invocation::Launch {
             target,
@@ -884,14 +898,43 @@ mod tests {
         assert_eq!(
             parse(with_target("status", &[])).unwrap(),
             Invocation::Status {
-                target: PathBuf::from("/tmp/target")
+                target: PathBuf::from("/tmp/target"),
+                target_scope: None,
             }
+        );
+        assert!(
+            parse(with_target(
+                "recover-operation",
+                &["--target-scope", "project"]
+            ))
+            .is_err(),
+            "recovery reads its scope from the journal, never from argv"
         );
         assert_eq!(
             parse(with_target("recover-operation", &[])).unwrap(),
             Invocation::RecoverOperation {
                 target: PathBuf::from("/tmp/target")
             }
+        );
+    }
+
+    /// The consumer binds a plan to the identity `status` reports a moment
+    /// before, and a workspace nobody has installed into has no record to
+    /// read a scope from -- so `status` must be able to be asked.
+    #[test]
+    fn status_may_be_asked_about_a_scope() {
+        assert_eq!(
+            parse(with_target("status", &["--target-scope", "project"])).unwrap(),
+            Invocation::Status {
+                target: PathBuf::from("/tmp/target"),
+                target_scope: Some(TargetScope::Project),
+            }
+        );
+        let error = parse(with_target("status", &["--target-scope", "galaxy"])).unwrap_err();
+        assert!(
+            error.detail().contains("not a target scope"),
+            "{}",
+            error.detail()
         );
     }
 
