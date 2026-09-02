@@ -49,7 +49,10 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                 Error::declaration(format!("provider-info cannot be encoded: {source}"))
             })
         }
-        Invocation::Status { target } => status(harness, &target),
+        Invocation::Status {
+            target,
+            target_scope,
+        } => status(harness, &target, target_scope),
         Invocation::ValidateBundle { bundle, .. } => Ok(validate_bundle(harness, &bundle)),
         Invocation::PlanOperation { target, request } => plan(harness, &target, &request),
         Invocation::ApplyOperation {
@@ -262,15 +265,59 @@ fn shadowed_here(harness: &Harness, root: &Path) -> Vec<serde_json::Value> {
 /// `managed`, and `target_digest` — and it calls this twice, requiring the two
 /// answers to be *identical*. So nothing here may vary between calls: no clock,
 /// no counter, no ordering that depends on a directory walk.
-fn status(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
+fn status(
+    harness: &Harness,
+    target: &Path,
+    asked: Option<provider_v3::TargetScope>,
+) -> Result<serde_json::Value> {
     let (resolved, control, pool) = observe(harness, target)?;
-    // `status` is handed a target and nothing else, so the scope has to come
-    // from the target. It is already written down: see `scope_recorded_at`.
-    let scope = scope_recorded_at(harness, &resolved);
+    let scope = scope_to_measure(harness, &resolved, asked)?;
     let owned = owned_here(harness, &resolved, scope)?;
     let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
+    status_of(harness, &resolved, &pool, &identity, journal)
+}
 
+/// Which scope `status` measures a target under.
+fn scope_to_measure(
+    harness: &Harness,
+    resolved: &Target,
+    asked: Option<provider_v3::TargetScope>,
+) -> Result<Option<provider_v3::TargetScope>> {
+    // A scope this provider never published cannot be asked about: the
+    // answer would be an inventory this build has made no statement on.
+    if let Some(named) = asked
+        && harness.scoped_for(Some(named)).is_none()
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "--target-scope {named} names a target this provider publishes no \
+                 projection profile for"
+            ),
+        ));
+    }
+    // The scope the caller asked about wins; without one, it comes from the
+    // target's own record (`scope_recorded_at`). The record covers every
+    // managed target. What it cannot cover is a workspace nobody has installed
+    // into: no record, so the *global* namespaces are measured at its root --
+    // and a repository is free to carry a top-level `skills/` or `rules/` of
+    // its own that happens to spell one of them. The plan the consumer binds
+    // to this answer is made under the scope it is about to install, where an
+    // unrecorded target is exactly nothing of ours. Two inventories, one
+    // comparison; asked, `status` measures the one the plan will. Agreed with
+    // the consumer on 2026-09-02, out of their project-scope branch.
+    Ok(asked.or_else(|| scope_recorded_at(harness, resolved)))
+}
+
+/// The status answer, once the inventory has been measured.
+fn status_of(
+    harness: &Harness,
+    resolved: &Target,
+    pool: &Pool,
+    identity: &str,
+    journal: Option<Journal>,
+) -> Result<serde_json::Value> {
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
     // `managed` carries our state; `unmanaged` holds content that is not ours;
     // `missing` means there is nothing here at all.
@@ -711,6 +758,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     )?;
 
     honourable(harness, request)?;
+    refuse_another_scopes_record(harness, &resolved, request.target_scope)?;
 
     let owned = owned_here(harness, &resolved, request.target_scope)?;
     let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
@@ -770,29 +818,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             )
         }
         Operation::Remove => {
-            let mut lines = vec!["capture the current target before removing".to_owned()];
-            lines.extend(taken_before_writing(harness, request.target_scope));
-            // A bundle on a remove names what stays: the consumer rebuilt a
-            // host file without the key this setup put there, and the file
-            // outlives the setup at exactly those bytes. Read and verified
-            // here, as install's is, so the plan is never issued for bytes
-            // the apply would refuse -- same reader, same limits, same
-            // `validate-bundle` semantics, by the consumer's request.
-            if let Some(named) = request.bundle.as_ref() {
-                let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
-                end_state = end_states_of(harness, &resolved, request.target_scope, &verified)?;
-                lines.push(format!(
-                    "leave {} declared files behind at the bytes the bundle carries",
-                    verified.files.len()
-                ));
-                lines.extend(
-                    verified
-                        .files
-                        .keys()
-                        .take(16)
-                        .map(|path| format!("leave {path}")),
-                );
-            }
+            let (lines, states) = removal_effects(harness, &resolved, request)?;
+            end_state = states;
             (lines, None, None)
         }
         Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
@@ -825,6 +852,77 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         effects,
     })?
     .into_response()
+}
+
+/// A target managed under a scope is planned under that scope, or refused by
+/// name.
+///
+/// A plan under another scope measures another inventory -- at a workspace
+/// managed under `project`, the global namespaces are simply absent, so the
+/// plan's identity is the empty tree's -- and its apply would rewrite the
+/// record with the wrong ownership. The consumer met the first half as a bare
+/// `expected_target_digest` mismatch on 2026-09-02 (their remove plan carried
+/// no scope); this turns it into the sentence that says what to send.
+///
+/// One direction only. A home managed under the global profile may still be
+/// asked about a scope: the global record is not an inventory of that scope's
+/// files, and the scoped operations read what they need from it or refuse on
+/// their own terms. The dangerous direction is the one a record describes.
+fn refuse_another_scopes_record(
+    harness: &Harness,
+    target: &Target,
+    asked: Option<provider_v3::TargetScope>,
+) -> Result<()> {
+    let Some(recorded) = scope_recorded_at(harness, target) else {
+        return Ok(());
+    };
+    if asked == Some(recorded) {
+        return Ok(());
+    }
+    Err(Error::refuse(
+        WireReason::UnsupportedOperation,
+        format!(
+            "{} is managed under target_scope {}, and this plan names {}; a plan \
+             under another scope would measure another inventory, so name the \
+             scope the target is managed under",
+            target.root().display(),
+            recorded.as_str(),
+            asked.map_or("the global profile", provider_v3::TargetScope::as_str)
+        ),
+    ))
+}
+
+/// What a removal will do, and what each path becomes when a bundle rides.
+///
+/// A bundle on a remove names what stays: the consumer rebuilt a host file
+/// without the key this setup put there, and the file outlives the setup at
+/// exactly those bytes. Read and verified here, as install's is, so the plan
+/// is never issued for bytes the apply would refuse -- same reader, same
+/// limits, same `validate-bundle` semantics, by the consumer's request.
+fn removal_effects(
+    harness: &Harness,
+    resolved: &Target,
+    request: &PlanRequest,
+) -> Result<(Vec<String>, Vec<EndState>)> {
+    let mut lines = vec!["capture the current target before removing".to_owned()];
+    lines.extend(taken_before_writing(harness, request.target_scope));
+    let Some(named) = request.bundle.as_ref() else {
+        return Ok((lines, Vec::new()));
+    };
+    let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
+    let states = end_states_of(harness, resolved, request.target_scope, &verified)?;
+    lines.push(format!(
+        "leave {} declared files behind at the bytes the bundle carries",
+        verified.files.len()
+    ));
+    lines.extend(
+        verified
+            .files
+            .keys()
+            .take(16)
+            .map(|path| format!("leave {path}")),
+    );
+    Ok((lines, states))
 }
 
 /// What each path a removal touches looks like afterwards, when a bundle of
@@ -5153,6 +5251,275 @@ mod tests {
             target.join("AGENTS.md").exists(),
             "a refusal made an effect"
         );
+    }
+
+    /// The consumer binds a plan to the `target_digest` it observed through
+    /// `status` a moment before. Reported from their project-scope branch on
+    /// 2026-09-02: at a workspace, install passed on an empty target and the
+    /// remove that followed was refused for `expected_target_digest`. Both
+    /// numbers must come from the same owned set, whatever `status` was told.
+    #[test]
+    fn status_and_a_scoped_plan_agree_on_the_identity_after_a_scoped_install() {
+        let target = seeded("scoped-status-agrees");
+        install_scoped(&target, "agree", "ours", "ours\n");
+        let observed = run(args("status", &target, &[]));
+        let planned = scoped_plan(&target, "remove", "operation_01AGREE");
+        assert_eq!(
+            planned["plan"]["expected_target_digest"], observed["target_digest"],
+            "status {observed}\nplan {planned}"
+        );
+    }
+
+    /// The same question at a *workspace*: a project-scoped harness shaped like
+    /// cursor's, a target holding the person's own source tree, and a scoped
+    /// install of one skill under `.cursor/`. This is the exact shape the
+    /// consumer's project-scope branch measured on 2026-09-02 and found the
+    /// remove plan refused for `expected_target_digest`.
+    #[test]
+    fn status_and_a_project_plan_agree_on_the_identity_at_a_workspace() {
+        let harness = project_shaped();
+        let workspace = scratch("project-status-agrees").join("workspace");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::write(workspace.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(workspace.join("README.md"), "# theirs\n").unwrap();
+
+        let before = run_for(&harness, args("status", &workspace, &[]));
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let artifact_path = workspace.join("..").join("project.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01PROJECTIN".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "project".to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run_for(&harness, args("plan-operation", &workspace, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert_eq!(
+            planned["plan"]["expected_target_digest"], before["target_digest"],
+            "install: status {before}\nplan {planned}"
+        );
+        let plan_path = workspace.join("..").join("project-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run_for(&harness, args("apply-operation", &workspace, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+        assert!(workspace.join(".cursor/skills/probe/SKILL.md").exists());
+
+        let after = run_for(&harness, args("status", &workspace, &[]));
+        let removal = run_for(
+            &harness,
+            args(
+                "plan-operation",
+                &workspace,
+                &[
+                    "--operation",
+                    "remove",
+                    "--provider-release-digest",
+                    RELEASE,
+                    "--operation-id",
+                    "operation_01PROJECTRM",
+                    "--expires-at",
+                    far_future(),
+                    "--target-scope",
+                    "project",
+                ],
+            ),
+        );
+        assert_eq!(removal["state"], "planned", "{removal}");
+        assert_eq!(
+            removal["plan"]["expected_target_digest"], after["target_digest"],
+            "remove: status {after}\nplan {removal}"
+        );
+    }
+
+    /// A workspace nobody has installed into, whose own tree happens to carry
+    /// a top-level directory spelled like one of the global namespaces --
+    /// here `skills/`, which is a repository's own business. No record to
+    /// read a scope from, so an unasked `status` measures the global set and
+    /// hashes those files, while the plan the consumer binds to it is made
+    /// under `project`, where an unrecorded target is nothing of ours. Asked,
+    /// the two agree.
+    #[test]
+    fn a_status_asked_about_a_scope_measures_that_scopes_inventory_before_any_record() {
+        let harness = project_shaped();
+        let workspace = scratch("project-status-asked").join("workspace");
+        fs::create_dir_all(workspace.join("skills")).unwrap();
+        fs::write(
+            workspace.join("skills/theirs.md"),
+            "# the repository's own\n",
+        )
+        .unwrap();
+        fs::write(workspace.join("README.md"), "# theirs\n").unwrap();
+
+        let unasked = run_for(&harness, args("status", &workspace, &[]));
+        let asked = run_for(
+            &harness,
+            args("status", &workspace, &["--target-scope", "project"]),
+        );
+        assert_ne!(
+            unasked["target_digest"], asked["target_digest"],
+            "the global set hashes the repository's skills/; the project set has no record and nothing of ours"
+        );
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let artifact_path = workspace.join("..").join("asked.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01ASKED".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "project".to_owned(),
+        ];
+        plan_args.extend(bundle_flags(
+            &artifact_path,
+            &bundle_digest,
+            &artifact,
+            bytes.len(),
+        ));
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run_for(&harness, args("plan-operation", &workspace, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert_eq!(
+            planned["plan"]["expected_target_digest"],
+            asked["target_digest"]
+        );
+        assert_ne!(
+            planned["plan"]["expected_target_digest"],
+            unasked["target_digest"]
+        );
+
+        let error = refuse_for(
+            &harness,
+            args("status", &workspace, &["--target-scope", "user_root"]),
+        );
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+    }
+
+    /// A target managed under `project` refuses a plan that names no scope,
+    /// and says which one to name -- the consumer's remove plan carried none
+    /// and met a digest mismatch instead of this sentence.
+    #[test]
+    fn a_plan_whose_scope_contradicts_the_record_is_refused_by_name() {
+        let harness = project_shaped();
+        let workspace = scratch("project-scope-contradiction").join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let artifact_path = workspace.join("..").join("contra.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01CONTRAIN".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "project".to_owned(),
+        ];
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run_for(&harness, args("plan-operation", &workspace, &borrowed));
+        let plan_path = workspace.join("..").join("contra-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        assert_eq!(
+            run_for(&harness, args("apply-operation", &workspace, &borrowed))["state"],
+            "verified"
+        );
+
+        let error = refuse_for(
+            &harness,
+            args(
+                "plan-operation",
+                &workspace,
+                &[
+                    "--operation",
+                    "remove",
+                    "--provider-release-digest",
+                    RELEASE,
+                    "--operation-id",
+                    "operation_01CONTRARM",
+                    "--expires-at",
+                    far_future(),
+                ],
+            ),
+        );
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error
+                .detail()
+                .contains("managed under target_scope project")
+                && error.detail().contains("names the global profile"),
+            "{}",
+            error.detail()
+        );
+        assert!(
+            workspace.join(".cursor/skills/probe/SKILL.md").exists(),
+            "a refusal made an effect"
+        );
+    }
+
+    /// A harness shaped like cursor's project scope, for the workspace cases.
+    fn project_shaped() -> Harness {
+        let mut harness = TEST;
+        harness.scoped_projections = &[crate::facts::Scoped {
+            target_scope: provider_v3::TargetScope::Project,
+            profile_id: "test/native-files/project/1",
+            component_kinds: &[
+                provider_v3::ComponentKind::Skill,
+                provider_v3::ComponentKind::Instruction,
+            ],
+            projection_kinds: &[provider_v3::ProjectionKind::NativeFiles],
+            native_namespaces: &[".cursor/skills", ".cursor/rules"],
+        }];
+        harness
     }
 
     /// Under a shared root the record is the inventory. A file this build

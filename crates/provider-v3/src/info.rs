@@ -229,6 +229,20 @@ pub struct ProviderInfo {
     /// exactly what it published before this field existed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scoped_projection_profiles: Vec<ProjectionProfile>,
+    /// The arguments `status` accepts beside its target, once the kit names
+    /// the member.
+    ///
+    /// Empty and therefore absent until kit `0.2.9` publishes the member and
+    /// a released consumer accepts it -- the same two gates every
+    /// `provider-info` field has to pass, because the field set is compared
+    /// for exact equality and an unknown member refuses the whole document.
+    /// The runtime already honours `status --target-scope` (0.0.55); this is
+    /// the sentence that lets a consumer send it. Agreed with the consumer on
+    /// 2026-09-02 after their project-scope branch found that a workspace
+    /// nobody has installed into has no record `status` could read a scope
+    /// from, while the plan it is bound to is made under one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub status_request_fields: Vec<String>,
     /// The request-side arguments this release accepts.
     ///
     /// **A provider says what it will tolerate, so a consumer can send it.** A
@@ -394,6 +408,9 @@ impl ProviderInfo {
                 TargetScope::REQUEST_FIELD.to_owned(),
                 EndState::REQUEST_FIELD.to_owned(),
             ],
+            // Held until the kit names it; see the field's own note. The test
+            // beside `plan_request_fields`' flips this the day it does.
+            status_request_fields: Vec::new(),
         })
     }
 
@@ -786,6 +803,31 @@ mod tests {
             declared, expected,
             "declared {declared:?}, kit {published:?}"
         );
+
+        // The same rule for `status_request_fields`: while the kit's schema
+        // has no such property, declaring anything would refuse the whole
+        // document; the day it appears, this asserts the declaration follows.
+        let status_declared = info(Command::ALL, Operation::CORE)
+            .unwrap()
+            .status_request_fields;
+        match schema["properties"].get("status_request_fields") {
+            None => assert!(
+                status_declared.is_empty(),
+                "the kit does not name status_request_fields and this build declares {status_declared:?}"
+            ),
+            Some(property) => {
+                let mut named: Vec<&str> = property["items"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                named.sort_unstable();
+                let mut declared = status_declared;
+                declared.sort_unstable();
+                assert_eq!(declared, named, "the kit names {named:?} for status");
+            }
+        }
     }
 
     /// One target, one owner.
