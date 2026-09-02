@@ -189,7 +189,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-08-30T22:50:22+00:00",
+  "verified_at": "2026-09-02T00:38:02+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
@@ -440,9 +440,9 @@
         "member": "pi.exe"
       }
     },
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\n`refresh_software_pins.py` reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
     "version": "0.84.4",
-    "verified_at": "2026-08-30T22:50:22+00:00",
-    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\n`refresh_software_pins.py` reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared."
+    "verified_at": "2026-09-02T00:38:02+00:00"
   },
   "setup_catalogue_digest": "sha256:cacf9532779597cf54955f9cbff767cb8b1715e238ac6c856761ac11848e6ccd",
   "previous_software_artifacts": {
