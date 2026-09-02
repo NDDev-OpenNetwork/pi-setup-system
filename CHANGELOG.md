@@ -20,6 +20,18 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.56] - 2026-09-02
+
+`status_request_fields` is declared: `["target_scope"]`, the same
+vocabulary as `plan_request_fields`. A consumer that reads the declaration
+may send `--target-scope` to `status` and measure the inventory the plan it
+is about to bind will measure, instead of the global namespaces at a
+workspace root. The runtime has honoured the flag since 0.0.55; this release
+adds the sentence that lets a consumer send it, in the order every
+`provider-info` member follows: kit 0.2.9 names it, `ai-stp-cli 0.0.15`
+accepts it, then the seven declare it. Kit 0.2.9 is vendored. Nothing else
+moves.
+
 ## [0.0.55] - 2026-09-02
 
 A plan whose scope contradicts the target's record is refused by
