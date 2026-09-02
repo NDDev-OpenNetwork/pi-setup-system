@@ -490,5 +490,17 @@
         "member": "pi.exe"
       }
     }
+  },
+  "surface_presence": {
+    "measured_at": "2026-09-02",
+    "artifact": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz",
+    "artifact_sha256": "sha256:c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972",
+    "product_version": "0.84.4",
+    "declared_surfaces": 9,
+    "present": 9,
+    "absent": [],
+    "control": "zzq-invented-surface-nobody-ships",
+    "control_hits": 0,
+    "method": "Every namespace this harness declares, global and scoped, searched as a fixed string in the artifact the current pin names, digest verified before reading; both the declared path and its last segment counted, because a product that composes a path by joining segments never spells the whole of it. A count here is a lower bound and not a routing proof -- what it answers is whether a surface vanished from the product. This pin did not move on 2026-09-02 when five others did; the sweep covers all seven so the next bump has something to differ from. The invented control was searched in the same run and found nowhere, so the search discriminates."
   }
 }

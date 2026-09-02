@@ -20,6 +20,34 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.58] - 2026-09-02
+
+A removal answers three ways when nothing records what this build
+wrote. `remove` takes the declared namespaces whole, which is exact for a
+target this provider wrote and is guessing at one it never touched: measured on
+released 0.0.57, a target holding only a person's own configuration answered
+*"Removed everything <provider> owns"* and took it, recoverable from the
+capture and under a sentence that did not describe what happened.
+
+Now: a record removes, as before. A target with nothing this provider declares
+on it is silent and unchanged, because "already removed" must stay a no-op or
+a repeat becomes an error where nothing happened. A target with declared
+entries and no record is refused by name -- `state: refused`,
+`unsupported_operation`, exit 0 -- with the entries it would have taken in the
+detail, so a consumer can show a person what it declined to take. The same
+three answers on the surface a person types and on the wire, and the question
+is asked again under the lock, because the state file is outside the target's
+identity on purpose and a record can be deleted between a plan and its apply.
+
+The shape was agreed with the consumer before it shipped, and their half went
+first: their reader now carries a refusal's reason and detail through to a
+person rather than collapsing every non-planned answer into one sentence about
+shape.
+
+Every declared surface of all seven products is re-measured in the bytes each
+current pin names, with an invented control absent in all of them: 72 of 72
+present.
+
 ## [0.0.57] - 2026-09-02
 
 A kind declared only by a scoped profile validates and plans under
