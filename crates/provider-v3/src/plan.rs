@@ -76,6 +76,83 @@ pub struct SoftwareArtifact {
     pub entry_point: String,
 }
 
+/// What one path looks like once a `remove` plan has been applied.
+///
+/// A removal used to have one sentence for every path it touched: gone. That
+/// was exact for a setup that owns a file and false for a component that owns
+/// one key of it -- a contribution's host file such as codex's `config.toml`
+/// holds the person's own keys beside the installed one, and "remove the
+/// component" cannot mean "delete the file". The consumer reconstructs the
+/// host file without the key and ships the surviving bytes as an ordinary
+/// bundle on the same five arguments `replace` takes; this record names, per
+/// path, which of the two things the apply will do.
+///
+/// Agreed with the consumer on 2026-09-01 (their `ADR-0129`, our issue
+/// `#255`) and declared through `plan_request_fields` under the name kit
+/// `0.2.8` publishes for it. The bytes travel in the bundle rather than here:
+/// a digest without a payload is an assertion with no carrier, which was the
+/// hole in the first draft of the shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndState {
+    /// The target-relative path this entry is about.
+    pub path: String,
+    /// [`EndState::REMOVED`] or [`EndState::FINAL_BYTES`].
+    pub end_state: String,
+    /// The bundle member that carries the surviving bytes. `final_bytes` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    /// The `sha256:`-prefixed digest of those bytes. `final_bytes` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Their exact length. `final_bytes` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_length: Option<u64>,
+}
+
+impl EndState {
+    /// The request field that declares this capability, as the kit's
+    /// `plan_request_fields` enum spells it.
+    ///
+    /// One constant for the same reason `TargetScope::REQUEST_FIELD` is one:
+    /// the declaration and the kit's enum are two spellings of a name a
+    /// consumer compares by exact membership.
+    pub const REQUEST_FIELD: &'static str = "end_state";
+    /// The path is gone once the plan is applied.
+    pub const REMOVED: &'static str = "removed";
+    /// The path is present at exactly the named member's bytes.
+    pub const FINAL_BYTES: &'static str = "final_bytes";
+
+    /// An entry for a path the apply takes.
+    #[must_use]
+    pub fn removed(path: &str) -> Self {
+        Self {
+            path: path.to_owned(),
+            end_state: Self::REMOVED.to_owned(),
+            member: None,
+            sha256: None,
+            byte_length: None,
+        }
+    }
+
+    /// An entry for a path the apply leaves at the bytes of `member`.
+    #[must_use]
+    pub fn final_bytes(path: &str, member: &str, sha256: &str, byte_length: u64) -> Self {
+        Self {
+            path: path.to_owned(),
+            end_state: Self::FINAL_BYTES.to_owned(),
+            member: Some(member.to_owned()),
+            sha256: Some(sha256.to_owned()),
+            byte_length: Some(byte_length),
+        }
+    }
+
+    /// Whether this entry leaves bytes behind.
+    #[must_use]
+    pub fn survives(&self) -> bool {
+        self.end_state == Self::FINAL_BYTES
+    }
+}
+
 /// The provider's immutable description of one effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanArtifact {
@@ -134,6 +211,15 @@ pub struct PlanArtifact {
     /// and for `software_remove`, which downloads nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub software_artifacts: Vec<SoftwareArtifact>,
+    /// What each touched path looks like after a `remove`, when the request
+    /// carried a bundle of surviving bytes.
+    ///
+    /// Present on `remove` plans only, and only when there is a bundle: a
+    /// remove without one is byte-identical to what this build produced
+    /// before the member existed, so no plan digest that ever verified stops
+    /// verifying. Every other operation has one sentence per path already.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub end_state: Vec<EndState>,
     /// What applying it will do, in order. Never empty.
     pub effects: Vec<String>,
 }
@@ -174,6 +260,9 @@ pub struct PlanInputs<'a> {
     /// The artifacts a software operation will fetch, in the order `apply`
     /// will be handed them.
     pub software_artifacts: Vec<SoftwareArtifact>,
+    /// Per-path end states, for a `remove` that carries a bundle. Empty
+    /// otherwise, and refused on any other operation.
+    pub end_state: Vec<EndState>,
     /// What applying it will do. Never empty.
     pub effects: Vec<String>,
 }
@@ -212,6 +301,32 @@ impl PlanArtifact {
             }
             _ => {}
         }
+        // An end state on a path is a `remove` sentence. Any other operation
+        // carrying one would be describing a removal it does not perform.
+        if !inputs.end_state.is_empty() && inputs.operation != Operation::Remove {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "a {} plan must not carry per-path end states; only remove does",
+                    inputs.operation
+                ),
+            ));
+        }
+        if inputs.end_state.iter().any(|entry| {
+            entry.path.is_empty()
+                || (entry.end_state != EndState::REMOVED
+                    && entry.end_state != EndState::FINAL_BYTES)
+                || (entry.survives()
+                    != (entry.member.is_some()
+                        && entry.sha256.is_some()
+                        && entry.byte_length.is_some()))
+        }) {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                "an end state names a path and is removed, or final_bytes with member, \
+                 sha256 and byte_length",
+            ));
+        }
 
         Ok(Self {
             format: PLAN_FORMAT.to_owned(),
@@ -233,6 +348,7 @@ impl PlanArtifact {
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),
             software_artifacts: inputs.software_artifacts,
+            end_state: inputs.end_state,
             effects: inputs.effects,
         })
     }
@@ -364,6 +480,7 @@ mod tests {
         PlanInputs {
             target_scope: None,
             software_artifacts: Vec::new(),
+            end_state: Vec::new(),
             provider_id: "claude-setup-system",
             provider_version: "0.1.0",
             provider_build_digest: DIGEST,
@@ -535,5 +652,83 @@ mod tests {
         let accepted = bundle_accepted(&binding());
         assert_eq!(accepted["valid"], true);
         assert!(accepted.get("rejected").is_none());
+    }
+
+    /// The member that is absent is the promise: a remove without a bundle
+    /// serializes to the bytes it always did, so no plan digest moves.
+    #[test]
+    fn a_plan_without_end_states_carries_no_trace_of_the_member() {
+        let artifact = PlanArtifact::new(inputs(Operation::Remove)).unwrap();
+        let encoded = serde_json::to_value(&artifact).unwrap();
+        assert!(
+            !encoded.as_object().unwrap().contains_key("end_state"),
+            "{encoded}"
+        );
+    }
+
+    #[test]
+    fn a_remove_may_name_what_each_path_becomes_and_the_digest_binds_it() {
+        let bare = PlanArtifact::new(inputs(Operation::Remove)).unwrap();
+        let mut stated = inputs(Operation::Remove);
+        stated.end_state = vec![
+            EndState::removed("skills"),
+            EndState::final_bytes(
+                "settings.json",
+                "files/settings.json",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                12,
+            ),
+        ];
+        let artifact = PlanArtifact::new(stated).unwrap();
+        let encoded = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(encoded["end_state"][0]["end_state"], "removed");
+        assert!(encoded["end_state"][0].get("member").is_none());
+        assert_eq!(encoded["end_state"][1]["end_state"], "final_bytes");
+        assert_eq!(encoded["end_state"][1]["member"], "files/settings.json");
+        assert_eq!(encoded["end_state"][1]["byte_length"], 12);
+        assert_ne!(
+            bare.digest().unwrap(),
+            artifact.digest().unwrap(),
+            "two plans that leave different bytes behind cannot share a digest"
+        );
+    }
+
+    /// Every other operation already has one sentence per path.
+    #[test]
+    fn an_end_state_on_anything_but_remove_is_refused_before_it_is_planned() {
+        for operation in [Operation::Install, Operation::Replace, Operation::Backup] {
+            let mut stated = inputs(operation);
+            stated.end_state = vec![EndState::removed("skills")];
+            let error = PlanArtifact::new(stated).unwrap_err();
+            assert!(
+                error.detail().contains("only remove does"),
+                "{operation}: {}",
+                error.detail()
+            );
+        }
+    }
+
+    /// A survivor without its bytes' identity, or a removal carrying one, is a
+    /// sentence that contradicts itself.
+    #[test]
+    fn an_end_state_that_is_half_stated_is_refused() {
+        let mut stated = inputs(Operation::Remove);
+        stated.end_state = vec![EndState {
+            path: "settings.json".to_owned(),
+            end_state: EndState::FINAL_BYTES.to_owned(),
+            member: Some("files/settings.json".to_owned()),
+            sha256: None,
+            byte_length: None,
+        }];
+        assert!(PlanArtifact::new(stated).is_err());
+        let mut invented = inputs(Operation::Remove);
+        invented.end_state = vec![EndState {
+            path: "settings.json".to_owned(),
+            end_state: "kept".to_owned(),
+            member: None,
+            sha256: None,
+            byte_length: None,
+        }];
+        assert!(PlanArtifact::new(invented).is_err());
     }
 }

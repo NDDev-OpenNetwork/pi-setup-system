@@ -124,7 +124,7 @@ pub struct Harness {
     ///
     /// Ownership decides what `remove` takes and what the target digest
     /// covers. It does not decide what the product obeys, and for one harness
-    /// here those are different sets: measured against the pinned 1.18.25
+    /// here those are different sets: measured against the 1.18.25
     /// binary, `opencode` reads `opencode.jsonc` after `opencode.json` and
     /// keeps the later one, and globs `{skill,skills}` where only the plural
     /// is owned. So a target whose owned bytes are clean can be running a file

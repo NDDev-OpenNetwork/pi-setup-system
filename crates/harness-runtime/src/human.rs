@@ -1122,6 +1122,9 @@ fn mutate(
         // install: that arrives over the wire, with artifacts somebody else
         // downloaded between planning and applying.
         software_artifacts: Vec::new(),
+        // The human surface removes whole and carries no bundle, so no path
+        // has a second sentence.
+        end_state: Vec::new(),
         effects: effect_lines(harness, &effect, applied.setup_id.as_deref()),
     })?;
     let plan_digest = artifact.digest()?;
@@ -1194,6 +1197,16 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
             capture,
             format!("write the {} files the bundle declares", files.len()),
         ],
+        // Nor this one: the surviving bytes are packed by the consumer.
+        Effect::RemoveKeeping { files } => {
+            let mut lines = vec![capture];
+            lines.extend(wire::taken_before_writing(harness, HUMAN_SCOPE));
+            lines.push(format!(
+                "leave {} declared files behind at the bytes the bundle carries",
+                files.len()
+            ));
+            lines
+        }
         Effect::Materialize { setup } => {
             // "over the entries this provider owns" is true and is heard as
             // "writes the setup's files". `replace_managed_from` removes each

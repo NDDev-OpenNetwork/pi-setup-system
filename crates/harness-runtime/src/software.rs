@@ -679,7 +679,7 @@ mod tests {
     /// it came from, and the rollback to the version beside it -- are all false
     /// the moment the product replaces those bytes itself. Anthropic documents
     /// the variable for exactly this case, a distribution channel somebody else
-    /// controls, and the pinned 2.1.251 artifact carries it nine times.
+    /// controls, and the 2.1.251 artifact carries it nine times.
     ///
     /// Both directions, because only the pair says anything. A build that added
     /// the variable to every launch would pass the first assertion while setting

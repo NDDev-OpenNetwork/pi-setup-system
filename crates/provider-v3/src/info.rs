@@ -16,6 +16,7 @@ use serde::Serialize;
 use setup_core::digest;
 
 use crate::error::{Error, Result};
+use crate::plan::EndState;
 use crate::vocabulary::{
     Command, ComponentKind, Operation, PROJECTION_DOMAIN, PROTOCOL_VERSION, ProjectionKind,
     TargetScope,
@@ -382,7 +383,17 @@ impl ProviderInfo {
             // `written_paths` shipped the day the kit named it -- and a
             // `provider-info` field needs both, because the field set is
             // compared for exact equality.
-            plan_request_fields: vec![TargetScope::REQUEST_FIELD.to_owned()],
+            //
+            // `end_state` followed the same order on 2026-09-02: kit `0.2.8`
+            // opened the enum to it, `ai-stp-cli 0.0.14` on PyPI carries
+            // `PLAN_REQUEST_FIELDS = {"target_scope", "end_state"}` (read out of
+            // the installed wheel), and only then is it declared here. Every
+            // build declares it because the runtime that honours it is shared:
+            // a remove may carry a bundle of surviving bytes on every harness.
+            plan_request_fields: vec![
+                TargetScope::REQUEST_FIELD.to_owned(),
+                EndState::REQUEST_FIELD.to_owned(),
+            ],
         })
     }
 
@@ -731,6 +742,49 @@ mod tests {
                 .unwrap()
                 .contains_key("target_scope"),
             "{encoded}"
+        );
+    }
+
+    /// The kit publishes the closed enum; a name declared outside it refuses
+    /// the whole document on the consumer's side, and a name inside it that
+    /// this build does not declare is a capability withheld -- which is a
+    /// decision, so it is written down here rather than inferred from a diff.
+    #[test]
+    fn every_declared_request_field_is_one_the_kit_names_and_none_is_withheld() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../provider-kit/v3/provider-info.schema.json"
+        ))
+        .unwrap();
+        let mut published: Vec<&str> = schema["properties"]["plan_request_fields"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        published.sort_unstable();
+        let mut declared = info(Command::ALL, Operation::CORE)
+            .unwrap()
+            .plan_request_fields;
+        declared.sort_unstable();
+        // Held back on purpose, with the reason beside the name. Empty since
+        // 2026-09-02, when `end_state` shipped with the released runner that
+        // reads it; a field goes here while the kit names it and no released
+        // consumer accepts it, and comes out the day one does.
+        let withheld: &[(&str, &str)] = &[];
+        for (name, _reason) in withheld {
+            assert!(
+                published.contains(name),
+                "{name} is withheld but the kit does not name it"
+            );
+        }
+        let expected: Vec<&str> = published
+            .iter()
+            .copied()
+            .filter(|name| !withheld.iter().any(|(held, _)| held == name))
+            .collect();
+        assert_eq!(
+            declared, expected,
+            "declared {declared:?}, kit {published:?}"
         );
     }
 

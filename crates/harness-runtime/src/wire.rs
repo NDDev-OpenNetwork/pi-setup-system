@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use provider_v3::argv::{Bundle as ArgvBundle, Invocation, PlanRequest};
-use provider_v3::bundle::{Bundle, Claim};
-use provider_v3::plan::{PlanArtifact, PlanInputs};
+use provider_v3::bundle::{Bundle, Claim, FILES_PREFIX};
+use provider_v3::plan::{EndState, PlanArtifact, PlanInputs};
 use provider_v3::{Error, Operation, Result, WireReason};
 use setup_core::backup::{BackupRef, Pool, SLOT_SCHEMA, SlotRecord};
 use setup_core::journal::{JOURNAL_SCHEMA, Journal, Phase};
@@ -532,17 +532,23 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
     // released 0.0.50 while the consumer designed remove's `end_state`
     // extension (their ADR-0129): plan `planned, valid: true`, apply removed
     // everything, dummy bundle untouched -- accept and ignore, twice, exit 0.
-    // Their rollout story assumed the loud refusal existed; now it does. When
-    // remove learns to read a bundle (kit 0.2.8+, `end_state`), this narrows
-    // to the operations that still read none.
+    // Their rollout story assumed the loud refusal existed; now it does.
+    //
+    // `remove` learned to read one on 2026-09-02 (kit 0.2.8, `end_state`):
+    // the bundle carries the bytes a path keeps once the setup is gone. So
+    // this narrowed rather than lifted -- backup, restore and the software
+    // operations still read none and still refuse.
     if request.bundle.is_some()
-        && !matches!(request.operation, Operation::Install | Operation::Replace)
+        && !matches!(
+            request.operation,
+            Operation::Install | Operation::Replace | Operation::Remove
+        )
     {
         return Err(Error::refuse(
             WireReason::UnsupportedOperation,
             format!(
                 "{} reads no bundle, so one named for it would be echoed into \
-                 the plan and never read; install and replace are the \
+                 the plan and never read; install, replace and remove are the \
                  operations that take one",
                 request.operation
             ),
@@ -731,6 +737,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     }
 
     let mut software_artifacts = Vec::new();
+    let mut end_state = Vec::new();
     let (effects, backup_ref, restore_target_digest) = match request.operation {
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove => {
             let (planned, effects) = software::plan(
@@ -765,6 +772,27 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         Operation::Remove => {
             let mut lines = vec!["capture the current target before removing".to_owned()];
             lines.extend(taken_before_writing(harness, request.target_scope));
+            // A bundle on a remove names what stays: the consumer rebuilt a
+            // host file without the key this setup put there, and the file
+            // outlives the setup at exactly those bytes. Read and verified
+            // here, as install's is, so the plan is never issued for bytes
+            // the apply would refuse -- same reader, same limits, same
+            // `validate-bundle` semantics, by the consumer's request.
+            if let Some(named) = request.bundle.as_ref() {
+                let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
+                end_state = end_states_of(harness, &resolved, request.target_scope, &verified)?;
+                lines.push(format!(
+                    "leave {} declared files behind at the bytes the bundle carries",
+                    verified.files.len()
+                ));
+                lines.extend(
+                    verified
+                        .files
+                        .keys()
+                        .take(16)
+                        .map(|path| format!("leave {path}")),
+                );
+            }
             (lines, None, None)
         }
         Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
@@ -793,9 +821,170 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         permission_profile: request.permission_profile.clone(),
         expires_at: &request.expires_at,
         software_artifacts,
+        end_state,
         effects,
     })?
     .into_response()
+}
+
+/// What each path a removal touches looks like afterwards, when a bundle of
+/// surviving bytes rides along.
+///
+/// Two lists, and the second wins where they meet. What *goes* is what
+/// `remove_managed` will take: the namespaces whole under the global profile,
+/// the recorded files under a scope. What *stays* is every file the bundle
+/// declares, at the member, digest and length its own manifest binds -- so a
+/// consumer approving the plan can see, per path, that the bytes it packed are
+/// the bytes that will be there. A path in both lists is stated once, as a
+/// survivor: "gone, then present" is the mechanism, not the end state.
+fn end_states_of(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+    verified: &Bundle,
+) -> Result<Vec<EndState>> {
+    let taken: Vec<String> = if harness.scoped_for(scope).is_some() {
+        // No readable record is the state `remove_managed` refuses, and the
+        // plan says nothing rather than guessing: the apply will refuse by
+        // name, as it does without a bundle.
+        match ProviderState::read(target.root(), harness.state_file)? {
+            StateReading::Current(state) => state.written_paths,
+            StateReading::Absent | StateReading::ForeignSchema { .. } => Vec::new(),
+        }
+    } else {
+        harness
+            .native_namespaces
+            .iter()
+            .map(|namespace| (*namespace).to_owned())
+            .collect()
+    };
+    let mut entries: Vec<EndState> = taken
+        .iter()
+        .filter(|path| !verified.files.contains_key(*path))
+        .map(|path| EndState::removed(path))
+        .collect();
+    for path in verified.files.keys() {
+        let Some(record) = verified
+            .manifest
+            .files
+            .iter()
+            .find(|file| &file.path == path)
+        else {
+            // `Bundle::read` refuses a member the manifest never declared, so
+            // this is unreachable by construction; refusing keeps it so.
+            return Err(Error::refuse(
+                WireReason::DigestMismatch,
+                format!("the bundle carries {path:?} and its manifest does not declare it"),
+            ));
+        };
+        entries.push(EndState::final_bytes(
+            path,
+            &format!("{FILES_PREFIX}{path}"),
+            &record.digest,
+            record.byte_length,
+        ));
+    }
+    Ok(entries)
+}
+
+/// The end states a remove plan recorded, or none.
+fn end_states_in(artifact: &serde_json::Value) -> Result<Vec<EndState>> {
+    match artifact.get("end_state") {
+        None => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|source| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("the approved plan's end_state member cannot be read: {source}"),
+            )
+        }),
+    }
+}
+
+/// What a remove plan authorizes: everything gone, or everything gone and the
+/// bundle's files left behind -- and only the bundle the plan described.
+fn removal_effect<'a>(
+    harness: &Harness,
+    artifact: &serde_json::Value,
+    bundle: Option<&ArgvBundle>,
+    verified: &'a mut Option<Bundle>,
+    applied: &mut Applied,
+) -> Result<Effect<'a>> {
+    let planned = end_states_in(artifact)?;
+    if !planned.iter().any(EndState::survives) {
+        // The plan the consumer approved leaves nothing behind, so a bundle
+        // at apply is an authorization the plan never gave.
+        if bundle.is_some() {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                "this remove plan leaves no bytes behind, so a bundle named at apply \
+                 was never authorized; plan the removal with the bundle",
+            ));
+        }
+        return Ok(Effect::Remove);
+    }
+    let Some(named) = bundle else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedBundleFormat,
+            "this remove was planned with surviving bytes, and no bundle was \
+             named to carry them",
+        ));
+    };
+    let ready = verified.insert(verified_bundle(
+        harness,
+        named,
+        Surface::At(scope_of(artifact)),
+    )?);
+    check_survivors(&planned, ready)?;
+    // Which bundle put the surviving bytes there is provenance worth keeping;
+    // the passport's setup identity is not, because the setup is the thing
+    // that just ended.
+    applied.bundle_format = Some(named.binding.bundle_format.clone());
+    applied.bundle_digest = Some(named.binding.bundle_digest.clone());
+    applied.artifact_digest = Some(named.binding.artifact_digest.clone());
+    Ok(Effect::RemoveKeeping {
+        files: &ready.files,
+    })
+}
+
+/// The bundle handed to `apply` must be the one the plan described, member by
+/// member: the plan digest the consumer approved binds these entries, and the
+/// bundle's own manifest binds its files, so the two are compared here rather
+/// than trusted to agree.
+fn check_survivors(planned: &[EndState], ready: &Bundle) -> Result<()> {
+    for entry in planned.iter().filter(|entry| entry.survives()) {
+        let record = ready
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path == entry.path);
+        let agrees = record.is_some_and(|file| {
+            Some(&file.digest) == entry.sha256.as_ref()
+                && Some(file.byte_length) == entry.byte_length
+                && entry.member.as_deref() == Some(format!("{FILES_PREFIX}{}", file.path).as_str())
+        });
+        if !agrees {
+            return Err(Error::refuse(
+                WireReason::DigestMismatch,
+                format!(
+                    "the plan leaves {:?} at bytes the bundle named for apply does not carry; \
+                     no effect was made",
+                    entry.path
+                ),
+            ));
+        }
+    }
+    let planned_survivors = planned.iter().filter(|entry| entry.survives()).count();
+    if planned_survivors != ready.files.len() {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "the plan leaves {planned_survivors} files behind and the bundle carries {}; \
+                 no effect was made",
+                ready.files.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The backup a restore names, or the newest when it names none.
@@ -838,6 +1027,18 @@ pub(crate) enum Effect<'a> {
     },
     /// Withdraw everything this provider owns.
     Remove,
+    /// Withdraw everything this provider owns, then put back the files a
+    /// verified bundle says outlive the setup -- a host file without the key
+    /// this setup contributed, at the consumer's reconstructed bytes.
+    ///
+    /// The same capture-before-effect sequence as everything else here; what
+    /// changes is what the target looks like afterwards and what the state
+    /// records about it: nothing of ours, because the surviving bytes are the
+    /// person's.
+    RemoveKeeping {
+        /// Each surviving file's bytes and mode, by target-relative path.
+        files: &'a BTreeMap<String, (Vec<u8>, u32)>,
+    },
     /// Write a complete setup from the local catalog over those namespaces.
     Materialize {
         /// The setup to write.
@@ -951,7 +1152,7 @@ fn apply(
     // a similar name a few lines below, and one of the two had to give way.
     downloaded: &[std::path::PathBuf],
 ) -> Result<serde_json::Value> {
-    let verified: Option<Bundle>;
+    let mut verified: Option<Bundle> = None;
     let artifact = load_plan(plan_path, plan_digest)?;
     let operation = operation_of(&artifact)?;
     let expires_at = string_field(&artifact, "expires_at")?;
@@ -1005,7 +1206,9 @@ fn apply(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
         },
-        Operation::Remove => Effect::Remove,
+        Operation::Remove => {
+            removal_effect(harness, &artifact, bundle, &mut verified, &mut applied)?
+        }
         Operation::Install | Operation::Replace => {
             let Some(named) = bundle.as_ref() else {
                 return Err(Error::refuse(
@@ -1161,6 +1364,13 @@ pub(crate) fn perform(
         // exists to keep.
         Effect::Remove => {
             remove_managed(harness, &resolved, mutation.target_scope).map(|()| vec![])
+        }
+        // Gone, then present -- and recorded as not ours. `written_paths` is
+        // the inventory a later scoped removal deletes from, and a file the
+        // person keeps after this setup ended is exactly the file that removal
+        // must not take (their ADR-0129: the file stays the user's).
+        Effect::RemoveKeeping { files } => {
+            remove_keeping_files(harness, &resolved, mutation.target_scope, files)
         }
         Effect::Materialize { setup } => {
             setup.check_within(harness)?;
@@ -1754,6 +1964,26 @@ fn remove_managed(
         remove_path(&target.root().join(namespace))?;
     }
     Ok(())
+}
+
+/// Withdraw what this provider owns, then put the survivors back.
+///
+/// Returns the empty inventory on purpose: the bytes written here are the
+/// person's, not this provider's, and a later scoped removal must not find
+/// them in the record.
+fn remove_keeping_files(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+    files: &BTreeMap<String, (Vec<u8>, u32)>,
+) -> Result<Vec<String>> {
+    remove_managed(harness, target, scope)?;
+    for (relative, (bytes, mode)) in files {
+        let destination = target.root().join(relative);
+        lock::atomic_write(&destination, bytes)?;
+        set_mode(&destination, *mode)?;
+    }
+    Ok(Vec::new())
 }
 
 /// Remove `path`, keeping anything the harness promised never to touch.
@@ -4647,14 +4877,16 @@ mod tests {
         // loud refusal that did not exist. This is that refusal. When remove
         // learns to read a bundle (kit 0.2.8+), it narrows rather than lifts:
         // the operations that read none keep refusing.
-        let target = seeded("bundle-on-remove");
+        // 0.0.54 taught remove to read one, so the operation that reads none
+        // here is backup; the shape of the refusal is the same.
+        let target = seeded("bundle-on-backup");
         let (bytes, bundle_digest, artifact) = bundle_bytes(&[("AGENTS.md", "x\n", 0o644)]);
-        let artifact_path = target.join("..").join("bundle-on-remove.zip");
+        let artifact_path = target.join("..").join("bundle-on-backup.zip");
         fs::write(&artifact_path, &bytes).unwrap();
 
         let mut plan_args = vec![
             "--operation".to_owned(),
-            "remove".to_owned(),
+            "backup".to_owned(),
             "--provider-release-digest".to_owned(),
             RELEASE.to_owned(),
             "--operation-id".to_owned(),
@@ -4675,6 +4907,291 @@ mod tests {
             error.detail().contains("reads no bundle"),
             "{}",
             error.detail()
+        );
+    }
+
+    /// Plan a remove that keeps `files` at the bundle's bytes, and hand back
+    /// the plan response with the apply arguments it authorizes.
+    fn remove_keeping_plan(
+        target: &Path,
+        tag: &str,
+        files: &[(&str, &str, u32)],
+        scope: Option<&str>,
+    ) -> (serde_json::Value, Vec<String>) {
+        let (bytes, bundle_digest, artifact) = bundle_bytes(files);
+        let artifact_path = target.join("..").join(format!("keep-{tag}.zip"));
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+        let mut plan_args = vec![
+            "--operation".to_owned(),
+            "remove".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            format!("operation_01KEEP{}", tag.to_uppercase()),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        if let Some(scope) = scope {
+            plan_args.push("--target-scope".to_owned());
+            plan_args.push(scope.to_owned());
+        }
+        plan_args.extend(flags.clone());
+        let borrowed: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let planned = run(args("plan-operation", target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        let plan_path = target.join("..").join(format!("keep-{tag}-plan.json"));
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        (planned, apply_args)
+    }
+
+    /// The consumer's `ADR-0129` case, end to end: a contribution put one key
+    /// into a file the person also writes, and removing the contribution must
+    /// leave the file at the person's remaining bytes rather than delete it.
+    /// The bytes arrive as an ordinary bundle on `remove`; the plan says, per
+    /// path, what stays and what goes; the apply does exactly that.
+    #[test]
+    fn a_remove_may_carry_the_bytes_a_path_keeps_and_leaves_them_behind() {
+        let target = seeded("remove-keeping");
+        let survivor = "{\"model\":\"mine, not the setup's\"}\n";
+        let (planned, apply_args) = remove_keeping_plan(
+            &target,
+            "global",
+            &[("settings.json", survivor, 0o644)],
+            None,
+        );
+
+        // The plan states the end state of every path it touches: the two
+        // namespaces that go, and the one file that stays -- bound to the
+        // bundle member that carries it.
+        let states = planned["plan"]["end_state"].as_array().unwrap();
+        let of = |path: &str| {
+            states
+                .iter()
+                .find(|entry| entry["path"] == path)
+                .unwrap_or_else(|| panic!("no end state for {path}: {states:?}"))
+        };
+        assert_eq!(of("AGENTS.md")["end_state"], "removed");
+        assert_eq!(of("skills")["end_state"], "removed");
+        assert_eq!(of("settings.json")["end_state"], "final_bytes");
+        assert_eq!(of("settings.json")["member"], "files/settings.json");
+        assert_eq!(
+            of("settings.json")["sha256"],
+            setup_core::digest::of_bytes(survivor.as_bytes())
+        );
+        assert_eq!(of("settings.json")["byte_length"], survivor.len());
+        assert_eq!(states.len(), 3, "{states:?}");
+        assert!(
+            planned["effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("leave settings.json")),
+            "{}",
+            planned["effects"]
+        );
+
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", &target, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+        assert_eq!(
+            fs::read_to_string(target.join("settings.json")).unwrap(),
+            survivor,
+            "the surviving file is not at the bytes the bundle carried"
+        );
+        assert!(!target.join("AGENTS.md").exists());
+        assert!(!target.join("skills").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "keep me"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(".credentials.json")).unwrap(),
+            "SECRET"
+        );
+        // Not ours any more: the record names no file, and the bundle that
+        // put the bytes there is named as provenance.
+        assert!(recorded_written(&target).is_empty());
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join(TEST.state_file)).unwrap()).unwrap();
+        assert_eq!(state["bundle_digest"], planned["bundle_digest"]);
+        assert!(state["setup_stable_id"].is_null(), "{state}");
+        let after = run(args("status", &target, &[]));
+        assert_eq!(after["state"], "managed", "{after}");
+        assert_eq!(after["drift_state"], "clean", "{after}");
+    }
+
+    /// A remove planned without a bundle carries no `end_state` member at all,
+    /// so every plan digest that verified before this build still verifies.
+    #[test]
+    fn a_remove_without_a_bundle_carries_no_end_state_member() {
+        let target = seeded("remove-bare-plan");
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01BARE",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert!(
+            planned["plan"].get("end_state").is_none(),
+            "{}",
+            planned["plan"]
+        );
+    }
+
+    /// The plan the consumer approved is the authorization. A bundle that the
+    /// plan never described is refused at apply, and a plan that described one
+    /// refuses to apply without it -- both before the lock, with no effect.
+    #[test]
+    fn a_remove_apply_takes_exactly_the_bundle_its_plan_described() {
+        let target = seeded("remove-authorization");
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes(&[("settings.json", "{\"kept\":true}\n", 0o644)]);
+        let artifact_path = target.join("..").join("unplanned.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+
+        // Planned bare, applied with a bundle: never authorized.
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01UNPLANNED",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        let plan_path = target.join("..").join("bare-plan.json");
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        let mut apply_args = vec![
+            "--plan".to_owned(),
+            plan_path.to_string_lossy().into_owned(),
+            "--plan-digest".to_owned(),
+            planned["plan_digest"].as_str().unwrap().to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+        ];
+        apply_args.extend(flags);
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let error = refuse(args("apply-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("never authorized"),
+            "{}",
+            error.detail()
+        );
+        assert!(
+            target.join("AGENTS.md").exists(),
+            "a refusal made an effect"
+        );
+
+        // Planned with survivors, applied without the bundle: nothing to
+        // leave them at.
+        let (_, with_bundle) =
+            remove_keeping_plan(&target, "unfed", &[("settings.json", "{}\n", 0o644)], None);
+        let bare: Vec<&str> = with_bundle.iter().take(6).map(String::as_str).collect();
+        let error = refuse(args("apply-operation", &target, &bare));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedBundleFormat));
+        assert!(
+            target.join("AGENTS.md").exists(),
+            "a refusal made an effect"
+        );
+
+        // Planned with one bundle, applied with another whose bytes differ:
+        // the plan's end state names bytes this bundle does not carry.
+        let (other_bytes, other_digest, other_artifact) =
+            bundle_bytes(&[("settings.json", "{\"other\":1}\n", 0o644)]);
+        let other_path = target.join("..").join("other.zip");
+        fs::write(&other_path, &other_bytes).unwrap();
+        let mut swapped: Vec<String> = with_bundle.iter().take(6).cloned().collect();
+        swapped.extend(bundle_flags(
+            &other_path,
+            &other_digest,
+            &other_artifact,
+            other_bytes.len(),
+        ));
+        let borrowed: Vec<&str> = swapped.iter().map(String::as_str).collect();
+        let error = refuse(args("apply-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert!(
+            error.detail().contains("does not carry"),
+            "{}",
+            error.detail()
+        );
+        assert!(
+            target.join("AGENTS.md").exists(),
+            "a refusal made an effect"
+        );
+    }
+
+    /// Under a shared root the record is the inventory. A file this build
+    /// leaves behind at the person's bytes must leave the record too, or the
+    /// next removal would take it -- which is the file the whole extension
+    /// exists to keep.
+    #[test]
+    fn under_a_scope_a_file_left_behind_is_not_this_builds_to_take_next_time() {
+        let target = seeded("remove-keeping-scoped");
+        install_scoped(&target, "keep", "ours", "the setup's bytes\n");
+        assert_eq!(recorded_written(&target), vec!["shared/ours/SKILL.md"]);
+
+        let theirs = "the person's remaining bytes\n";
+        let (planned, apply_args) = remove_keeping_plan(
+            &target,
+            "scoped",
+            &[("shared/ours/SKILL.md", theirs, 0o644)],
+            Some("user_root"),
+        );
+        let states = planned["plan"]["end_state"].as_array().unwrap();
+        assert_eq!(states.len(), 1, "{states:?}");
+        assert_eq!(states[0]["end_state"], "final_bytes");
+        let borrowed: Vec<&str> = apply_args.iter().map(String::as_str).collect();
+        let applied = run(args("apply-operation", &target, &borrowed));
+        assert_eq!(applied["state"], "verified", "{applied}");
+        assert_eq!(
+            fs::read_to_string(target.join("shared").join("ours").join("SKILL.md")).unwrap(),
+            theirs
+        );
+        assert!(recorded_written(&target).is_empty());
+
+        // The next scoped removal reads the record, finds nothing of ours,
+        // and leaves the person's file where it is.
+        let again = scoped_plan(&target, "remove", "operation_01AGAIN");
+        let done = scoped_apply(&target, &again, "again");
+        assert_eq!(done["state"], "verified", "{done}");
+        assert!(
+            target.join("shared").join("ours").join("SKILL.md").exists(),
+            "the second removal took the file the first one left to the person"
         );
     }
 

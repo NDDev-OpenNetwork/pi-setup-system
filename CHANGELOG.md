@@ -20,6 +20,35 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.54] - 2026-09-02
+
+`remove` reads a bundle, and the plan says per path what stays.
+The consumer's ADR-0129 case — a component that owns one key of a file the
+person also writes — was inexpressible on the wire: a remove plan was built
+without bytes, so "this path outlives me at bytes-without-the-key" had no
+carrier. Now `plan-operation --operation remove` takes the same five bundle
+arguments `replace` takes, and the plan gains an `end_state` member only when
+one rides — per touched path, `removed`, or `final_bytes` with the member,
+sha256 and byte_length copied from the bundle's own manifest — so a plan without a
+bundle is byte-identical to what 0.0.53 produced. The apply refuses a bundle
+the plan never described, a plan with survivors fed no bundle, and a bundle
+whose members are not the ones the plan bound, all before the lock. After a
+remove with survivors the record names no file: the bytes are the person's.
+
+Declared through `plan_request_fields` in the ADR-0125 order, measured at each
+step: kit 0.2.8 names the field, `ai-stp-cli 0.0.14` on PyPI accepts it, then
+this release declares it. Kit 0.2.8 is vendored.
+
+Cursor declares a `project` scope — `.cursor/rules`, `.cursor/commands`,
+`.cursor/hooks.json`, `.cursor/mcp.json`, `.cursor/agents`, `.cursor/skills`,
+each a literal workspace join in the 2026.08.31-4057e58 bytes. The home
+`agents` question (cursor#94) was re-measured and the answer stayed no; the
+global profile and its digest do not move.
+
+Five products moved overnight and are pinned at what they publish today:
+Claude Code 2.1.258, Codex 0.152.1, OpenCode 1.18.26, Cursor CLI
+2026.08.31-4057e58, Antigravity 1.1.23. Grok 1.0.13 and Pi 0.84.4 stand.
+
 ## [0.0.53] - 2026-09-01
 
 The other two readers of the exposed name, and the boundary that
