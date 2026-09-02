@@ -106,7 +106,7 @@ fn verified_bundle(harness: &Harness, bundle: &ArgvBundle, surface: Surface) -> 
         },
     )?;
     check_within_surface(harness, verified.files.keys(), surface)?;
-    check_declared_kinds(harness, &verified)?;
+    check_declared_kinds(harness, &verified, surface)?;
     Ok(verified)
 }
 
@@ -117,21 +117,41 @@ fn verified_bundle(harness: &Harness, bundle: &ArgvBundle, surface: Surface) -> 
 /// conversion report, which is why a provider that never reads that report
 /// cannot tell it has been handed a kind it does not implement. It would simply
 /// write the files and report success for a component it does not understand.
-fn check_declared_kinds(harness: &Harness, bundle: &Bundle) -> Result<()> {
+///
+/// Asked of the same surface the paths are checked against. This read the
+/// global list whatever the surface, so a kind declared only by a scoped
+/// profile -- codex's `skill`, which lives under `~/.agents` -- was refused by
+/// `validate-bundle` and by every scoped plan, while the four providers that
+/// also declare the kind globally passed. The consumer's `user_root` slice
+/// found it on 2026-09-02; codex had never passed. `AnyDeclared` now means
+/// any profile, and a scope means that scope's profile, exactly as for paths.
+fn check_declared_kinds(harness: &Harness, bundle: &Bundle, surface: Surface) -> Result<()> {
     for entry in &bundle.manifest.conversion_report.entries {
         if entry.component_type.is_empty() {
             continue;
         }
-        let known = harness
-            .component_kinds
-            .iter()
-            .any(|kind| kind.as_str() == entry.component_type);
+        let known = match surface {
+            Surface::AnyDeclared => harness.implements_anywhere(&entry.component_type),
+            Surface::At(scope) => harness
+                .kinds_at(scope)
+                .iter()
+                .any(|kind| kind.as_str() == entry.component_type),
+        };
         if !known {
             return Err(Error::refuse(
                 WireReason::UnsupportedComponentKind,
                 format!(
-                    "the bundle declares component {:?} as kind {:?}, which {} does not implement",
-                    entry.stable_id, entry.component_type, harness.provider_id
+                    "the bundle declares component {:?} as kind {:?}, which {} does not implement{}",
+                    entry.stable_id,
+                    entry.component_type,
+                    harness.provider_id,
+                    match surface {
+                        Surface::AnyDeclared => String::new(),
+                        Surface::At(scope) => format!(
+                            " at {}",
+                            scope.map_or("the global profile", provider_v3::TargetScope::as_str)
+                        ),
+                    }
                 ),
             ));
         }
@@ -5503,6 +5523,81 @@ mod tests {
         assert!(
             workspace.join(".cursor/skills/probe/SKILL.md").exists(),
             "a refusal made an effect"
+        );
+    }
+
+    /// A kind declared only by a scoped profile -- codex's `skill` under
+    /// `~/.agents` -- is one this provider implements, and `validate-bundle`
+    /// has no scope to ask about: it must say yes. A scoped plan under that
+    /// scope says yes; a global plan says no, by name, because the home does
+    /// not route the kind. Found by the consumer's `user_root` slice: codex had
+    /// never passed `validate-bundle` with a skill.
+    #[test]
+    fn a_kind_declared_only_by_a_scope_validates_and_plans_under_that_scope() {
+        let mut harness = TEST;
+        harness.component_kinds = &[
+            provider_v3::ComponentKind::Instruction,
+            provider_v3::ComponentKind::Setting,
+        ];
+        let target = seeded("scoped-only-kind");
+        let (bytes, bundle_digest, artifact) = bundle_bytes_declaring(
+            &[("shared/probe/SKILL.md", "probe\n", 0o644)],
+            Some("skill"),
+        );
+        let artifact_path = target.join("..").join("scoped-kind.zip");
+        fs::write(&artifact_path, &bytes).unwrap();
+        let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
+        let borrowed: Vec<&str> = flags.iter().map(String::as_str).collect();
+
+        let validated = run_for(&harness, args("validate-bundle", &target, &borrowed));
+        assert_eq!(validated["valid"], true, "{validated}");
+
+        let mut scoped = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01SCOPEDKIND".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+            "--target-scope".to_owned(),
+            "user_root".to_owned(),
+        ];
+        scoped.extend(flags.clone());
+        let borrowed: Vec<&str> = scoped.iter().map(String::as_str).collect();
+        let planned = run_for(&harness, args("plan-operation", &target, &borrowed));
+        assert_eq!(planned["state"], "planned", "{planned}");
+
+        // The same kind on a path the home owns: the surface passes and the
+        // kind is the refusal, named with the profile that lacks it.
+        let (bytes, bundle_digest, artifact) =
+            bundle_bytes_declaring(&[("skills/probe.md", "probe\n", 0o644)], Some("skill"));
+        let home_path = target.join("..").join("global-kind.zip");
+        fs::write(&home_path, &bytes).unwrap();
+        let mut global = vec![
+            "--operation".to_owned(),
+            "install".to_owned(),
+            "--provider-release-digest".to_owned(),
+            RELEASE.to_owned(),
+            "--operation-id".to_owned(),
+            "operation_01GLOBALKIND".to_owned(),
+            "--expires-at".to_owned(),
+            far_future().to_owned(),
+        ];
+        global.extend(bundle_flags(
+            &home_path,
+            &bundle_digest,
+            &artifact,
+            bytes.len(),
+        ));
+        let borrowed: Vec<&str> = global.iter().map(String::as_str).collect();
+        let error = refuse_for(&harness, args("plan-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedComponentKind));
+        assert!(
+            error.detail().contains("at the global profile"),
+            "{}",
+            error.detail()
         );
     }
 
