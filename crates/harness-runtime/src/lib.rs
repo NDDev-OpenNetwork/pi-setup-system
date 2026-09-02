@@ -552,8 +552,11 @@ mod tests {
     #[test]
     fn the_reported_counts_come_from_a_marker_and_not_from_prose() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        if !root.join("tools").is_dir() {
-            return; // A published tree ships neither tool nor workflow.
+        if !root.join(".github/workflows/conformance.yml").is_file() {
+            // Public trees ship neither half of this private report lane. They
+            // now do ship one unrelated tool (`build_wheels.py`), which proved
+            // that a directory was never a valid proxy for this subject.
+            return;
         }
 
         // The list is the source of the count below, rather than a number
