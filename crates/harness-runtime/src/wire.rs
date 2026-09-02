@@ -838,6 +838,11 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             )
         }
         Operation::Remove => {
+            if let Removal::WouldTakeUnrecorded(present) =
+                classify_removal(harness, &resolved, request.target_scope)?
+            {
+                return Err(unrecorded_removal_refusal(harness, &resolved, &present));
+            }
             let (lines, states) = removal_effects(harness, &resolved, request)?;
             end_state = states;
             (lines, None, None)
@@ -872,6 +877,105 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         effects,
     })?
     .into_response()
+}
+
+/// What a removal would do at a target this build has no record of writing.
+///
+/// Three answers, agreed with the consumer on 2026-09-02 after the human
+/// surface was measured taking a person's own `config.toml`, `AGENTS.md` and
+/// `prompts/` from a target it had never written to:
+///
+/// * a record exists -- the removal is the one it always was;
+/// * no record and nothing of ours on disk -- silence, because "already
+///   removed" must stay a no-op or a repeat becomes an error where nothing
+///   happened;
+/// * no record and declared entries present -- refused, naming them, because
+///   taking a namespace whole there is guessing whose files those are.
+///
+/// The scoped profile already refuses on the same ground inside
+/// `remove_managed`; this is the global profile's half.
+pub(crate) enum Removal {
+    /// A record exists, or the scope's own rule applies.
+    Recorded,
+    /// Nothing this provider declares is on disk.
+    NothingHere,
+    /// Declared entries are here and no record says this build wrote them.
+    WouldTakeUnrecorded(Vec<String>),
+}
+
+pub(crate) fn classify_removal(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<Removal> {
+    // Under a scope the inventory *is* the record, and `remove_managed`
+    // refuses there by name already. This function is about the global
+    // profile, where the namespaces are what a removal takes.
+    if harness.scoped_for(scope).is_some() {
+        return Ok(Removal::Recorded);
+    }
+    if matches!(
+        ProviderState::read(target.root(), harness.state_file)?,
+        StateReading::Current(_)
+    ) {
+        return Ok(Removal::Recorded);
+    }
+    let present: Vec<String> = harness
+        .native_namespaces
+        .iter()
+        .filter(|namespace| target.root().join(namespace).symlink_metadata().is_ok())
+        .map(|namespace| (*namespace).to_owned())
+        .collect();
+    if present.is_empty() {
+        return Ok(Removal::NothingHere);
+    }
+    Ok(Removal::WouldTakeUnrecorded(present))
+}
+
+/// The same question under the lock, because a record can vanish between a
+/// plan and its apply.
+///
+/// The state file is deliberately outside the target's identity -- counting it
+/// would make an applied operation leave the target different from the identity
+/// it just recorded -- so deleting it does not move the digest that authorized
+/// the plan, and a removal authorized while managed could arrive unrecorded.
+fn refuse_an_unrecorded_removal(
+    harness: &Harness,
+    resolved: &Target,
+    mutation: &Mutation<'_>,
+) -> Result<()> {
+    if !matches!(
+        mutation.effect,
+        Effect::Remove | Effect::RemoveKeeping { .. }
+    ) {
+        return Ok(());
+    }
+    if let Removal::WouldTakeUnrecorded(present) =
+        classify_removal(harness, resolved, mutation.target_scope)?
+    {
+        return Err(unrecorded_removal_refusal(harness, resolved, &present));
+    }
+    Ok(())
+}
+
+/// The refusal `classify_removal` calls for, in the words both surfaces use.
+pub(crate) fn unrecorded_removal_refusal(
+    harness: &Harness,
+    target: &Target,
+    present: &[String],
+) -> Error {
+    Error::refuse(
+        WireReason::UnsupportedOperation,
+        format!(
+            "{} has applied no setup at {} -- no state file, or one written before \
+             this build recorded what it wrote. Removing would take {} whole, and \
+             nothing here says this provider put them there. Install a setup first \
+             if you want one removed, or take what you put there yourself.",
+            harness.provider_id,
+            target.root().display(),
+            present.join(", ")
+        ),
+    )
 }
 
 /// A target managed under a scope is planned under that scope, or refused by
@@ -1426,6 +1530,7 @@ pub(crate) fn perform(
     // four Junctions.
     refuse_a_neighbours_home(harness, &resolved, mutation.target_scope)?;
     refuse_uncapturable(&resolved, &owned)?;
+    refuse_an_unrecorded_removal(harness, &resolved, mutation)?;
     let captured = pool.capture(resolved.root(), &as_paths(&owned), |backup_ref| {
         SlotRecord {
             schema_version: SLOT_SCHEMA,
@@ -2655,6 +2760,7 @@ mod tests {
     #[test]
     fn a_plan_names_the_namespaces_it_takes_whole_before_the_writes() {
         let target = seeded("effects-name-what-goes");
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         let planned = run(args(
             "plan-operation",
             &target,
@@ -3223,6 +3329,7 @@ mod tests {
     fn a_removal_without_a_scope_still_withdraws_the_namespaces() {
         let target = seeded("unscoped-remove");
         assert!(target.join("AGENTS.md").exists());
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         let done = plan_then_apply(&target, "remove", &[]);
         assert_eq!(done["state"], "verified", "{done}");
         assert!(
@@ -4437,6 +4544,10 @@ mod tests {
     #[test]
     fn remove_withdraws_only_what_this_provider_owns() {
         let target = seeded("remove");
+        // A record is what a real removal has: the consumer installs, or any
+        // operation that writes state runs, before it removes. Without one the
+        // removal is refused by name -- its own test is below.
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         assert_eq!(plan_then_apply(&target, "remove", &[])["state"], "verified");
         assert!(!target.join("AGENTS.md").exists());
         assert!(!target.join("settings.json").exists());
@@ -5084,6 +5195,7 @@ mod tests {
     #[test]
     fn a_remove_may_carry_the_bytes_a_path_keeps_and_leaves_them_behind() {
         let target = seeded("remove-keeping");
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         let survivor = "{\"model\":\"mine, not the setup's\"}\n";
         let (planned, apply_args) = remove_keeping_plan(
             &target,
@@ -5157,6 +5269,7 @@ mod tests {
     #[test]
     fn a_remove_without_a_bundle_carries_no_end_state_member() {
         let target = seeded("remove-bare-plan");
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         let planned = run(args(
             "plan-operation",
             &target,
@@ -5185,6 +5298,7 @@ mod tests {
     #[test]
     fn a_remove_apply_takes_exactly_the_bundle_its_plan_described() {
         let target = seeded("remove-authorization");
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
         let (bytes, bundle_digest, artifact) =
             bundle_bytes(&[("settings.json", "{\"kept\":true}\n", 0o644)]);
         let artifact_path = target.join("..").join("unplanned.zip");
@@ -5598,6 +5712,112 @@ mod tests {
             error.detail().contains("at the global profile"),
             "{}",
             error.detail()
+        );
+    }
+
+    /// The three answers a removal has when this build has no record of
+    /// writing here, agreed with the consumer on 2026-09-02: a record removes,
+    /// an empty target is silent, a populated one is refused by name. The
+    /// middle answer is the one that keeps a repeat from becoming an error.
+    #[test]
+    fn a_removal_answers_three_ways_when_no_record_says_what_this_build_wrote() {
+        // Nothing of ours on disk: planned, and the apply is a no-op that
+        // still leaves a record behind.
+        let empty = scratch("remove-nothing-here").join("target");
+        fs::write(empty.join("unrelated.txt"), "theirs").unwrap();
+        let done = plan_then_apply(&empty, "remove", &[]);
+        assert_eq!(done["state"], "verified", "{done}");
+        assert_eq!(
+            fs::read_to_string(empty.join("unrelated.txt")).unwrap(),
+            "theirs"
+        );
+
+        // Declared entries here and no record: an answered refusal naming them,
+        // and nothing touched.
+        let populated = seeded("remove-unrecorded");
+        let error = refuse(args(
+            "plan-operation",
+            &populated,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01UNRECORDED",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("has applied no setup at")
+                && error.detail().contains("AGENTS.md"),
+            "{}",
+            error.detail()
+        );
+        for kept in ["AGENTS.md", "settings.json", "unrelated.txt"] {
+            assert!(populated.join(kept).exists(), "the refusal took {kept}");
+        }
+
+        // A record, however it was written: the removal is the one it was.
+        assert_eq!(
+            plan_then_apply(&populated, "backup", &[])["state"],
+            "verified"
+        );
+        assert_eq!(
+            plan_then_apply(&populated, "remove", &[])["state"],
+            "verified"
+        );
+        assert!(!populated.join("AGENTS.md").exists());
+    }
+
+    /// A person's own files are not this provider's to withdraw from a target
+    /// it never wrote to. Measured on the released 0.0.57 human surface: a
+    /// target holding only a person's `AGENTS.md`, `settings.json` and
+    /// `skills/` answered *"Removed everything <provider> owns"* and took all
+    /// three, recoverable from the slot and under a sentence that did not
+    /// describe what happened. The scoped branch of `remove_managed` already
+    /// refuses on the same ground -- this build does not know what it wrote --
+    /// and this is that refusal where a person types it.
+    #[test]
+    fn a_human_removal_with_no_record_of_its_own_is_refused() {
+        let target = seeded("human-remove-unmanaged");
+        assert!(target.join(TEST.state_file).symlink_metadata().is_err());
+
+        let error = crate::human::run(
+            &TEST,
+            crate::human::Command::Remove {
+                target: target.clone(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("has applied no setup at"),
+            "{}",
+            error.detail()
+        );
+        for kept in ["AGENTS.md", "settings.json", "unrelated.txt"] {
+            assert!(target.join(kept).exists(), "the refusal took {kept}");
+        }
+        assert!(target.join("skills").is_dir(), "the refusal took skills/");
+
+        // With a record -- any operation that writes one -- the removal is the
+        // one it always was.
+        assert_eq!(plan_then_apply(&target, "backup", &[])["state"], "verified");
+        crate::human::run(
+            &TEST,
+            crate::human::Command::Remove {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+        assert!(!target.join("AGENTS.md").exists());
+        assert!(!target.join("skills").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+            "keep me"
         );
     }
 

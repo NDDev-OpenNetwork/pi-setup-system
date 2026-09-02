@@ -923,6 +923,44 @@ fn restore(harness: &Harness, target: &Path, backup: Option<String>) -> Result<(
 }
 
 fn remove(harness: &Harness, target: &Path) -> Result<()> {
+    // **A removal with no record of its own is not this provider's removal.**
+    // `remove_managed` walks the declared namespaces and takes each whole, which
+    // is exactly right for a target this build wrote: the setup owns those
+    // entries and the state file says so. On a target it never wrote, the same
+    // walk empties somebody else's home while the report says "removed
+    // everything <provider> owns" -- and it owned nothing here. Measured
+    // 2026-09-02 on a target holding only a person's own `config.toml`,
+    // `AGENTS.md` and `prompts/`: all three went, recoverable from the slot the
+    // capture took, under a sentence that did not describe what happened.
+    //
+    // The scoped branch of `remove_managed` already refuses for the same
+    // reason, in the same words -- *this build does not know what it wrote* --
+    // and this is that refusal on the surface a person types. The wire is not
+    // changed: a consumer's removal is authorized by a plan it made against a
+    // target it installed, and its own flow writes state first.
+    // Three answers, and the middle one is why this is not a flat refusal: a
+    // target with nothing of ours on it is *already removed*, and saying so
+    // quietly keeps a repeat from becoming an error where nothing happened.
+    // The consumer chose this shape on 2026-09-02 and takes the same three
+    // over the wire.
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    match wire::classify_removal(harness, &resolved, HUMAN_SCOPE)? {
+        wire::Removal::Recorded => {}
+        wire::Removal::NothingHere => {
+            println!(
+                "Nothing to remove: {} has applied no setup at {}, and none of \
+                 what it declares is here.",
+                harness.provider_id,
+                resolved.root().display()
+            );
+            return Ok(());
+        }
+        wire::Removal::WouldTakeUnrecorded(present) => {
+            return Err(wire::unrecorded_removal_refusal(
+                harness, &resolved, &present,
+            ));
+        }
+    }
     let report = mutate(
         harness,
         target,
