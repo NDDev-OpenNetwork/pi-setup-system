@@ -30,7 +30,7 @@ jobs:
     name: rust
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-ci.yml@1ab6708b62ec7bd17f2d8a519c6fcc39edb22243
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-ci.yml@e90a2c7c6c25cd1fb9ac1c68adbc7535f8b17e1e
     with:
       toolchain: '1.98.0'
       # The three-OS matrix is the evidence ADR-0113 asks for, and standard
@@ -46,7 +46,7 @@ jobs:
     name: supply-chain
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-supply-chain.yml@1ab6708b62ec7bd17f2d8a519c6fcc39edb22243
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-supply-chain.yml@e90a2c7c6c25cd1fb9ac1c68adbc7535f8b17e1e
     with:
       enable_deny: true
       enable_audit: true
@@ -56,7 +56,7 @@ jobs:
     name: actionlint
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@1ab6708b62ec7bd17f2d8a519c6fcc39edb22243
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@e90a2c7c6c25cd1fb9ac1c68adbc7535f8b17e1e
 
   pr-hygiene:
     name: pr-hygiene
@@ -68,7 +68,7 @@ jobs:
       # that would use them is off.
       issues: write # the stale bot closes threads
       pull-requests: write # the labeler applies labels
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@1ab6708b62ec7bd17f2d8a519c6fcc39edb22243
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/pr-hygiene.yml@e90a2c7c6c25cd1fb9ac1c68adbc7535f8b17e1e
 
 
   boundary:

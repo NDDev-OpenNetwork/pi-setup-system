@@ -20,6 +20,34 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.57] - 2026-09-02
+
+A kind declared only by a scoped profile validates and plans under
+that scope. `validate-bundle` compared a bundle's component kinds against the
+global profile whatever the surface, so a kind a provider implements only
+elsewhere — codex's `skill`, which lives under `~/.agents` — was refused, and
+every scoped plan carrying it with it. Now `validate-bundle` accepts a kind
+any declared profile implements, the question it can answer with no scope in
+its argv, and a plan under a scope checks kinds against that scope's profile;
+a global plan carrying a scoped-only kind refuses by name. Found by the
+consumer's user_root slice: four providers passed because they declare the
+kind globally too, codex had never passed.
+
+A target the system cannot canonicalize is taken as given. Inside the
+consumer's Windows AppContainer, `GetFinalPathNameByHandle` cannot map a
+volume back to a drive letter for any path, so every `status` refused with
+"cannot be canonicalized" while `provider-info` answered — measured by the
+consumer four ways. Now, once the directory has been inspected and its final
+component is not a link, a failed canonicalization falls back to the lexical
+absolute path; the verbatim `\?\` prefix is dropped everywhere so one
+directory carries one `canonical_target` string inside and outside a
+container; and the operating system's own error travels in the refusal
+detail. The seven public clones the render check makes now identify as the
+job's token rather than as a shared address.
+
+Antigravity is pinned at 1.1.24, published since the previous release. One
+Cursor citation moved and is re-cited.
+
 ## [0.0.56] - 2026-09-02
 
 `status_request_fields` is declared: `["target_scope"]`, the same

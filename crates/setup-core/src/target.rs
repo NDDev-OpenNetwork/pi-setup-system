@@ -37,9 +37,12 @@ impl Target {
             ));
         }
         let metadata = fs::symlink_metadata(path).map_err(|source| {
+            // The operating system's own words travel in the detail: a caller
+            // inside a container or across a mount cannot otherwise tell
+            // "not there" from "not allowed", and the consumer asked for it.
             Error::new(
                 ReasonCode::InvalidTarget,
-                format!("target {} cannot be inspected", path.display()),
+                format!("target {} cannot be inspected: {source}", path.display()),
             )
             .with_source(source)
         })?;
@@ -55,15 +58,37 @@ impl Target {
                 format!("target {} is not a directory", path.display()),
             ));
         }
-        let root = fs::canonicalize(path).map_err(|source| {
-            Error::new(
-                ReasonCode::InvalidTarget,
-                format!("target {} cannot be canonicalized", path.display()),
-            )
-            .with_source(source)
-        })?;
+        // The final name of the directory that was just inspected. When the
+        // system cannot say it, the name the caller gave is taken as it is --
+        // made absolute and lexically normalized, never re-inspected.
+        //
+        // Measured by the consumer on 2026-09-02, four ways, windows-latest,
+        // inside their AppContainer: `GetFinalPathNameByHandleW(VOLUME_NAME_DOS)`
+        // fails for *every* path from a LowBox token, because mapping
+        // `\Device\HarddiskVolumeN` back to a drive letter needs the global
+        // `\GLOBAL??` object directory the container cannot see; no ACE on any
+        // ancestor changes that. `symlink_metadata` above had already answered,
+        // so the directory exists and its final component is not a link. What
+        // the fallback gives up is the resolution of a reparse point in an
+        // *ancestor* -- and the caller that runs a provider under a container
+        // is the one that resolved the path outside it, so the string it hands
+        // in is the canonical one already; a provider that refused here made
+        // `status` unanswerable for every target on that platform.
+        let root = match fs::canonicalize(path) {
+            Ok(root) => root,
+            Err(_denied) => std::path::absolute(path).map_err(|source| {
+                Error::new(
+                    ReasonCode::InvalidTarget,
+                    format!(
+                        "target {} cannot be canonicalized and cannot be made absolute: {source}",
+                        path.display()
+                    ),
+                )
+                .with_source(source)
+            })?,
+        };
         Ok(Self {
-            root,
+            root: without_verbatim_prefix(root),
             control_directory_name: control_directory_name.to_owned(),
         })
     }
@@ -163,6 +188,28 @@ impl Target {
     }
 }
 
+/// One directory, one string, whichever way it was resolved.
+///
+/// `fs::canonicalize` on Windows answers in the verbatim form (`\\?\C:\…`)
+/// and a lexical resolution answers without it, so a target resolved once
+/// outside a container and once inside it would carry two `canonical_target`
+/// strings for one directory. The prefix adds nothing a reader needs -- the
+/// standard library puts it back itself for a path that is too long -- so it
+/// is dropped here, and `\\?\UNC\server\share` becomes `\\server\share`.
+/// A no-op for every path that never carried it.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
 /// Tighten a directory to owner-only access where the platform supports it.
 ///
 /// # Errors
@@ -225,6 +272,38 @@ mod tests {
         assert_eq!(error.reason(), ReasonCode::InvalidTarget);
     }
 
+    /// The prefix is dropped wherever it came from, and nothing else moves.
+    #[test]
+    fn the_verbatim_prefix_is_dropped_and_a_plain_path_is_kept() {
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\me\.codex")),
+            PathBuf::from(r"C:\Users\me\.codex")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\UNC\host\share\dir")),
+            PathBuf::from(r"\\host\share\dir")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from("/home/me/.codex")),
+            PathBuf::from("/home/me/.codex")
+        );
+    }
+
+    /// Whatever the platform resolves to, the root a caller reads back never
+    /// carries the verbatim prefix -- the string the consumer compares against
+    /// its own resolution is the plain one.
+    #[test]
+    fn a_resolved_root_never_carries_the_verbatim_prefix() {
+        let base = scratch("plain");
+        let target = Target::resolve(&base, ".ctl").unwrap();
+        assert!(
+            !target.root().to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            target.root().display()
+        );
+        assert!(target.root().is_absolute());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlinked_final_component_is_refused_before_it_can_be_swapped() {
@@ -242,7 +321,11 @@ mod tests {
         let base = scratch("control");
         let target = Target::resolve(&base, ".ctl").unwrap();
         let control = target.ensure_control_directory().unwrap();
-        assert_eq!(control, base.join(".ctl"));
+        // `scratch` canonicalizes, which on Windows answers in the verbatim
+        // form; the root does not carry it, so the expectation must not
+        // either. This compared the raw join and went red on windows-latest
+        // the day the prefix was dropped -- the public matrix's job.
+        assert_eq!(control, without_verbatim_prefix(base).join(".ctl"));
         assert!(control.is_dir());
     }
 

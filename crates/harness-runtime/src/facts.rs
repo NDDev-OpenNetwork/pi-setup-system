@@ -353,6 +353,37 @@ impl Harness {
         Self::within(self.owned_projection(scope), path)
     }
 
+    /// The component kinds the profile at `scope` declares.
+    #[must_use]
+    pub fn kinds_at(&self, scope: Option<TargetScope>) -> &'static [ComponentKind] {
+        match self.scoped_for(scope) {
+            Some(scoped) => scoped.component_kinds,
+            None => self.component_kinds,
+        }
+    }
+
+    /// Whether *any* profile this provider declares implements a kind.
+    ///
+    /// The same question `owns_anywhere` answers for a path, asked of a kind.
+    /// `validate-bundle` is handed no scope, so it can only ask whether this
+    /// provider could install the bundle at all -- and a kind declared only by
+    /// a scoped profile (codex's `skill`, which lives under `~/.agents` and
+    /// not under `~/.codex`) is one it can. Found by the consumer's `user_root`
+    /// slice on 2026-09-02: four providers passed because they declare the
+    /// kind globally as well, codex was refused at `validate-bundle` and had
+    /// never passed it.
+    #[must_use]
+    pub fn implements_anywhere(&self, kind: &str) -> bool {
+        self.component_kinds
+            .iter()
+            .chain(
+                self.scoped_projections
+                    .iter()
+                    .flat_map(|scoped| scoped.component_kinds.iter()),
+            )
+            .any(|declared| declared.as_str() == kind)
+    }
+
     /// Whether *any* target this provider declares owns a path.
     ///
     /// `validate-bundle` is handed a bundle and a target and no scope — that is
