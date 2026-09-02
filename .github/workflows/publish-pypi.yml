@@ -71,7 +71,7 @@ jobs:
           ls -l dist
 
       - name: Publish to PyPI as pi-setup-system
-        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26  # v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           # Attestations are what make this channel checkable at all: PyPI
           # keeps a PEP 740 bundle naming this repository, this workflow and
