@@ -232,8 +232,9 @@ pub struct ProviderInfo {
     /// The arguments `status` accepts beside its target, once the kit names
     /// the member.
     ///
-    /// Empty and therefore absent until kit `0.2.9` publishes the member and
-    /// a released consumer accepts it -- the same two gates every
+    /// Empty and therefore absent until the kit publishes the member and a
+    /// released consumer accepts it -- kit `0.2.9` and `ai-stp-cli 0.0.15`
+    /// did on 2026-09-02 -- the same two gates every
     /// `provider-info` field has to pass, because the field set is compared
     /// for exact equality and an unknown member refuses the whole document.
     /// The runtime already honours `status --target-scope` (0.0.55); this is
@@ -408,9 +409,11 @@ impl ProviderInfo {
                 TargetScope::REQUEST_FIELD.to_owned(),
                 EndState::REQUEST_FIELD.to_owned(),
             ],
-            // Held until the kit names it; see the field's own note. The test
-            // beside `plan_request_fields`' flips this the day it does.
-            status_request_fields: Vec::new(),
+            // Declared 2026-09-02 in the same order as the two above: kit 0.2.9
+            // names the member (`provider-info.schema.json`), ai-stp-cli
+            // 0.0.15 accepts it, and only then does a release carry it. The
+            // test beside `plan_request_fields` holds it to the kit's enum.
+            status_request_fields: vec![TargetScope::REQUEST_FIELD.to_owned()],
         })
     }
 
