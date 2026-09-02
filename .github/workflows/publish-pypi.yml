@@ -1,0 +1,80 @@
+name: publish-pypi
+
+# A second way to reach the same bytes. The release is the trusted path; this
+# is convenience, and it says so in the package metadata.
+#
+# Manual until all seven projects exist on the index: PyPI allows only three
+# pending publishers at a time, so the wave order is register, publish,
+# register the next.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the release tag whose assets become wheels
+        required: true
+        type: string
+
+permissions: {}
+
+# One publication at a time per tag. A second run of the same tag would build
+# the same wheels and meet PyPI's refusal to overwrite a file, which is the
+# right refusal in the wrong place: better to queue than to race.
+concurrency:
+  group: publish-pypi-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment the pending publisher names. Trusted publishing binds
+    # the exchange to it, so a workflow that forgets it is refused by PyPI
+    # rather than publishing from an unexpected place.
+    environment: pypi
+    permissions:
+      contents: read  # read the repository and this tag's release assets; nothing here writes
+      id-token: write  # the OIDC token PyPI exchanges for a short-lived upload right bound to this repository, workflow and environment
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Take the release assets this tag published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          # Six binaries and a checksum file, or the release is not one this
+          # can pack. Named here rather than discovered, so a partial release
+          # stops the job instead of publishing five platforms out of six.
+          test "$(find assets -type f | wc -l)" -eq 7
+
+      - name: The bytes must be the ones the release signed for
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum --check --ignore-missing SHA256SUMS
+
+      - name: Build one wheel per platform
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 tools/build_wheels.py --self-check
+          python3 tools/build_wheels.py             --harness pi --version "$TAG" --assets assets --out dist
+          ls -l dist
+
+      - name: Publish to PyPI as pi-setup-system
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26  # v1.14.2
+        with:
+          # Attestations are what make this channel checkable at all: PyPI
+          # keeps a PEP 740 bundle naming this repository, this workflow and
+          # this environment, which is the same triple the GitHub path proves
+          # a different way.
+          attestations: true
