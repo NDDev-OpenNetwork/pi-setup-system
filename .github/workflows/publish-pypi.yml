@@ -3,17 +3,12 @@ name: publish-pypi
 # A second way to reach the same bytes. The release is the trusted path; this
 # is convenience, and it says so in the package metadata.
 #
-# Manual until all seven projects exist on the index: PyPI allows only three
-# pending publishers at a time, so the wave order is register, publish,
-# register the next.
+# All seven projects and their trusted publishers exist. A published GitHub
+# release is now the one event that starts both delivery paths.
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: the release tag whose assets become wheels
-        required: true
-        type: string
+  release:
+    types: [published]
 
 permissions: {}
 
@@ -21,7 +16,7 @@ permissions: {}
 # the same wheels and meet PyPI's refusal to overwrite a file, which is the
 # right refusal in the wrong place: better to queue than to race.
 concurrency:
-  group: publish-pypi-${{ inputs.tag }}
+  group: publish-pypi-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -45,7 +40,7 @@ jobs:
       - name: Take the release assets this tag published
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           mkdir -p assets
@@ -63,7 +58,7 @@ jobs:
 
       - name: Build one wheel per platform
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           python3 tools/build_wheels.py --self-check
