@@ -27,14 +27,19 @@ use serde::Deserialize;
 use setup_core::digest;
 
 use crate::error::{Error, Result};
+use crate::info::ProjectionProfile;
 use crate::reason::WireReason;
 use crate::zip;
 
 /// The digest domain for a bundle manifest.
 pub const BUNDLE_DOMAIN: &str = "ai-stp:bundle:v1";
 
-/// The format tag this reader accepts.
-pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/1";
+/// The original format tag, kept byte-identical during the v2 rollout.
+pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/2";
+
+/// The adaptation-bound format.
+#[cfg(test)]
+const RETIRED_BUNDLE_FORMAT_V1: &str = "ai-stp-bundle/1";
 
 /// The protocol version a bundle manifest declares.
 ///
@@ -174,6 +179,48 @@ pub struct Limits {
     pub max_bundle_bytes: Option<u64>,
 }
 
+/// The exact provider profile selected by the v2 compiler.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProjectionProfileBinding {
+    /// Stable profile identifier.
+    pub profile_id: String,
+    /// Content-derived identity of the provider declaration.
+    pub profile_digest: String,
+    /// Resolved bundle target scope.
+    pub target_scope: String,
+}
+
+/// One immutable projection artifact named by a component adaptation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProjectionArtifactBinding {
+    /// Domain-separated digest from the component passport.
+    pub digest: String,
+    /// Exact projection archive byte length.
+    pub size_bytes: u64,
+}
+
+/// One component version's exact adaptation atom in a v2 bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ComponentAdaptationBinding {
+    /// Stable component identity.
+    pub stable_id: String,
+    /// Exact component version.
+    pub version: String,
+    /// Exact component-version passport digest.
+    pub passport_digest: String,
+    /// Content-derived adaptation identity.
+    pub adaptation_id: String,
+    /// Exact immutable projection artifact.
+    pub projection_artifact: ProjectionArtifactBinding,
+    /// Provider-native component vocabulary member.
+    pub provider_component_kind: String,
+    /// Projection vocabulary member selected by the adaptation.
+    pub projection_kind: String,
+    /// Sorted exact paths the adaptation artifact declares.
+    #[serde(default)]
+    pub member_paths: Vec<String>,
+}
+
 /// The `bundle.json` a compiler writes into the archive.
 ///
 /// This is *not* the compiler's own result object. `cli-harness-bundle.schema.json`
@@ -190,6 +237,15 @@ pub struct Manifest {
     pub protocol_version: u32,
     /// The harness this bundle configures.
     pub harness_id: String,
+    /// The resolved non-global scope. Absent means `global`.
+    #[serde(default)]
+    pub target_scope: Option<String>,
+    /// Exact profile binding required by bundle v2.
+    #[serde(default)]
+    pub projection_profile: Option<ProjectionProfileBinding>,
+    /// Sorted component adaptation bindings required by bundle v2.
+    #[serde(default)]
+    pub component_adaptations: Vec<ComponentAdaptationBinding>,
     /// What compiled it.
     #[serde(default)]
     pub builder_version: String,
@@ -306,7 +362,7 @@ impl Bundle {
         if claim.bundle_format != BUNDLE_FORMAT {
             return Err(Error::refuse(
                 WireReason::UnsupportedBundleFormat,
-                format!("{:?} is not {BUNDLE_FORMAT}", claim.bundle_format),
+                format!("{:?} is not a supported bundle format", claim.bundle_format),
             ));
         }
         // The raw bytes are checked before the parser sees them: a corrupted
@@ -333,7 +389,7 @@ impl Bundle {
         let manifest_bytes = require_members(&members)?;
         let manifest = parse_manifest(manifest_bytes)?;
 
-        if manifest.bundle_format != BUNDLE_FORMAT {
+        if manifest.bundle_format != claim.bundle_format {
             return Err(Error::refuse(
                 WireReason::UnsupportedBundleFormat,
                 format!("the manifest declares {:?}", manifest.bundle_format),
@@ -357,6 +413,7 @@ impl Bundle {
                 ),
             ));
         }
+        check_adaptation_bindings(&manifest)?;
         let files = check_files(&manifest, &members, actual_length)?;
 
         // The manifest's own identity is checked after the files, so a bundle
@@ -387,6 +444,159 @@ impl Bundle {
             files,
         })
     }
+
+    /// Bind a v2 manifest to the exact profile selected for this operation.
+    ///
+    /// V1 has no such fields and remains unchanged during the ordered rollout.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a missing, mismatched or out-of-vocabulary v2 binding.
+    pub fn require_projection_profile(&self, expected: &ProjectionProfile) -> Result<()> {
+        let Some(binding) = self.manifest.projection_profile.as_ref() else {
+            return Err(Error::refuse(
+                WireReason::AdaptationBindingMissing,
+                "bundle v2 has no projection_profile",
+            ));
+        };
+        let expected_scope = expected.target_scope.as_deref().unwrap_or("global");
+        if binding.profile_id != expected.profile_id
+            || binding.profile_digest != expected.digest
+            || binding.target_scope != expected_scope
+        {
+            return Err(Error::refuse(
+                WireReason::ProjectionProfileMismatch,
+                "bundle v2 was compiled for a different provider projection profile",
+            ));
+        }
+        for adaptation in &self.manifest.component_adaptations {
+            if !expected
+                .component_kinds
+                .contains(&adaptation.provider_component_kind)
+                || !expected
+                    .projection_kinds
+                    .contains(&adaptation.projection_kind)
+            {
+                return Err(Error::refuse(
+                    WireReason::AdaptationBindingMismatch,
+                    format!(
+                        "adaptation for {:?} names a kind outside the selected profile",
+                        adaptation.stable_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn canonical_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn canonical_adaptation_id(value: &str) -> bool {
+    value.len() == 75
+        && value.starts_with("adaptation_")
+        && value[11..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Validate v2's immutable bindings independently of the selected provider profile.
+fn check_adaptation_bindings(manifest: &Manifest) -> Result<()> {
+    if manifest.bundle_format != BUNDLE_FORMAT {
+        return Err(Error::refuse(
+            WireReason::UnsupportedBundleFormat,
+            format!("the manifest declares {:?}", manifest.bundle_format),
+        ));
+    }
+    let Some(profile) = manifest.projection_profile.as_ref() else {
+        return Err(Error::refuse(
+            WireReason::AdaptationBindingMissing,
+            "bundle v2 has no projection_profile",
+        ));
+    };
+    if manifest.component_adaptations.is_empty() {
+        return Err(Error::refuse(
+            WireReason::AdaptationBindingMissing,
+            "bundle v2 has no component_adaptations",
+        ));
+    }
+    let manifest_scope = manifest.target_scope.as_deref().unwrap_or("global");
+    if profile.profile_id.is_empty()
+        || !canonical_digest(&profile.profile_digest)
+        || profile.target_scope != manifest_scope
+    {
+        return Err(Error::refuse(
+            WireReason::ProjectionProfileMismatch,
+            "bundle v2's profile binding is incomplete or names another scope",
+        ));
+    }
+
+    let mut prior = None;
+    let mut owners = BTreeSet::new();
+    let mut bound_paths = BTreeSet::new();
+    for binding in &manifest.component_adaptations {
+        if prior.is_some_and(|value: &str| value >= binding.stable_id.as_str()) {
+            return Err(Error::refuse(
+                WireReason::AdaptationBindingMismatch,
+                "component_adaptations are not strictly sorted by stable_id",
+            ));
+        }
+        prior = Some(binding.stable_id.as_str());
+        if binding.stable_id.is_empty()
+            || binding.version.is_empty()
+            || !canonical_digest(&binding.passport_digest)
+            || !canonical_adaptation_id(&binding.adaptation_id)
+            || !canonical_digest(&binding.projection_artifact.digest)
+            || binding.projection_artifact.size_bytes == 0
+            || binding.provider_component_kind.is_empty()
+            || binding.projection_kind.is_empty()
+            || binding.member_paths.is_empty()
+            || !owners.insert(binding.stable_id.as_str())
+        {
+            return Err(Error::refuse(
+                WireReason::AdaptationBindingMismatch,
+                format!("adaptation for {:?} is not canonical", binding.stable_id),
+            ));
+        }
+        let mut previous_path = None;
+        for path in &binding.member_paths {
+            check_path(path)?;
+            if previous_path.is_some_and(|value: &str| value >= path.as_str()) {
+                return Err(Error::refuse(
+                    WireReason::AdaptationBindingMismatch,
+                    format!(
+                        "member_paths for {:?} are not strictly sorted",
+                        binding.stable_id
+                    ),
+                ));
+            }
+            previous_path = Some(path.as_str());
+            bound_paths.insert((binding.stable_id.as_str(), path.as_str()));
+        }
+    }
+    let file_owners: BTreeSet<&str> = manifest
+        .files
+        .iter()
+        .map(|file| file.owner.as_str())
+        .collect();
+    if file_owners != owners
+        || manifest
+            .files
+            .iter()
+            .any(|file| !bound_paths.contains(&(file.owner.as_str(), file.path.as_str())))
+    {
+        return Err(Error::refuse(
+            WireReason::AdaptationBindingMismatch,
+            "bundle files do not close over the declared component adaptations",
+        ));
+    }
+    Ok(())
 }
 
 /// Require the four documents, once each, in order, before anything else.
@@ -881,7 +1091,102 @@ mod tests {
         );
     }
 
+    fn v2_manifest() -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "bundle_format": BUNDLE_FORMAT,
+            "protocol_version": BUNDLE_PROTOCOL_VERSION,
+            "harness_id": "test",
+            "bundle_digest": "sha256:aa",
+            "projection_profile": {
+                "profile_id": "test/native-files/2",
+                "profile_digest": "sha256:".to_owned() + &"4".repeat(64),
+                "target_scope": "global"
+            },
+            "component_adaptations": [{
+                "stable_id": "component_a",
+                "version": "1.0",
+                "passport_digest": "sha256:".to_owned() + &"1".repeat(64),
+                "adaptation_id": "adaptation_".to_owned() + &"2".repeat(64),
+                "projection_artifact": {
+                    "digest": "sha256:".to_owned() + &"3".repeat(64),
+                    "size_bytes": 128
+                },
+                "provider_component_kind": "skill",
+                "projection_kind": "native_files",
+                "member_paths": ["skills/a.md"]
+            }],
+            "files": [{
+                "path": "skills/a.md",
+                "digest": "sha256:".to_owned() + &"5".repeat(64),
+                "byte_length": 1,
+                "mode": 420,
+                "owner": "component_a"
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn bundle_v2_requires_complete_sorted_adaptation_bindings() {
+        let manifest = v2_manifest();
+        check_adaptation_bindings(&manifest).unwrap();
+
+        let mut missing = manifest.clone();
+        missing.component_adaptations.clear();
+        assert_eq!(
+            check_adaptation_bindings(&missing).unwrap_err().reason(),
+            Some(WireReason::AdaptationBindingMissing)
+        );
+
+        let mut unbound = manifest;
+        unbound.files[0].owner = "component_b".to_owned();
+        assert_eq!(
+            check_adaptation_bindings(&unbound).unwrap_err().reason(),
+            Some(WireReason::AdaptationBindingMismatch)
+        );
+    }
+
+    #[test]
+    fn bundle_v2_is_bound_to_the_exact_provider_profile() {
+        let manifest = v2_manifest();
+        let profile = ProjectionProfile::new(
+            "test/native-files/2",
+            &[crate::ComponentKind::Skill],
+            &[crate::ProjectionKind::NativeFiles],
+            &["skills"],
+            &[BUNDLE_FORMAT],
+            CONTRACT_MAX_FILES,
+            CONTRACT_MAX_BUNDLE_BYTES,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            manifest: manifest.clone(),
+            passport: SetupPassport::default(),
+            files: BTreeMap::new(),
+        };
+        assert_eq!(
+            bundle
+                .require_projection_profile(&profile)
+                .unwrap_err()
+                .reason(),
+            Some(WireReason::ProjectionProfileMismatch),
+            "the manifest carries a deliberately different profile digest"
+        );
+        let mut exact = manifest;
+        exact.projection_profile.as_mut().unwrap().profile_digest = profile.digest.clone();
+        Bundle {
+            manifest: exact,
+            passport: SetupPassport::default(),
+            files: BTreeMap::new(),
+        }
+        .require_projection_profile(&profile)
+        .unwrap();
+    }
+
     fn build(files: &[(&str, &str, u32)]) -> Built {
+        let mut member_paths = files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>();
+        member_paths.sort_unstable();
         let records: Vec<serde_json::Value> = files
             .iter()
             .map(|(path, body, mode)| {
@@ -891,7 +1196,7 @@ mod tests {
                     "digest": digest::of_bytes(body.as_bytes()),
                     "byte_length": body.len(),
                     "mode": mode,
-                    "owner": "",
+                    "owner": "component_a",
                 })
             })
             .collect();
@@ -902,6 +1207,24 @@ mod tests {
             "harness_id": "test",
             "builder_version": "0.1.0",
             "input_digest": "sha256:".to_owned() + &"3".repeat(64),
+            "projection_profile": {
+                "profile_id": "test/native-files/2",
+                "profile_digest": "sha256:".to_owned() + &"4".repeat(64),
+                "target_scope": "global"
+            },
+            "component_adaptations": [{
+                "stable_id": "component_a",
+                "version": "1.0",
+                "passport_digest": "sha256:".to_owned() + &"1".repeat(64),
+                "adaptation_id": "adaptation_".to_owned() + &"2".repeat(64),
+                "projection_artifact": {
+                    "digest": "sha256:".to_owned() + &"3".repeat(64),
+                    "size_bytes": 128
+                },
+                "provider_component_kind": "instruction",
+                "projection_kind": "native_files",
+                "member_paths": member_paths
+            }],
             "managed_paths": files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>(),
             "files": records,
             "limits": {
@@ -1278,7 +1601,7 @@ mod tests {
     fn a_format_tag_this_reader_does_not_know_is_refused_before_anything_else() {
         let built = build(&[("AGENTS.md", "x", 0o644)]);
         let mut claim = claim(&built);
-        claim.bundle_format = "ai-stp-bundle/2";
+        claim.bundle_format = RETIRED_BUNDLE_FORMAT_V1;
         let error = Bundle::read(&built.bytes, claim).unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedBundleFormat));
     }

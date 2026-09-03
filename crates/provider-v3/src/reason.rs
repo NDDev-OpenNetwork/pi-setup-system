@@ -18,6 +18,10 @@ use setup_core::ReasonCode;
 /// A refusal the provider is allowed to put on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WireReason {
+    /// A v2 bundle omits the immutable adaptation binding it requires.
+    AdaptationBindingMissing,
+    /// A v2 adaptation binding does not close over the files it claims.
+    AdaptationBindingMismatch,
     /// The bundle bytes do not hash to the digest that named them.
     DigestMismatch,
     /// The bundle exceeds a declared file-count or byte limit.
@@ -66,6 +70,8 @@ pub enum WireReason {
 impl WireReason {
     /// Every reason, in wire order.
     pub const ALL: &'static [Self] = &[
+        Self::AdaptationBindingMissing,
+        Self::AdaptationBindingMismatch,
         Self::DigestMismatch,
         Self::LimitExceeded,
         Self::LinkNotAllowed,
@@ -91,6 +97,8 @@ impl WireReason {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::AdaptationBindingMissing => "adaptation_binding_missing",
+            Self::AdaptationBindingMismatch => "adaptation_binding_mismatch",
             Self::DigestMismatch => "digest_mismatch",
             Self::LimitExceeded => "limit_exceeded",
             Self::LinkNotAllowed => "link_not_allowed",

@@ -105,6 +105,38 @@ fn verified_bundle(harness: &Harness, bundle: &ArgvBundle, surface: Surface) -> 
             harness_id: harness.harness_id,
         },
     )?;
+    if verified.manifest.bundle_format == provider_v3::bundle::BUNDLE_FORMAT {
+        let bound_scope = verified
+            .manifest
+            .projection_profile
+            .as_ref()
+            .map(|profile| profile.target_scope.as_str())
+            .ok_or_else(|| {
+                Error::refuse(
+                    WireReason::AdaptationBindingMissing,
+                    "bundle v2 has no projection_profile",
+                )
+            })?;
+        let bound_scope = match bound_scope {
+            "global" => None,
+            value => Some(provider_v3::TargetScope::parse(value).ok_or_else(|| {
+                Error::refuse(
+                    WireReason::ProjectionProfileMismatch,
+                    format!("bundle v2 names unknown target scope {value:?}"),
+                )
+            })?),
+        };
+        if let Surface::At(requested) = surface
+            && requested != bound_scope
+        {
+            return Err(Error::refuse(
+                WireReason::ProjectionProfileMismatch,
+                "bundle v2's bound scope differs from the requested target scope",
+            ));
+        }
+        let profile = harness.projection_profile_for(bound_scope)?;
+        verified.require_projection_profile(&profile)?;
+    }
     check_within_surface(harness, verified.files.keys(), surface)?;
     check_declared_kinds(harness, &verified, surface)?;
     Ok(verified)
@@ -834,7 +866,11 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
                     format!("restore the target from {}", record.backup_ref.as_str()),
                 ],
                 Some(record.backup_ref.as_str().to_owned()),
-                Some(digest::of_tree(&payload)?),
+                Some(restore_target_identity(
+                    harness,
+                    &payload,
+                    request.target_scope,
+                )?),
             )
         }
         Operation::Remove => {
@@ -1207,6 +1243,70 @@ fn check_survivors(planned: &[EndState], ready: &Bundle) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The target identity a selected backup will produce under this scope.
+///
+/// A slot payload is a transport tree, not always the target's identity tree.
+/// Under a shared scope it contains parent directories needed to carry the
+/// recorded files, while status hashes the recorded file inventory itself.
+/// Hashing the payload wholesale therefore added directory entries that
+/// restored status correctly omitted.
+fn restore_target_identity(
+    harness: &Harness,
+    payload: &Path,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<String> {
+    let owned = if harness.scoped_for(scope).is_some() {
+        files_in_payload(payload)?
+    } else {
+        harness
+            .owned_projection(scope)
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect()
+    };
+    Ok(setup_core::digest::of_owned(
+        payload,
+        &as_paths(&owned),
+        &harness.not_our_identity(),
+    )?)
+}
+
+/// Every regular payload file, relative to the payload root.
+fn files_in_payload(payload: &Path) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(payload).map_err(|error| {
+        setup_core::Error::new(
+            setup_core::ReasonCode::StateUnavailable,
+            format!("cannot list backup payload {}", payload.display()),
+        )
+        .with_source(error)
+    })? {
+        let entry = entry.map_err(|error| {
+            setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!(
+                    "cannot read an entry of backup payload {}",
+                    payload.display()
+                ),
+            )
+            .with_source(error)
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return Err(Error::from(setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                "a backup payload entry has an unrepresentable name",
+            )));
+        };
+        if entry.path().is_dir() {
+            found.extend(files_under(&entry.path(), &name)?);
+        } else {
+            found.push(name);
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// The backup a restore names, or the newest when it names none.
@@ -1884,7 +1984,14 @@ fn replace_recorded_from(
         let destination = target.root().join(&name);
         if source.is_dir() {
             setup_core::backup::copy_tree(&source, &destination, &[])?;
-            written.extend(files_under(&destination, &name)?);
+            // The destination is deliberately a merge: it may contain files
+            // another provider or the person owns. Reading it back here made
+            // those neighbours part of this provider's `written_paths`, so
+            // status widened after a restore and no longer matched the exact
+            // BackupRef identity promised by the plan. The slot payload is the
+            // complete record of what this provider restored; derive the
+            // inventory from it and only it.
+            written.extend(files_under(&source, &name)?);
         } else {
             let bytes = fs::read(&source).map_err(|error| {
                 setup_core::Error::new(
@@ -3142,6 +3249,10 @@ mod tests {
         .unwrap();
 
         let planned = scoped_plan(&target, "restore", "operation_01SCOPEDR");
+        let promised = planned["plan"]["restore_target_digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let done = scoped_apply(&target, &planned, "res-restore");
         assert_eq!(done["state"], "verified", "{done}");
         assert_eq!(
@@ -3153,6 +3264,11 @@ mod tests {
             fs::read_to_string(theirs.join("SKILL.md")).unwrap(),
             "after\n",
             "the restore reverted a file this provider never wrote"
+        );
+        let status = run(args("status", &target, &["--target-scope", "user_root"]));
+        assert_eq!(
+            status["target_digest"], promised,
+            "restore produced bytes different from its BackupRef-bound promise"
         );
     }
 
@@ -3270,7 +3386,12 @@ mod tests {
     /// a global one, and the first version of these three could not.
     fn install_scoped(target: &Path, tag: &str, name: &str, body: &str) {
         let relative = format!("shared/{name}/SKILL.md");
-        let (bytes, bundle_digest, artifact) = bundle_bytes(&[(&relative, body, 0o644)]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &TEST,
+            Some(provider_v3::TargetScope::UserRoot),
+            &[(&relative, body, 0o644)],
+            Some("skill"),
+        );
         let artifact_path = target.join("..").join(format!("scoped-{tag}.zip"));
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
@@ -3405,7 +3526,7 @@ mod tests {
             &flags.iter().map(String::as_str).collect::<Vec<_>>(),
         ));
         assert_eq!(answer["rejected"], true, "{answer}");
-        assert_eq!(answer["reason"], "unsupported_component_kind");
+        assert_eq!(answer["reason"], "adaptation_binding_mismatch");
 
         // A kind this harness does implement still passes.
         let (bytes, digest, artifact) =
@@ -3876,9 +3997,9 @@ mod tests {
     /// asserts the current behaviour and either closes the issue with evidence
     /// or names the field still missing.
     #[test]
-    fn an_empty_setup_version_records_everything_a_populated_one_does() {
+    fn a_zero_byte_setup_version_records_everything_a_populated_one_does() {
         let target = seeded("empty-bundle");
-        let (bytes, bundle_digest, artifact) = bundle_bytes(&[]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes(&[("AGENTS.md", "", 0o644)]);
         let artifact_path = target.parent().unwrap().join("empty.zip");
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
@@ -4854,9 +4975,27 @@ mod tests {
         files: &[(&str, &str, u32)],
         kind: Option<&str>,
     ) -> (Vec<u8>, String, String) {
+        bundle_bytes_for(&TEST, None, files, kind)
+    }
+
+    /// A v2 bundle bound to the exact profile selected for one test scope.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture names every canonical v2 manifest and ZIP member in one place"
+    )]
+    fn bundle_bytes_for(
+        harness: &Harness,
+        scope: Option<provider_v3::TargetScope>,
+        files: &[(&str, &str, u32)],
+        kind: Option<&str>,
+    ) -> (Vec<u8>, String, String) {
         use provider_v3::bundle::{BUNDLE_DOMAIN, FILES_PREFIX, MANIFEST_MEMBER, REQUIRED_MEMBERS};
         use provider_v3::zip::build::{Entry, write};
 
+        let owner = "component_00000000000000000000000000";
+        let mut member_paths = files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>();
+        member_paths.sort_unstable();
+        let profile = harness.projection_profile_for(scope).unwrap();
         let records: Vec<serde_json::Value> = files
             .iter()
             .map(|(path, body, mode)| {
@@ -4866,17 +5005,35 @@ mod tests {
                     "digest": setup_core::digest::of_bytes(body.as_bytes()),
                     "byte_length": body.len(),
                     "mode": mode,
-                    "owner": "",
+                    "owner": owner,
                 })
             })
             .collect();
         let mut manifest = serde_json::json!({
             "schema_version": 1,
-            "bundle_format": "ai-stp-bundle/1",
+            "bundle_format": provider_v3::bundle::BUNDLE_FORMAT,
             "protocol_version": provider_v3::bundle::BUNDLE_PROTOCOL_VERSION,
-            "harness_id": TEST.harness_id,
+            "harness_id": harness.harness_id,
             "builder_version": "0.1.0",
             "input_digest": "sha256:".to_owned() + &"3".repeat(64),
+            "projection_profile": {
+                "profile_id": profile.profile_id,
+                "profile_digest": profile.digest,
+                "target_scope": scope.map_or("global", provider_v3::TargetScope::as_str),
+            },
+            "component_adaptations": [{
+                "stable_id": owner,
+                "version": "1.0",
+                "passport_digest": "sha256:".to_owned() + &"1".repeat(64),
+                "adaptation_id": "adaptation_".to_owned() + &"2".repeat(64),
+                "projection_artifact": {
+                    "digest": "sha256:".to_owned() + &"3".repeat(64),
+                    "size_bytes": 128,
+                },
+                "provider_component_kind": kind.unwrap_or("instruction"),
+                "projection_kind": "native_files",
+                "member_paths": member_paths,
+            }],
             "managed_paths": files.iter().map(|(path, _, _)| *path).collect::<Vec<_>>(),
             "files": records,
             "limits": {
@@ -4885,11 +5042,14 @@ mod tests {
                 "max_bundle_bytes": 64 * 1024 * 1024,
             },
         });
+        if let Some(scope) = scope {
+            manifest["target_scope"] = serde_json::json!(scope.as_str());
+        }
         if let Some(kind) = kind {
             manifest["conversion_report"] = serde_json::json!({
                 "complete": true,
                 "entries": [{
-                    "stable_id": "component_00000000000000000000000000",
+                    "stable_id": owner,
                     "component_type": kind,
                     "native_surface": files.first().map_or("", |(path, _, _)| path),
                     "state": "complete",
@@ -4914,7 +5074,7 @@ mod tests {
                 serde_json::to_vec(&serde_json::json!({
                     "stable_id": "setup_00000000000000000000000000",
                     "version": "3.1.0",
-                    "harness_id": TEST.harness_id,
+                    "harness_id": harness.harness_id,
                 }))
                 .unwrap()
             } else {
@@ -4943,7 +5103,7 @@ mod tests {
             "--bundle".to_owned(),
             path.to_string_lossy().into_owned(),
             "--bundle-format".to_owned(),
-            "ai-stp-bundle/1".to_owned(),
+            provider_v3::bundle::BUNDLE_FORMAT.to_owned(),
             "--bundle-digest".to_owned(),
             bundle_digest.to_owned(),
             "--artifact-digest".to_owned(),
@@ -5147,7 +5307,17 @@ mod tests {
         files: &[(&str, &str, u32)],
         scope: Option<&str>,
     ) -> (serde_json::Value, Vec<String>) {
-        let (bytes, bundle_digest, artifact) = bundle_bytes(files);
+        let target_scope = scope.and_then(provider_v3::TargetScope::parse);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &TEST,
+            target_scope,
+            files,
+            Some(if target_scope.is_some() {
+                "skill"
+            } else {
+                "setting"
+            }),
+        );
         let artifact_path = target.join("..").join(format!("keep-{tag}.zip"));
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
@@ -5418,8 +5588,12 @@ mod tests {
         fs::write(workspace.join("README.md"), "# theirs\n").unwrap();
 
         let before = run_for(&harness, args("status", &workspace, &[]));
-        let (bytes, bundle_digest, artifact) =
-            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &harness,
+            Some(provider_v3::TargetScope::Project),
+            &[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)],
+            Some("skill"),
+        );
         let artifact_path = workspace.join("..").join("project.zip");
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
@@ -5518,8 +5692,12 @@ mod tests {
             unasked["target_digest"], asked["target_digest"],
             "the global set hashes the repository's skills/; the project set has no record and nothing of ours"
         );
-        let (bytes, bundle_digest, artifact) =
-            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &harness,
+            Some(provider_v3::TargetScope::Project),
+            &[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)],
+            Some("skill"),
+        );
         let artifact_path = workspace.join("..").join("asked.zip");
         fs::write(&artifact_path, &bytes).unwrap();
         let mut plan_args = vec![
@@ -5567,8 +5745,12 @@ mod tests {
         let harness = project_shaped();
         let workspace = scratch("project-scope-contradiction").join("workspace");
         fs::create_dir_all(&workspace).unwrap();
-        let (bytes, bundle_digest, artifact) =
-            bundle_bytes(&[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &harness,
+            Some(provider_v3::TargetScope::Project),
+            &[(".cursor/skills/probe/SKILL.md", "probe\n", 0o644)],
+            Some("skill"),
+        );
         let artifact_path = workspace.join("..").join("contra.zip");
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
@@ -5654,7 +5836,9 @@ mod tests {
             provider_v3::ComponentKind::Setting,
         ];
         let target = seeded("scoped-only-kind");
-        let (bytes, bundle_digest, artifact) = bundle_bytes_declaring(
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &harness,
+            Some(provider_v3::TargetScope::UserRoot),
             &[("shared/probe/SKILL.md", "probe\n", 0o644)],
             Some("skill"),
         );
@@ -5707,9 +5891,11 @@ mod tests {
         ));
         let borrowed: Vec<&str> = global.iter().map(String::as_str).collect();
         let error = refuse_for(&harness, args("plan-operation", &target, &borrowed));
-        assert_eq!(error.reason(), Some(WireReason::UnsupportedComponentKind));
+        assert_eq!(error.reason(), Some(WireReason::ProjectionProfileMismatch));
         assert!(
-            error.detail().contains("at the global profile"),
+            error
+                .detail()
+                .contains("different provider projection profile"),
             "{}",
             error.detail()
         );
@@ -5964,8 +6150,12 @@ mod tests {
     #[test]
     fn a_bundle_routed_to_a_scope_installs_into_that_scopes_namespace() {
         let target = seeded("bundle-scoped");
-        let (bytes, bundle_digest, artifact) =
-            bundle_bytes(&[("shared/review/SKILL.md", "# review\n", 0o644)]);
+        let (bytes, bundle_digest, artifact) = bundle_bytes_for(
+            &TEST,
+            Some(provider_v3::TargetScope::UserRoot),
+            &[("shared/review/SKILL.md", "# review\n", 0o644)],
+            Some("skill"),
+        );
         let artifact_path = target.join("..").join("scoped-bundle.zip");
         fs::write(&artifact_path, &bytes).unwrap();
         let flags = bundle_flags(&artifact_path, &bundle_digest, &artifact, bytes.len());
