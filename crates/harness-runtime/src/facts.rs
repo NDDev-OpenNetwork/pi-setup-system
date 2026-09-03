@@ -316,7 +316,7 @@ pub struct Foreign {
 pub const BACKUP_SLOTS: usize = 10;
 
 /// The bundle format every setup system reads.
-pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/1";
+pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/2";
 
 impl Harness {
     /// Whether one relative path falls inside a namespace this harness claims.
