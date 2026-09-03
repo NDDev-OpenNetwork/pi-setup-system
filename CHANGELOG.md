@@ -20,6 +20,21 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.60] - 2026-09-03
+
+Provider profiles are adaptation-bound and accept only
+`ai-stp-bundle/2`. Claude and Codex add evidence-backed project profiles;
+scoped restore derives its inventory and promised digest from the exact
+BackupRef payload without adopting neighbouring files. Vendor pins move to the
+current seven-product set, Grok Build gains its current monitoring/background
+workflow, and every generated nddev-builder is synchronized with the measured
+native surfaces.
+
+The same source now produces a self-contained crates.io package whose name
+matches this repository, PyPI distribution and executable. Packaging, local
+installation and provider-info execution are release gates; later publications
+use short-lived crates.io OIDC credentials.
+
 ## [0.0.59] - 2026-09-03
 
 Public output no longer names the private authoring topology. The
