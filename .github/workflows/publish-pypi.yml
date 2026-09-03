@@ -3,12 +3,20 @@ name: publish-pypi
 # A second way to reach the same bytes. The release is the trusted path; this
 # is convenience, and it says so in the package metadata.
 #
-# All seven projects and their trusted publishers exist. A published GitHub
-# release is now the one event that starts both delivery paths.
+# All seven projects and their trusted publishers exist. The ordinary path
+# starts from the same immutable tag as the release workflow; workflow_dispatch
+# is only recovery for a release whose follow-up did not run.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing release tag to backfill
+        required: true
+        type: string
 
 permissions: {}
 
@@ -16,7 +24,7 @@ permissions: {}
 # the same wheels and meet PyPI's refusal to overwrite a file, which is the
 # right refusal in the wrong place: better to queue than to race.
 concurrency:
-  group: publish-pypi-${{ github.event.release.tag_name }}
+  group: publish-pypi-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -35,16 +43,30 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Take the release assets this tag published
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          mkdir -p assets
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          # The release workflow starts from the same tag. It may finish after
+          # this job reaches the download, so wait for the complete seven-file
+          # release rather than racing it or accepting a partial upload.
+          for attempt in $(seq 1 40); do
+            rm -rf assets
+            mkdir -p assets
+            if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets 2>/dev/null               && test "$(find assets -type f | wc -l)" -eq 7; then
+              break
+            fi
+            if [ "$attempt" -eq 40 ]; then
+              echo "release $TAG did not publish seven assets within 20 minutes" >&2
+              exit 1
+            fi
+            sleep 30
+          done
           # Six binaries and a checksum file, or the release is not one this
           # can pack. Named here rather than discovered, so a partial release
           # stops the job instead of publishing five platforms out of six.
@@ -58,7 +80,7 @@ jobs:
 
       - name: Build one wheel per platform
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           python3 tools/build_wheels.py --self-check
