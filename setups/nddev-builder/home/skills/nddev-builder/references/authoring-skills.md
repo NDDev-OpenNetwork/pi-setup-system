@@ -35,7 +35,7 @@ Generated from the same rows as the section above, for every harness in this est
 | `description` | yes | yes | **required** | **required** | **required** | **required** |
 | `argument-hint` | yes | yes | — | — | — | — |
 | `arguments` | yes | — | — | — | — | — |
-| `allowed-tools` | yes | yes | yes | — | — | — |
+| `allowed-tools` | yes | **dropped** | yes | — | — | — |
 | `disallowed-tools` | yes | — | — | — | — | — |
 | `disable-model-invocation` | yes | yes | yes | — | yes | — |
 | `user-invocable` | yes | yes | — | — | — | — |
