@@ -3,8 +3,8 @@
 ## Which repository you are in decides what you can run
 
 This setup ships in two places and the commands below exist in only one of them.
-**They belong to the private authoring monorepo, `NDDev-it-com/setup-systems`,
-which renders this public tree.** A checkout of this public repository carries
+**They belong to the source workspace that publishes this public tree.** A
+checkout of this public repository carries
 `crates/`, `setups/`, `references/` and `scripts/evidence.py` -- and neither
 `scripts/gate.sh` nor `tools/`.
 
