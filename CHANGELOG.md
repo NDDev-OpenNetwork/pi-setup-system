@@ -20,6 +20,20 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.61] - 2026-09-04
+
+Installed nddev-builder toolkits now name only validation commands
+available in their rendered public repository. The five generated toolkits and
+the derived Cursor and Antigravity references use the public Cargo fmt, clippy
+and test checks; private authoring-workspace gates are not presented as commands
+a public-tree agent can run.
+
+Codex software pins move to 0.153.1 across all six platform artifacts. Grok
+Build 1.0.18 skill metadata is aligned with the current product: allowed-tools
+is descriptive rather than a permission grant, and user-root command Markdown
+is discovered as a skill rather than a separate component kind. All seven
+catalogues are rebound to the resulting setup bytes.
+
 ## [0.0.60] - 2026-09-03
 
 Provider profiles are adaptation-bound and accept only
