@@ -20,6 +20,20 @@ sibling project the same week this note was added.
 
 ## [Unreleased]
 
+## [0.0.59] - 2026-09-03
+
+Public output no longer names the private authoring topology. The
+publisher generates repository-local commit and pull-request text, then scans
+all seven rendered trees and both messages before the first push. The scanner
+also found six builder references carrying the same coordinate; their generated
+source now describes only the source workspace and tells a public reader to use
+the public repository's issues.
+
+The boundary has a mutation control: it plants a private coordinate assembled
+from fragments and requires the scanner to refuse it, while the scanner and
+public policy never contain the forbidden literal themselves. Historical
+commits remain immutable and untouched.
+
 ## [0.0.58] - 2026-09-02
 
 A removal answers three ways when nothing records what this build
