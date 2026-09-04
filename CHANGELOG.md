@@ -15,6 +15,16 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.65] - 2026-09-04
+
+nddev-builder validation names the checks this tree actually runs:
+cargo fmt, clippy and test, a lifecycle smoke against a disposable
+target, and consumer conformance whose harness id is read from
+provider-info. The Codex builder role carries that validation inline,
+because this product scans no reference directory. Six catalogues are
+rebound to those bytes. Cursor is unchanged: its hand-written
+validation page already named the smoke.
+
 ## [0.0.64] - 2026-09-04
 
 Software pins move to the versions the vendors publish today:
