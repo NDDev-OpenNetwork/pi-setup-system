@@ -213,11 +213,11 @@ other file beside a target.
 
 **`managed-config`** -- Not a path in the target, and recorded because **there is no such path** -- an absence somebody has to measure once so the next reader does not spend the search again. Four of the seven harnesses here carry a system-wide managed policy that overrides everything a user writes; this product carries none.
 
-Measured 2026-08-29 against the pinned 0.84.4 package, whose bytes match this baseline's own sha256. Searched for the three shapes the other four use -- an `/etc/<product>` literal, a `%ProgramData%\\<product>` literal, and a `/Library/Application Support/<product>` literal -- across the whole of `dist/`. Zero hits of any kind. The product's own shipped `docs/settings.md` agrees by omission: it documents exactly two locations, `~/.pi/agent/settings.json` global and `.pi/settings.json` per project, with project overriding global and nothing above either.
+Measured 2026-08-29 against the 0.84.4 package, whose bytes match this baseline's own sha256. Searched for the three shapes the other four use -- an `/etc/<product>` literal, a `%ProgramData%\\<product>` literal, and a `/Library/Application Support/<product>` literal -- across the whole of `dist/`. Zero hits of any kind. The product's own shipped `docs/settings.md` agrees by omission: it documents exactly two locations, `~/.pi/agent/settings.json` global and `.pi/settings.json` per project, with project overriding global and nothing above either.
 
 **What that means for the `full-auto` posture**: nothing sits above it. On the four harnesses with a managed layer, a permissive posture can install, verify and restore cleanly while an administrator's policy quietly overrides it. Here the keys this provider writes are the last word, which is a stronger statement than it looks and is the reason the absence is worth recording rather than leaving as a gap in the table.
 
-Absence of a literal is not proof a path cannot exist -- a future release may add one -- so this row says what was searched rather than that none will ever exist. (measured in the pinned 0.84.4 package; docs/settings.md shipped inside it)
+Absence of a literal is not proof a path cannot exist -- a future release may add one -- so this row says what was searched rather than that none will ever exist. (measured in the 0.84.4 package; docs/settings.md shipped inside it)
 
 **`models-store.json`** -- A cache of remote model catalogs, persisted so a later run can restore them without a network request, refreshed on a four-hour throttle. A cache the product regenerates is never a configuration surface. (measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs)
 
@@ -235,7 +235,7 @@ Never owned. It is a security decision a person made, not configuration a setup 
 
 **`working-directories`** -- One row for `git`, `npm` and `tmp`, joined against the agent directory. Scratch space the product manages for its own operations. (measured from the 0.84.3 bundle, package/dist/core)
 
-**`mcp_config.json`** -- **The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the pinned 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…"*
+**`mcp_config.json`** -- **The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…"*
 
 So there is no MCP surface at any scope, and the capability arrives through `extensions/`, which this provider owns and routes as `plugin`. A stated absence is worth more than a missing file: it says the next release will not quietly add one under a name nobody guessed. (the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage)
 

@@ -15,6 +15,17 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.64] - 2026-09-04
+
+Software pins move to the versions the vendors publish today:
+Claude Code 2.1.260, Codex 0.153.2, Pi 0.85.0 and Antigravity CLI 1.1.26.
+Grok Build 1.0.18, OpenCode 1.18.27 and Cursor 2026.09.02-c22c1a3 are
+unchanged. Four catalogues are rebound to those bytes.
+
+nddev-builder authoring for Claude Code names the plugin manifest fields
+the vendor's current schema actually carries, and records that a
+plugin-shipped agent drops hooks, MCP servers and permissionMode.
+
 ## [0.0.63] - 2026-09-04
 
 Public trees name only their own provider. The AppContainer probe and
