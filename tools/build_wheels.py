@@ -207,7 +207,7 @@ def wheel_bytes(
     wheel = "\n".join(
         [
             "Wheel-Version: 1.0",
-            f"Generator: nddev-setup-systems {version}",
+            f"Generator: {distribution} {version}",
             "Root-Is-Purelib: false",
             f"Tag: py3-none-{tag}",
             "",
