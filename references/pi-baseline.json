@@ -9,11 +9,11 @@
   },
   "package": {
     "name": "@earendil-works/pi-coding-agent",
-    "version": "0.84.4",
+    "version": "0.85.0",
     "registry": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent",
-    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.4.tgz",
-    "integrity": "sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w==",
-    "shasum": "3a2f04bfc5e463b4cfa36b174a586d11a0bdf9ad",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.85.0.tgz",
+    "integrity": "sha512-INxVkLAVfAMju5MojJpmyu/0bMP+r+ffZuS7UqVv32E2JwHBRbcHfELDfmFNvapEbgYfKN2r9OYO1p3TqDBR+g==",
+    "shasum": "063fab0fe6d5f6654e09b479e95dd5e2359824c4",
     "node": ">=22.19.0",
     "repository_directory": "packages/coding-agent",
     "note": "**This block describes the npm distribution, which this provider no longer installs.** It is kept because it is a true and useful record of the product -- `bin.pi`, `engines.node`, the registry tarball and its integrity -- and because the version it names is the one the standalone release carries. `node: >=22.19.0` is a requirement of *that* distribution: the artifacts installed here carry their own runtime, and the whole lifecycle was measured 2026-08-31 with `node` absent from `PATH`."
@@ -25,7 +25,7 @@
         "pi",
         "--version"
       ],
-      "expected_stdout": "0.84.4",
+      "expected_stdout": "0.85.0",
       "package_version_source": "package.version",
       "independent_package_identity_required": true
     },
@@ -189,7 +189,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-09-03T14:08:27+00:00",
+  "verified_at": "2026-09-04T13:31:46+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
@@ -210,7 +210,7 @@
         "shape": "file",
         "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
         "evidence": "bytes",
-        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the pinned 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
+        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
         "path": "SYSTEM.md",
@@ -218,7 +218,7 @@
         "shape": "file",
         "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
         "evidence": "bytes",
-        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the pinned 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
+        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
         "path": "extensions",
@@ -305,8 +305,8 @@
       },
       {
         "path": "managed-config",
-        "reason": "Not a path in the target, and recorded because **there is no such path** -- an absence somebody has to measure once so the next reader does not spend the search again. Four of the seven harnesses here carry a system-wide managed policy that overrides everything a user writes; this product carries none.\n\nMeasured 2026-08-29 against the pinned 0.84.4 package, whose bytes match this baseline's own sha256. Searched for the three shapes the other four use -- an `/etc/<product>` literal, a `%ProgramData%\\\\<product>` literal, and a `/Library/Application Support/<product>` literal -- across the whole of `dist/`. Zero hits of any kind. The product's own shipped `docs/settings.md` agrees by omission: it documents exactly two locations, `~/.pi/agent/settings.json` global and `.pi/settings.json` per project, with project overriding global and nothing above either.\n\n**What that means for the `full-auto` posture**: nothing sits above it. On the four harnesses with a managed layer, a permissive posture can install, verify and restore cleanly while an administrator's policy quietly overrides it. Here the keys this provider writes are the last word, which is a stronger statement than it looks and is the reason the absence is worth recording rather than leaving as a gap in the table.\n\nAbsence of a literal is not proof a path cannot exist -- a future release may add one -- so this row says what was searched rather than that none will ever exist.",
-        "source": "measured in the pinned 0.84.4 package; docs/settings.md shipped inside it"
+        "reason": "Not a path in the target, and recorded because **there is no such path** -- an absence somebody has to measure once so the next reader does not spend the search again. Four of the seven harnesses here carry a system-wide managed policy that overrides everything a user writes; this product carries none.\n\nMeasured 2026-08-29 against the 0.84.4 package, whose bytes match this baseline's own sha256. Searched for the three shapes the other four use -- an `/etc/<product>` literal, a `%ProgramData%\\\\<product>` literal, and a `/Library/Application Support/<product>` literal -- across the whole of `dist/`. Zero hits of any kind. The product's own shipped `docs/settings.md` agrees by omission: it documents exactly two locations, `~/.pi/agent/settings.json` global and `.pi/settings.json` per project, with project overriding global and nothing above either.\n\n**What that means for the `full-auto` posture**: nothing sits above it. On the four harnesses with a managed layer, a permissive posture can install, verify and restore cleanly while an administrator's policy quietly overrides it. Here the keys this provider writes are the last word, which is a stronger statement than it looks and is the reason the absence is worth recording rather than leaving as a gap in the table.\n\nAbsence of a literal is not proof a path cannot exist -- a future release may add one -- so this row says what was searched rather than that none will ever exist.",
+        "source": "measured in the 0.84.4 package; docs/settings.md shipped inside it"
       },
       {
         "path": "models-store.json",
@@ -350,7 +350,7 @@
       },
       {
         "path": "mcp_config.json",
-        "reason": "**The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the pinned 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *\"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…\"*\n\nSo there is no MCP surface at any scope, and the capability arrives through `extensions/`, which this provider owns and routes as `plugin`. A stated absence is worth more than a missing file: it says the next release will not quietly add one under a name nobody guessed.",
+        "reason": "**The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *\"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…\"*\n\nSo there is no MCP surface at any scope, and the capability arrives through `extensions/`, which this provider owns and routes as `plugin`. A stated absence is worth more than a missing file: it says the next release will not quietly add one under a name nobody guessed.",
         "source": "the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage"
       },
       {
@@ -402,6 +402,54 @@
     "shape": "gzip-tar",
     "platforms": {
       "linux/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-linux-arm64.tar.gz",
+        "bytes": 42774976,
+        "sha256": "sha256:821750e0ac6bf6e10c35b93ddab88a44f2d0ef8411af9ea4e8ffe620f62130df",
+        "member": "pi/pi"
+      },
+      "linux/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-linux-x64.tar.gz",
+        "bytes": 42708859,
+        "sha256": "sha256:a7e7c65f1dc528d2e17e7d946ad2b61df0e2b0f9952faee77807c2484b464d6e",
+        "member": "pi/pi"
+      },
+      "macos/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-darwin-arm64.tar.gz",
+        "bytes": 31183100,
+        "sha256": "sha256:b0a1a3ab9708047e31b76a27911e8b445b3e4a38e2f46a08b6635df75f3499c0",
+        "member": "pi/pi"
+      },
+      "macos/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-darwin-x64.tar.gz",
+        "bytes": 33687389,
+        "sha256": "sha256:611290e032a47f1546bd30e12c14a59a600a24662d5239c0c159ef3c7a0ca3b0",
+        "member": "pi/pi"
+      },
+      "windows/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-windows-arm64.zip",
+        "bytes": 43703991,
+        "sha256": "sha256:c10fb6f30f188b1eba61608e0d33453456ee9805ff543fdd99bcaf85f2d949df",
+        "shape": "zip",
+        "member": "pi.exe"
+      },
+      "windows/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-windows-x64.zip",
+        "bytes": 45158082,
+        "sha256": "sha256:526085e0206acb8e8f9997efcd4e3654fb8a47a04318e09e7324ed5abe549586",
+        "shape": "zip",
+        "member": "pi.exe"
+      }
+    },
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
+    "version": "0.85.0",
+    "verified_at": "2026-09-04T13:31:46+00:00"
+  },
+  "setup_catalogue_digest": "sha256:634257b184d88924749346234a3698a33b93b06ba31407f25151fe6a17bbfb1b",
+  "previous_software_artifacts": {
+    "command": "pi",
+    "shape": "gzip-tar",
+    "platforms": {
+      "linux/arm64": {
         "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-arm64.tar.gz",
         "bytes": 42529658,
         "sha256": "sha256:135580f6b942151646e67b8b866d987d28ce3cff5a497030775ddd29659f943d",
@@ -443,53 +491,6 @@
     "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
     "version": "0.84.4",
     "verified_at": "2026-09-03T14:08:27+00:00"
-  },
-  "setup_catalogue_digest": "sha256:99af2daafe2d6623a111c0c5ddb44adfcf1c5533b9200e383e5a8025950e7086",
-  "previous_software_artifacts": {
-    "command": "pi",
-    "shape": "gzip-tar",
-    "version": "0.84.3",
-    "verified_at": "2026-08-30T22:44:15+00:00",
-    "platforms": {
-      "linux/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-linux-arm64.tar.gz",
-        "bytes": 42521548,
-        "sha256": "sha256:e7cd48cd6f64b708e8459a890882b1007332f6e6b876fe1fd5c5203abd0addb7",
-        "member": "pi/pi"
-      },
-      "linux/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-linux-x64.tar.gz",
-        "bytes": 42458773,
-        "sha256": "sha256:6f8bb67c21bc6b8a8a106d354f56d7fd4a190a3cd8ad3a32db45f6d281a5d008",
-        "member": "pi/pi"
-      },
-      "macos/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-darwin-arm64.tar.gz",
-        "bytes": 30919980,
-        "sha256": "sha256:0120c9f99ea05fe801e6e7c2c9d91dd65636563ca0803711b37b9f32920d4b63",
-        "member": "pi/pi"
-      },
-      "macos/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-darwin-x64.tar.gz",
-        "bytes": 33434213,
-        "sha256": "sha256:b99706b3254faaf3695395ecb69cb7e1f4d4822bd3f832e6d1f2636d896b6bde",
-        "member": "pi/pi"
-      },
-      "windows/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-windows-arm64.zip",
-        "bytes": 43448675,
-        "sha256": "sha256:d0f28a5bbeddcaee25fb7f4d8c70917d2c287d02b815614382aac9ac55a8fe39",
-        "shape": "zip",
-        "member": "pi.exe"
-      },
-      "windows/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.3/pi-windows-x64.zip",
-        "bytes": 44900235,
-        "sha256": "sha256:636a56f546c8bb1f2cb327964b7afbd9302efcd45c1704922a097cd8bd935fb9",
-        "shape": "zip",
-        "member": "pi.exe"
-      }
-    }
   },
   "surface_presence": {
     "measured_at": "2026-09-02",
