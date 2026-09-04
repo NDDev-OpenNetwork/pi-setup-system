@@ -15,6 +15,14 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.62] - 2026-09-04
+
+Installed nddev-builder references name provenance against this
+repository's baseline and the vendor reference. Schema checking is
+described without a script path this clone does not carry.
+Six catalogues are rebound to those bytes. Codex is unchanged: its
+toolkit does not carry those generated references.
+
 ## [0.0.61] - 2026-09-04
 
 Installed nddev-builder toolkits now name only validation commands
