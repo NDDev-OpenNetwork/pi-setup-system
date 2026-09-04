@@ -4,9 +4,15 @@ on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing release tag to backfill
+        required: true
+        type: string
 
 concurrency:
-  group: publish-crates-${{ github.ref }}
+  group: publish-crates-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -23,20 +29,22 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          ref: ${{ inputs.tag || github.sha }}
           persist-credentials: false
 
       - name: Build the self-contained crate
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          CRATES_OUT: ${{ runner.temp }}/crates-io
         run: |
           set -euo pipefail
           version="${TAG#v}"
           test "$version" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          python3 tools/build_crates_io.py --out crates-io --harness pi --version "$version"
-          cargo package --manifest-path crates-io/pi-setup-system/Cargo.toml
-          cargo install --path crates-io/pi-setup-system --root crates-io/install --locked
-          crates-io/install/bin/pi-setup-system provider-info > crates-io/provider-info.json
-          test "$(jq -r .provider_id crates-io/provider-info.json)" = "pi-setup-system"
+          python3 tools/build_crates_io.py --out "$CRATES_OUT" --harness pi --version "$version"
+          cargo package --manifest-path "$CRATES_OUT/pi-setup-system/Cargo.toml"
+          cargo install --path "$CRATES_OUT/pi-setup-system" --root "$CRATES_OUT/install" --locked
+          "$CRATES_OUT/install/bin/pi-setup-system" provider-info > "$CRATES_OUT/provider-info.json"
+          test "$(jq -r .provider_id "$CRATES_OUT/provider-info.json")" = "pi-setup-system"
 
       - name: Mint a short-lived crates.io token
         id: crates
@@ -45,4 +53,5 @@ jobs:
       - name: Publish pi-setup-system
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
-        run: cargo publish --manifest-path crates-io/pi-setup-system/Cargo.toml
+          CRATES_OUT: ${{ runner.temp }}/crates-io
+        run: cargo publish --manifest-path "$CRATES_OUT/pi-setup-system/Cargo.toml"
