@@ -3,21 +3,10 @@ name: appcontainer-probe
 # One experiment, not a gate. It answers a question two projects have carried as
 # permanent since 2026-08-26 without either of them running it.
 #
-# **It lives here rather than in the authoring workspace, and the reason is a
-# standing decision rather than a fault.** It was dispatched there twice -- on
-# 2026-08-28 and again on 2026-08-30 -- and both runs failed in four seconds
-# with **zero steps executed**: a startup failure, not a result.
-#
-# The cause was confirmed by the estate's own tooling session rather than
-# inferred here: a private `NDDev-it-com` repository cannot start a hosted job
-# at all, because the account's spending limit refuses it before any step runs.
-# Every other job in that workspace is on a self-hosted Linux fleet and this was
-# its only `windows-latest` one. So no amount of debugging it in place could
-# ever have produced an answer.
-#
-# These repositories are public, where `windows-latest` is free and green on
-# every commit, so here the runner is known to work and the question can
-# actually be asked.
+# Hosted Windows runners were unavailable on the first two attempts (both
+# exited in four seconds with zero steps). These public repositories run
+# `windows-latest` on every commit, so the runner is known to work here and
+# the question can actually be asked.
 #
 # **The shape is worth remembering past this workflow.** A red run in a list
 # reads as a result, and *failed*, *never ran* and *passed vacuously* all render

@@ -89,9 +89,9 @@ fn main() {
 
 /// Find the catalog, in whichever of the two layouts this crate is standing in.
 ///
-/// The authoring workspace holds one directory per harness (`setups/<tool>/`);
-/// a rendered public tree ships exactly one harness and holds it flat
-/// (`setups/`). Both sit two levels above the crate, so the only question is
+/// A workspace with one directory per harness uses `setups/<tool>/`;
+/// a tree that ships exactly one harness holds it flat (`setups/`).
+/// Both sit two levels above the crate, so the only question is
 /// whether the harness-scoped directory exists.
 fn locate(manifest: &Path) -> PathBuf {
     let tool = env!("CARGO_PKG_NAME")

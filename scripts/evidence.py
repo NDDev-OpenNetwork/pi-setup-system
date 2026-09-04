@@ -1031,10 +1031,10 @@ def main() -> int:
         return 1
 
     # The same rule, for the other absence. It was not here, and the rendered
-    # workflow's own check was carrying it alone: `render_public_trees.py`
-    # refuses a harness in neither `NO_PROBE_MEASURED` nor a probe command, so
-    # CI could not reach the gap. A hand invocation could, and did -- this file
-    # documents itself as runnable by hand, and run that way it printed
+    # workflow's own check was carrying it alone: the renderer refuses a harness
+    # in neither `NO_PROBE_MEASURED` nor a probe command, so CI could not reach
+    # the gap. A hand invocation could, and did -- this file documents itself
+    # as runnable by hand, and run that way it printed
     #
     #     reads -> not asked:
     #

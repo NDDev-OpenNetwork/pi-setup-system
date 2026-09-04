@@ -456,8 +456,7 @@ pub fn dangling_references(setups: &[Setup]) -> Vec<String> {
                 // Measured before writing it: across all 28 setups that rule
                 // flags **119** backticked paths, of which **117 are correct**.
                 // Prose here legitimately names repository paths a reader is
-                // told to open (`tools/build_nddev_builder.py`,
-                // `scripts/gate.sh`, `references/<harness>-baseline.json`) and
+                // told to open (`references/<harness>-baseline.json`) and
                 // product paths a setup deliberately does not ship
                 // (`config/hooks.json`, `plugins/installed_plugins.json`,
                 // `antigravity-cli/keybindings.json`). A guard with that ratio
@@ -690,9 +689,8 @@ pub fn stranded(setups: &[Setup]) -> Examined {
 /// backed up, restored, and read by nobody.
 ///
 /// **Written because a generator in this repository produced exactly that.**
-/// `tools/build_nddev_builder.py` wrote three references into a
-/// `skills/nddev-builder/` directory of a harness whose skill is called
-/// something else, and every other guard passed: the files are documents, so
+/// It wrote three references into a `skills/nddev-builder/` directory of a
+/// harness whose skill is called something else, and every other guard passed: the files are documents, so
 /// `unsourced` exempts them; there is no `SKILL.md`, so `undescribed` has
 /// nothing to check. The absence was invisible precisely because the thing that
 /// would have been checked was the thing missing.
