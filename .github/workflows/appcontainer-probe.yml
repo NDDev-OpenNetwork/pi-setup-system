@@ -101,7 +101,7 @@ jobs:
 
           $name = 'nddev-probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
           [IntPtr]$raw = [IntPtr]::Zero
-          $made = [P.Ac]::CreateAppContainerProfile($name, $name, 'setup-systems probe',
+          $made = [P.Ac]::CreateAppContainerProfile($name, $name, 'provider boundary probe',
                                                     [IntPtr]::Zero, 0, [ref]$raw)
           if ($made -ne 0) {
             # A profile this runner image will not create is itself the answer

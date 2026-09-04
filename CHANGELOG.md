@@ -15,6 +15,19 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.63] - 2026-09-04
+
+Public trees name only their own provider. The AppContainer probe and
+wheel metadata no longer carry the private workspace's project-family label,
+and the publication boundary refuses that bare label anywhere in current
+public output.
+
+Rendering requires the committed public repository-id map and never recovers
+identity from a destination checkout. Release verification reads all seven
+versions back from PyPI and crates.io, checks wheel completeness and yank
+state, then uses the released ai-stp consumer to auto-acquire the attested
+GitHub providers and run protocol-v3 conformance in temporary state.
+
 ## [0.0.62] - 2026-09-04
 
 Installed nddev-builder references name provenance against this
