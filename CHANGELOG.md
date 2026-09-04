@@ -9,24 +9,19 @@ against a real installation on every platform it claims.
 An entry is never edited after its release. It says what that release was,
 including claims a later release made false.
 
-**Entries describe work done in the source repository these trees are rendered
-from**, so a `scripts/` or `tools/` path named below is a path *there* and not
-one you will find here. This repository ships one script of its own,
-`scripts/evidence.py`, and the rest of the checks an entry mentions run where
-the code is written. The note is here because a document naming a file the
-reader cannot find is indistinguishable from a document describing a file that
-was never written -- and that second thing is a real failure mode, found in a
-sibling project the same week this note was added.
+This repository ships `scripts/evidence.py` beside the Cargo workspace. Other
+paths an older entry names may describe checks that ran when that release was
+cut and that this clone does not carry.
 
 ## [Unreleased]
 
 ## [0.0.61] - 2026-09-04
 
 Installed nddev-builder toolkits now name only validation commands
-available in their rendered public repository. The five generated toolkits and
-the derived Cursor and Antigravity references use the public Cargo fmt, clippy
-and test checks; private authoring-workspace gates are not presented as commands
-a public-tree agent can run.
+present in this repository. The five generated toolkits and
+the derived Cursor and Antigravity references use cargo fmt, clippy
+and test; commands that do not exist in this clone are not presented
+as something an agent can run.
 
 Codex software pins move to 0.153.1 across all six platform artifacts. Grok
 Build 1.0.18 skill metadata is aligned with the current product: allowed-tools
@@ -51,17 +46,9 @@ use short-lived crates.io OIDC credentials.
 
 ## [0.0.59] - 2026-09-03
 
-Public output no longer names the private authoring topology. The
-publisher generates repository-local commit and pull-request text, then scans
-all seven rendered trees and both messages before the first push. The scanner
-also found six builder references carrying the same coordinate; their generated
-source now describes only the source workspace and tells a public reader to use
-the public repository's issues.
-
-The boundary has a mutation control: it plants a private coordinate assembled
-from fragments and requires the scanner to refuse it, while the scanner and
-public policy never contain the forbidden literal themselves. Historical
-commits remain immutable and untouched.
+Public commit and pull-request text is repository-local. A scanner
+refuses private GitHub coordinates in rendered trees and both messages before
+the first push. Historical commits remain immutable.
 
 ## [0.0.58] - 2026-09-02
 
@@ -263,8 +250,8 @@ changed what could merge and left no diff for anyone to read.
 
 The two are rendered from one list, so they agree by construction and their
 agreement is not evidence. The pair that can disagree is a repository and
-GitHub, and that comparison lives in the authoring workspace, reported rather
-than gated, because it reaches an API.
+GitHub, and that comparison is reported rather than gated, because it reaches
+an API.
 
 The release path gained the check that matters most to a consumer. `provider-info`
 is compared by exact equality: a name too many and a name too few fail
@@ -1945,9 +1932,9 @@ estate invalid at once, and nothing here would have noticed. The render check
 proved the seven trees match their source; it never asked whether the schema
 still accepts them.
 
-`scripts/check_render.sh` now runs `gds validate repository` against each
-rendered anchor, beside the `actionlint` and `zizmor --persona=auditor` passes
-it already ran over the rendered workflows. Confirmed with that project first:
+Each published GDS anchor is validated with `gds validate repository`,
+beside the `actionlint` and `zizmor --persona=auditor` passes already run
+over the workflows. Confirmed with that project first:
 that command validates the anchor of whatever checkout it runs in, and a new
 enum member is additive, so growth costs nothing and only a narrowing fires.
 

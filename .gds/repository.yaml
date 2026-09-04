@@ -21,17 +21,6 @@ classification:
   data_classification: "public"
 
 relationships:
-  # Every file in this repository is rendered from the private authoring
-  # workspace by `tools/render_public_trees.py`; a hand edit here is overwritten
-  # by the next render. The relationship says so in the estate's own vocabulary
-  # rather than only in prose.
-  #
-  # **Declared the day the engine could accept it, and not before.** The member
-  # `generated-from` was merged after `gds-v0.7.0` was cut, so eight anchors
-  # carried the fact in English for days while the released binary answered
-  # `GDS_INSTANCE_INVALID`. Asked of the artifact rather than of a tag or a
-  # schema file in a source tree: `gds 0.8.0` accepts it and refuses an invented
-  # type by name, printing all nine members it does admit.
   - type: "generated-from"
     target: "repo_01M0QNDKCJ0K9XZHXVPCERB4XK"
 
