@@ -1,12 +1,12 @@
 ---
 name: nddev-builder
-description: Build, review or validate a Pi Coding Agent setup for pi-setup-system -- its owned surfaces, the components it carries, the lifecycle it performs, and the gate it must pass. Use when changing pi-setup-system or the native artifacts a setup writes.
+description: Build, review or validate a Pi Coding Agent setup for pi-setup-system -- its owned surfaces, the components it carries, the lifecycle it performs, and the checks it must pass. Use when changing pi-setup-system or the native artifacts a setup writes.
 ---
 
 # NDDev Builder
 
 The entry point for work on `pi-setup-system`. Keep changes
-target-explicit, reversible, and backed by the repository's own gate.
+target-explicit, reversible, and backed by this tree's checks.
 
 ## Workflow
 
@@ -23,14 +23,14 @@ target-explicit, reversible, and backed by the repository's own gate.
    directory; only running the product says what it is read *as*. Where a run is
    impossible, confirm at the line in the product's own code -- a path literal
    alone is not evidence that the path is used.
-5. **Run the gate**, and the render check too when the output could have moved.
-   See `references/validation.md`.
+5. **Run the checks in `references/validation.md`**, and report what each one
+   said rather than that it passed.
 
 ## Routing
 
 - **What this harness owns, declines, and why** — `references/surfaces.md`
 - **The commands, the invariants, and the software half** — `references/lifecycle.md`
-- **The gate, the render check, and the one rule** — `references/validation.md`
+- **The checks this tree's CI runs, a disposable lifecycle smoke, and the consumer** — `references/validation.md`
 - **Writing this harness's configuration file** — `references/authoring-settings.md`
 - **Writing this harness's instruction file** — `references/authoring-instructions.md`
 - **The second target this harness declares, and how a component reaches it** — `references/second-target.md`
