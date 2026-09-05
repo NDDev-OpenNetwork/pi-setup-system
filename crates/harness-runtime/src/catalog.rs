@@ -1775,9 +1775,9 @@ mod tests {
     /// may not. A planted ask/on-request/request-review setting in any standard
     /// variant must fail this test.
     ///
-    /// The authoring workspace nests `setups/{harness}/{variant}`. A public
-    /// tree is one harness and keeps `setups/{variant}` at the root. Counting
-    /// only the nested shape reported `found 0` on every rendered provider.
+    /// The shared source tree nests `setups/{harness}/{variant}`. A public
+    /// provider keeps `setups/{variant}` at the root. Counting only the nested
+    /// shape reported `found 0` on every rendered provider.
     #[test]
     fn standard_variants_share_autonomous_posture() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
