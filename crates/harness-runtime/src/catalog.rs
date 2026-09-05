@@ -1342,6 +1342,122 @@ fn count_files(root: &Path) -> Result<u64> {
     Ok(total)
 }
 
+/// Keys the pinned Antigravity CLI (1.1.22) was measured to recognise in
+/// `antigravity-cli/settings.json`. A setup may not grow a key that search of
+/// those bytes did not find — including `artifactReviewPolicy`, which vendor
+/// pages name for a different displayed CLI than this pin.
+pub const ANTIGRAVITY_MEASURED_SETTING_KEYS: &[&str] = &[
+    "toolPermission",
+    "enableTerminalSandbox",
+    "allowAgentAccessNonWorkspaceFiles",
+    "allowCascadeAccessGitignoreFiles",
+    "autoContinueOnMaxGeneratorInvocations",
+    "permissions",
+];
+
+/// Whether `config_home` is an autonomous execution posture for `harness_id`.
+///
+/// `config_home` is the directory `launch` would export as the product's
+/// configuration home — the catalog `home/` payload after it has been copied
+/// to `--target`. Empty means autonomous. Each line is one missing required
+/// marker or one leftover ask/on-request marker in the file that product
+/// reads from this home.
+#[must_use]
+pub fn effective_autonomy(harness_id: &str, config_home: &Path) -> Vec<String> {
+    let label = harness_id;
+    match harness_id {
+        "claude" => policy_markers(
+            label,
+            &config_home.join("settings.json"),
+            &[
+                r#""defaultMode": "bypassPermissions""#,
+                r#""enabled": false"#,
+            ],
+            &["on-request", r#""ask""#, "request-review"],
+        ),
+        "codex" => policy_markers(
+            label,
+            &config_home.join("config.toml"),
+            &[
+                r#"approval_policy = "never""#,
+                r#"sandbox_mode = "danger-full-access""#,
+            ],
+            &["on-request", "workspace-write"],
+        ),
+        "grok" => policy_markers(
+            label,
+            &config_home.join("config.toml"),
+            &[
+                r#"permission_mode = "always-approve""#,
+                "yolo = true",
+                r#"profile = "off""#,
+            ],
+            &["on-request", r#"permission_mode = "ask""#],
+        ),
+        "cursor" => policy_markers(
+            label,
+            &config_home.join("cli-config.json"),
+            &[r#""approvalMode": "unrestricted""#, r#""mode": "disabled""#],
+            &["on-request", r#""ask""#, "request-review"],
+        ),
+        "opencode" => policy_markers(
+            label,
+            &config_home.join("opencode.json"),
+            &[r#""*": "allow""#],
+            &[r#""ask""#],
+        ),
+        "pi" => policy_markers(
+            label,
+            &config_home.join("settings.json"),
+            &[r#""defaultProjectTrust": "always""#],
+            &[r#""ask""#],
+        ),
+        "antigravity" => policy_markers(
+            label,
+            &config_home.join("antigravity-cli/settings.json"),
+            &[
+                r#""toolPermission": "always-proceed""#,
+                r#""enableTerminalSandbox": false"#,
+            ],
+            &["request-review", "on-request"],
+        ),
+        other => vec![format!("{other}: unknown harness")],
+    }
+}
+
+fn policy_markers(label: &str, path: &Path, required: &[&str], forbidden: &[&str]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Ok(raw) = fs::read_to_string(path) else {
+        problems.push(format!("{label}: missing {}", path.display()));
+        return problems;
+    };
+    let text = if path.extension().is_some_and(|ext| ext == "toml") {
+        raw.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        raw
+    };
+    for marker in required {
+        if !text.contains(marker) {
+            problems.push(format!(
+                "{label}: {} does not contain {marker}",
+                path.display()
+            ));
+        }
+    }
+    for marker in forbidden {
+        if text.contains(marker) {
+            problems.push(format!(
+                "{label}: {} still contains {marker}",
+                path.display()
+            ));
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -1875,113 +1991,141 @@ mod tests {
     }
 
     fn autonomy_problems(harness: &str, variant_dir: &Path) -> Vec<String> {
-        let variant = variant_dir.file_name().unwrap().to_string_lossy();
-        let home = variant_dir.join(SETUP_PAYLOAD);
-        let label = format!("{harness}/{variant}");
+        effective_autonomy(harness, &variant_dir.join(SETUP_PAYLOAD))
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let dest = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &dest);
+            } else {
+                fs::copy(entry.path(), dest).unwrap();
+            }
+        }
+    }
+
+    /// Policy file under config home plus bytes that
+    /// [`effective_autonomy`] reports as leftover ask/on-request.
+    fn planted_ask_file(harness: &str) -> (&'static str, &'static [u8]) {
         match harness {
-            "claude" => json_autonomy(
-                &label,
-                &home.join("settings.json"),
-                &[
-                    r#""defaultMode": "bypassPermissions""#,
-                    r#""enabled": false"#,
-                ],
-                &["on-request", r#""ask""#, "request-review"],
+            "claude" => ("settings.json", br#"{"defaultMode":"ask"}"#),
+            "codex" => ("config.toml", b"approval_policy = \"on-request\"\n"),
+            "grok" => ("config.toml", b"permission_mode = \"ask\"\n"),
+            "cursor" => ("cli-config.json", br#"{"approvalMode":"ask"}"#),
+            "opencode" => ("opencode.json", br#"{"permission":{"*":"ask"}}"#),
+            "pi" => ("settings.json", br#"{"defaultProjectTrust":"ask"}"#),
+            "antigravity" => (
+                "antigravity-cli/settings.json",
+                br#"{"toolPermission":"request-review"}"#,
             ),
-            "codex" => text_autonomy(
-                &label,
-                &home.join("config.toml"),
-                &[
-                    r#"approval_policy = "never""#,
-                    r#"sandbox_mode = "danger-full-access""#,
-                ],
-                &["on-request", "workspace-write"],
-            ),
-            "grok" => text_autonomy(
-                &label,
-                &home.join("config.toml"),
-                &[
-                    r#"permission_mode = "always-approve""#,
-                    "yolo = true",
-                    r#"profile = "off""#,
-                ],
-                &["on-request", r#"permission_mode = "ask""#],
-            ),
-            "cursor" => json_autonomy(
-                &label,
-                &home.join("cli-config.json"),
-                &[r#""approvalMode": "unrestricted""#, r#""mode": "disabled""#],
-                &["on-request", r#""ask""#, "request-review"],
-            ),
-            "opencode" => json_autonomy(
-                &label,
-                &home.join("opencode.json"),
-                &[r#""*": "allow""#],
-                &[r#""ask""#],
-            ),
-            "pi" => json_autonomy(
-                &label,
-                &home.join("settings.json"),
-                &[r#""defaultProjectTrust": "always""#],
-                &[r#""ask""#],
-            ),
-            "antigravity" => json_autonomy(
-                &label,
-                &home.join("antigravity-cli/settings.json"),
-                &[
-                    r#""toolPermission": "always-proceed""#,
-                    r#""enableTerminalSandbox": false"#,
-                ],
-                &["request-review", "on-request"],
-            ),
-            other => vec![format!("{label}: unknown harness {other}")],
+            other => panic!("{other}: no planted-ask fixture"),
         }
     }
 
-    fn json_autonomy(
-        label: &str,
-        path: &Path,
-        required: &[&str],
-        forbidden: &[&str],
-    ) -> Vec<String> {
-        text_autonomy(label, path, required, forbidden)
+    fn write_planted_ask(home: &Path, harness: &str) {
+        let (relative, bytes) = planted_ask_file(harness);
+        let path = home.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, bytes).unwrap();
     }
 
-    fn text_autonomy(
-        label: &str,
-        path: &Path,
-        required: &[&str],
-        forbidden: &[&str],
-    ) -> Vec<String> {
-        let mut problems = Vec::new();
-        let Ok(raw) = fs::read_to_string(path) else {
-            problems.push(format!("{label}: missing {}", path.display()));
-            return problems;
-        };
-        let text = if path.extension().is_some_and(|ext| ext == "toml") {
-            raw.lines()
-                .filter(|line| !line.trim_start().starts_with('#'))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            raw
-        };
-        for marker in required {
-            if !text.contains(marker) {
-                problems.push(format!(
-                    "{label}: {} does not contain {marker}",
-                    path.display()
-                ));
-            }
+    /// The first full-auto payload this workspace actually ships.
+    ///
+    /// Authoring has seven harnesses; a public tree has one. Hard-coding
+    /// `opencode` panics on every rendered provider except opencode itself.
+    fn present_full_auto() -> (String, PathBuf) {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let harnesses = harnesses_in_workspace(&workspace);
+        let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
+        rows.into_iter()
+            .find(|(_, dir)| dir.file_name().is_some_and(|leaf| leaf == "full-auto"))
+            .map_or_else(
+                || panic!("no full-auto home among {harnesses:?}"),
+                |(name, dir)| (name, dir.join(SETUP_PAYLOAD)),
+            )
+    }
+
+    /// Catalog `home/` is the payload copied to `--target`. `launch` then
+    /// exports that target as the product config home. Measuring a different
+    /// directory must not be reported as the launched posture.
+    #[test]
+    fn effective_autonomy_is_the_launched_config_home_not_a_decoy() {
+        let (harness, full_auto) = present_full_auto();
+        let launched = scratch("launched-config-home");
+        copy_tree(&full_auto, &launched);
+        assert!(
+            effective_autonomy(&harness, &launched).is_empty(),
+            "copied {harness} full-auto home was not autonomous: {:?}",
+            effective_autonomy(&harness, &launched)
+        );
+
+        let decoy = scratch("decoy-config-home");
+        write_planted_ask(&decoy, &harness);
+        let decoy_problems = effective_autonomy(&harness, &decoy);
+        assert!(
+            decoy_problems
+                .iter()
+                .any(|line| line.contains("still contains")),
+            "decoy ask was not reported as leftover policy: {decoy_problems:?}"
+        );
+        assert!(
+            effective_autonomy(&harness, &launched).is_empty(),
+            "decoy taint leaked into the launched home"
+        );
+
+        write_planted_ask(&launched, &harness);
+        let overwritten = effective_autonomy(&harness, &launched);
+        assert!(
+            overwritten
+                .iter()
+                .any(|line| line.contains("still contains")),
+            "overwriting the launched policy file did not fail: {overwritten:?}"
+        );
+    }
+
+    #[test]
+    fn antigravity_settings_only_use_keys_measured_in_the_pin() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let harnesses = harnesses_in_workspace(&workspace);
+        if !harnesses.iter().any(|name| name == "antigravity") {
+            // Public tree for another product. The pin-key contract still
+            // runs in authoring and in the antigravity public tree.
+            return;
         }
-        for marker in forbidden {
-            if text.contains(marker) {
-                problems.push(format!(
-                    "{label}: {} still contains {marker}",
-                    path.display()
-                ));
+        let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
+        let mut seen = 0;
+        for (harness, variant_dir) in rows {
+            if harness != "antigravity" {
+                continue;
             }
+            seen += 1;
+            let path = variant_dir
+                .join(SETUP_PAYLOAD)
+                .join("antigravity-cli/settings.json");
+            let value: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            let object = value.as_object().unwrap();
+            for key in object.keys() {
+                assert!(
+                    ANTIGRAVITY_MEASURED_SETTING_KEYS.contains(&key.as_str()),
+                    "{path:?} writes unmeasured key {key}"
+                );
+            }
+            assert!(
+                !object.contains_key("artifactReviewPolicy"),
+                "{path:?} wrote artifactReviewPolicy, which the 1.1.22 pin registry does not name"
+            );
         }
-        problems
+        assert_eq!(
+            seen,
+            STANDARD_VARIANTS.len(),
+            "expected {} antigravity variants, found {seen}",
+            STANDARD_VARIANTS.len()
+        );
     }
 }
