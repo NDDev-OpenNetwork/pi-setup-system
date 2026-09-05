@@ -1093,10 +1093,52 @@ impl Manifest {
     /// also `None` -- a record that cannot be read cannot accuse anything.
     #[must_use]
     pub fn read(root: &Path, command: &str) -> Option<Self> {
-        let raw = fs::read_to_string(Self::path(root, command)).ok()?;
-        let found: Self = serde_json::from_str(&raw).ok()?;
-        (found.schema_version == 1).then_some(found)
+        match Self::inspect(root, command) {
+            ManifestState::Present(found) => Some(found),
+            ManifestState::Missing
+            | ManifestState::Unreadable
+            | ManifestState::Malformed
+            | ManifestState::Unsupported { .. } => None,
+        }
     }
+
+    /// Distinguish a missing legacy record from a corrupt or unsupported one.
+    ///
+    /// [`Manifest::read`] collapsed every failure into `None`, so a truncated
+    /// JSON file disabled verification the same way an older prefix with no
+    /// record did. Launch has to treat those as different states.
+    #[must_use]
+    pub fn inspect(root: &Path, command: &str) -> ManifestState {
+        match fs::read_to_string(Self::path(root, command)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ManifestState::Missing,
+            Err(_) => ManifestState::Unreadable,
+            Ok(raw) => match serde_json::from_str::<Self>(&raw) {
+                Err(_) => ManifestState::Malformed,
+                Ok(found) if found.schema_version != 1 => ManifestState::Unsupported {
+                    schema_version: found.schema_version,
+                },
+                Ok(found) => ManifestState::Present(found),
+            },
+        }
+    }
+}
+
+/// Why a launch receipt could not be used as a current verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestState {
+    /// No file. An older provider release wrote this prefix.
+    Missing,
+    /// The path exists and could not be read.
+    Unreadable,
+    /// Bytes are present and are not a manifest.
+    Malformed,
+    /// A later schema this build does not verify.
+    Unsupported {
+        /// The schema the file named.
+        schema_version: u32,
+    },
+    /// A current receipt.
+    Present(Manifest),
 }
 
 fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Result<()> {

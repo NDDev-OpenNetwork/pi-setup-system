@@ -203,6 +203,23 @@ pub struct PlanArtifact {
     pub platform: serde_json::Value,
     /// When this plan stops being applicable.
     pub expires_at: String,
+    /// The absolute program directory this software plan is bound to.
+    ///
+    /// Present on software operations only. `apply-operation` still takes
+    /// `--prefix` on argv so a caller cannot silently omit it, but the prefix
+    /// that is applied must be this one: a digest-bound plan that named
+    /// directory A must not mutate directory B. Omitted from configuration
+    /// plans so their bytes stay identical to what this build produced before
+    /// the key existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_prefix: Option<String>,
+    /// The exact software version this plan selected.
+    ///
+    /// `--software-version` steers planning; apply reads this field, not the
+    /// flag and not "whatever pin the downloaded bytes happen to match". A
+    /// previous-version removal is otherwise applied against the current pin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub software_version: Option<String>,
     /// The artifacts a software operation will fetch and install.
     ///
     /// One element is one file. `apply` receives one `--software-artifact` per
@@ -260,6 +277,10 @@ pub struct PlanInputs<'a> {
     /// The artifacts a software operation will fetch, in the order `apply`
     /// will be handed them.
     pub software_artifacts: Vec<SoftwareArtifact>,
+    /// The absolute program directory a software plan is bound to.
+    pub software_prefix: Option<&'a str>,
+    /// The exact software version a software plan selected.
+    pub software_version: Option<&'a str>,
     /// Per-path end states, for a `remove` that carries a bundle. Empty
     /// otherwise, and refused on any other operation.
     pub end_state: Vec<EndState>,
@@ -328,6 +349,30 @@ impl PlanArtifact {
             ));
         }
 
+        let software = Operation::SOFTWARE.contains(&inputs.operation);
+        match (
+            software,
+            inputs.software_prefix.filter(|value| !value.is_empty()),
+            inputs.software_version.filter(|value| !value.is_empty()),
+        ) {
+            (true, Some(_), Some(_)) | (false, None, None) => {}
+            (true, _, _) => {
+                return Err(Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    "a software plan must bind --prefix and the exact software version",
+                ));
+            }
+            (false, _, _) => {
+                return Err(Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    format!(
+                        "a {} plan must not bind a software prefix or version",
+                        inputs.operation
+                    ),
+                ));
+            }
+        }
+
         Ok(Self {
             format: PLAN_FORMAT.to_owned(),
             protocol_version: PROTOCOL_VERSION,
@@ -347,6 +392,8 @@ impl PlanArtifact {
             permission_profile: inputs.permission_profile,
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),
+            software_prefix: inputs.software_prefix.map(str::to_owned),
+            software_version: inputs.software_version.map(str::to_owned),
             software_artifacts: inputs.software_artifacts,
             end_state: inputs.end_state,
             effects: inputs.effects,
@@ -480,6 +527,8 @@ mod tests {
         PlanInputs {
             target_scope: None,
             software_artifacts: Vec::new(),
+            software_prefix: None,
+            software_version: None,
             end_state: Vec::new(),
             provider_id: "claude-setup-system",
             provider_version: "0.1.0",

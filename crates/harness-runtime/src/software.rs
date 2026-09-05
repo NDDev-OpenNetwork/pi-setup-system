@@ -14,10 +14,9 @@
 //!   file answers which entry is never inferred.
 //! * `--software-version` omitted means the pinned version; given means exactly
 //!   one of the versions this build names -- the pinned one, or the one pinned
-//!   before it once the harness has been bumped. Two consecutive real releases
-//!   are what make `software_update` and `rollback` runnable rather than only
-//!   declared, and the second is never a separate choice: a bump moves the
-//!   current pin into that slot.
+//!   before it once the harness has been bumped. The plan records that version
+//!   and the artifact digest; apply re-checks both and refuses a neighbour
+//!   pin's bytes even when this build also publishes them.
 //! * An unpinned platform refuses with `unsupported_platform`.
 //! * `software_remove` plans and applies with no download and no artifact.
 //!
@@ -36,6 +35,7 @@
 //! written. An interrupted install leaves a partial directory the next one
 //! replaces, and an entry point still naming the version that worked.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use provider_v3::plan::SoftwareArtifact;
@@ -107,29 +107,6 @@ fn version_for(declared: &Software, asked: Option<&str>) -> Result<Software> {
     })
 }
 
-/// This build as it describes the release the given bytes belong to.
-///
-/// `apply` is handed a file, not a version, and reading which release it is
-/// from the digest makes the version an observation rather than a label that
-/// travelled beside the bytes. A caller cannot install the previous tree under
-/// the current version's name, because nothing here reads a name.
-fn release_of(declared: &Software, path: &Path) -> Result<Software> {
-    let digest = setup_core::digest::of_file(path)?;
-    let (os, arch) = platform_of_this_host();
-    declared.for_bytes(os, arch, &digest).ok_or_else(|| {
-        Error::refuse(
-            WireReason::DigestMismatch,
-            format!(
-                "the artifact given is not a {} release this build names: it hashes to {digest}, \
-                 and {} publishes {} for {os}/{arch}",
-                declared.command,
-                declared.command,
-                declared.versions().join(" and "),
-            ),
-        )
-    })
-}
-
 /// Plan one software operation: name the exact bytes, with no network open.
 ///
 /// # Errors
@@ -142,7 +119,7 @@ pub(crate) fn plan(
     prefix: Option<&Path>,
     operation: Operation,
     software_version: Option<&str>,
-) -> Result<(Vec<SoftwareArtifact>, Vec<String>)> {
+) -> Result<(Vec<SoftwareArtifact>, Vec<String>, &'static str)> {
     let declared = version_for(&declared(harness)?, software_version)?;
     let root = program_directory(prefix, operation)?;
 
@@ -195,7 +172,7 @@ pub(crate) fn plan(
                 declared.version
             ));
         }
-        return Ok((Vec::new(), effects));
+        return Ok((Vec::new(), effects, declared.version));
     }
 
     // An update of nothing is a request that cannot be honoured as asked.
@@ -260,6 +237,7 @@ pub(crate) fn plan(
             entry_point,
         }],
         effects,
+        declared.version,
     ))
 }
 
@@ -274,9 +252,11 @@ pub(crate) fn apply(
     harness: &Harness,
     prefix: Option<&Path>,
     operation: Operation,
+    planned_version: &str,
+    planned_artifacts: &[SoftwareArtifact],
     downloaded: &[PathBuf],
 ) -> Result<serde_json::Value> {
-    let declared = declared(harness)?;
+    let declared = version_for(&declared(harness)?, Some(planned_version))?;
     let root = program_directory(prefix, operation)?;
 
     // The lock lives in this provider's own dotted directory inside the prefix,
@@ -337,6 +317,15 @@ pub(crate) fn apply(
             ),
         ));
     };
+    let [planned] = planned_artifacts else {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{operation} installs the 1 artifact the plan named, and the plan listed {}",
+                planned_artifacts.len()
+            ),
+        ));
+    };
 
     // Re-checked here, not trusted from the plan: applying happens later, and
     // the prefix could have been emptied in between. The plan's digest binds
@@ -357,13 +346,31 @@ pub(crate) fn apply(
         ));
     }
 
-    // Which release these bytes are is read from the bytes, not from a flag.
-    // `--software-version` steers the *plan*; by apply time the only honest
-    // source is the file itself, and `install` re-verifies the digest it just
-    // matched, so the two agree by construction rather than by discipline.
-    let declared = release_of(&declared, path)?;
+    // The plan named both the version and the artifact. Bytes that belong to
+    // another pin this build publishes are still the wrong effect: they are
+    // not the bytes this plan authorised. Digest-of-file remains the
+    // observation; it no longer selects a neighbour release.
+    let digest = setup_core::digest::of_file(path)?;
+    if digest != planned.sha256 {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "the artifact given hashes to {digest}; this plan named {} for {planned_version}",
+                planned.sha256
+            ),
+        ));
+    }
     let (os, arch) = platform_of_this_host();
     let artifact = declared.artifact_for(os, arch)?;
+    if artifact.sha256 != planned.sha256 {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "this plan binds {planned_version} but names {}; {} publishes {}",
+                planned.sha256, declared.command, artifact.sha256
+            ),
+        ));
+    }
     let installed = software::install(&declared, artifact, path, &root)?;
 
     Ok(serde_json::json!({
@@ -455,7 +462,7 @@ pub(crate) fn launch(
         ));
     }
 
-    verify_installed(&root, declared.command)?;
+    verify_installed(&root, declared.command, &executable)?;
 
     // One of the two places in this program that may spawn, and the reason it
     // may: `launch` starts the product, which the contract declares
@@ -489,14 +496,52 @@ pub(crate) fn launch(
 /// holding a path rather than a copy of the program, so hashing the exposed
 /// file would check the launcher.
 ///
-/// **No record is accepted, and that is not a hole.** A prefix written by an
-/// earlier release of this provider has none, and refusing those would call
-/// every older installation tampered-with. It is the same shape as the version
-/// marker's absence: unknown rather than wrong. What a record cannot do is be
-/// present and disagree.
-fn verify_installed(root: &Path, command: &str) -> Result<()> {
-    let Some(manifest) = setup_core::software::Manifest::read(root, command) else {
-        return Ok(());
+/// **No record is a refusal, not a hole.** A prefix written by an earlier
+/// release has none, and launching it would start a chain this build cannot
+/// name. Re-run `software_install` to write a receipt, then launch.
+fn verify_installed(root: &Path, command: &str, exposed: &Path) -> Result<()> {
+    let manifest = match setup_core::software::Manifest::inspect(root, command) {
+        setup_core::software::ManifestState::Missing => {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "{} is missing; the installed chain is unresolved. \
+                     Nothing has been started.",
+                    setup_core::software::Manifest::path(root, command).display()
+                ),
+            ));
+        }
+        setup_core::software::ManifestState::Unreadable => {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "{} exists and could not be read; the installed chain is unresolved. \
+                     Nothing has been started.",
+                    setup_core::software::Manifest::path(root, command).display()
+                ),
+            ));
+        }
+        setup_core::software::ManifestState::Malformed => {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "{} is not a usable launch receipt; the installed chain is unresolved. \
+                     Nothing has been started.",
+                    setup_core::software::Manifest::path(root, command).display()
+                ),
+            ));
+        }
+        setup_core::software::ManifestState::Unsupported { schema_version } => {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "{} names schema {schema_version}, which this build does not verify; \
+                     the installed chain is unresolved. Nothing has been started.",
+                    setup_core::software::Manifest::path(root, command).display()
+                ),
+            ));
+        }
+        setup_core::software::ManifestState::Present(found) => found,
     };
     let executable = root.join(&manifest.executable);
     let found = setup_core::digest::of_file(&executable).map_err(|error| {
@@ -520,7 +565,71 @@ fn verify_installed(root: &Path, command: &str) -> Result<()> {
             ),
         ));
     }
-    Ok(())
+    verify_exposed_chain(exposed, &executable, &found)
+}
+
+/// The file `launch` will exec still names the payload the receipt hashed.
+fn verify_exposed_chain(exposed: &Path, payload: &Path, payload_digest: &str) -> Result<()> {
+    if let Ok(target) = fs::read_link(exposed) {
+        let resolved = if target.is_absolute() {
+            target
+        } else {
+            exposed.parent().unwrap_or(Path::new(".")).join(target)
+        };
+        let expected = payload.canonicalize().ok();
+        let found = resolved.canonicalize().ok();
+        if expected.is_some() && expected == found {
+            return Ok(());
+        }
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} no longer names {}; nothing has been started",
+                exposed.display(),
+                payload.display()
+            ),
+        ));
+    }
+    if exposed
+        .extension()
+        .is_some_and(|ext| ext == "cmd" || ext == "bat")
+    {
+        let wrapper = fs::read_to_string(exposed).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("{} could not be read: {error}", exposed.display()),
+            )
+        })?;
+        let needle = payload.to_string_lossy();
+        if wrapper.contains(needle.as_ref()) {
+            return Ok(());
+        }
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} is a launcher that does not name {}; nothing has been started",
+                exposed.display(),
+                payload.display()
+            ),
+        ));
+    }
+    let exposed_digest = setup_core::digest::of_file(exposed).map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!("{} could not be read: {error}", exposed.display()),
+        )
+    })?;
+    if exposed_digest == payload_digest {
+        return Ok(());
+    }
+    Err(Error::refuse(
+        WireReason::ProviderUnavailable,
+        format!(
+            "{} is not the payload recorded at {}; nothing has been started",
+            exposed.display(),
+            payload.display()
+        ),
+    ))
 }
 
 /// Everything this provider adds to the environment of the product it starts.
@@ -612,17 +721,14 @@ mod tests {
     /// which says *which* bytes. `DISABLE_UPDATES` closed the product's own way
     /// of replacing them; nothing closed anybody else's.
     ///
-    /// Three states, because only the set of them means anything:
+    /// Four states, because collapsing any of them into "no receipt" would
+    /// start a program whose chain this build cannot name:
     ///
     /// * the recorded bytes -- accepted;
     /// * one byte different -- refused, naming both digests;
-    /// * **no record at all -- accepted**, because a prefix written by an
-    ///   earlier release of this provider has none and refusing those would
-    ///   call every older installation tampered-with.
-    ///
-    /// The third is the one that would be missing from a version of this test
-    /// that only proved the refusal, and it is the one that decides whether
-    /// this is a check or an outage.
+    /// * no record at all -- refused as missing, distinct from corrupt;
+    /// * a present record that cannot be read, parsed, or verified -- refused
+    ///   under that state's own sentence.
     #[test]
     fn a_launch_refuses_an_executable_that_is_not_the_one_installed() {
         let root = std::env::temp_dir().join(format!(
@@ -636,12 +742,17 @@ mod tests {
         fs::create_dir_all(root.join("bin")).unwrap();
         let executable = version.join("program");
         fs::write(&executable, b"the installed bytes\n").unwrap();
+        let exposed = root.join("bin").join("program");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&executable, &exposed).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(&executable, &exposed).unwrap();
 
-        // No record: every prefix written before this existed.
+        let missing = verify_installed(&root, "program", &exposed).unwrap_err();
         assert!(
-            verify_installed(&root, "program").is_ok(),
-            "a prefix with no record was refused, which would condemn every \
-             installation made by an earlier release"
+            missing.detail().contains("is missing"),
+            "a prefix with no record must fail as missing, not as a silent skip: {}",
+            missing.detail()
         );
 
         let manifest = setup_core::software::Manifest {
@@ -656,18 +767,92 @@ mod tests {
         )
         .unwrap();
         assert!(
-            verify_installed(&root, "program").is_ok(),
+            verify_installed(&root, "program", &exposed).is_ok(),
             "the bytes named by the record were refused"
         );
 
         fs::write(&executable, b"the installed bytes?\n").unwrap();
-        let refused = verify_installed(&root, "program").unwrap_err();
+        let refused = verify_installed(&root, "program", &exposed).unwrap_err();
         assert_eq!(refused.reason(), Some(WireReason::ProviderUnavailable));
         assert!(
             refused.detail().contains("recorded") && refused.detail().contains("found"),
             "the refusal does not say which digest was expected: {}",
             refused.detail()
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_corrupt_or_unsupported_manifest_is_not_a_verified_launch() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-runtime-verify-corrupt-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let version = root.join("1.2.3");
+        fs::create_dir_all(&version).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let executable = version.join("program");
+        fs::write(&executable, b"the installed bytes\n").unwrap();
+        let exposed = root.join("bin").join("program");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&executable, &exposed).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(&executable, &exposed).unwrap();
+        let path = setup_core::software::Manifest::path(&root, "program");
+
+        fs::write(&path, b"{not a manifest").unwrap();
+        let malformed = verify_installed(&root, "program", &exposed).unwrap_err();
+        assert!(
+            malformed.detail().contains("not a usable launch receipt"),
+            "{}",
+            malformed.detail()
+        );
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&setup_core::software::Manifest {
+                schema_version: 2,
+                version: "1.2.3".to_owned(),
+                executable: "1.2.3/program".to_owned(),
+                executable_sha256: setup_core::digest::of_file(&executable).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let unsupported = verify_installed(&root, "program", &exposed).unwrap_err();
+        assert!(
+            unsupported.detail().contains("schema 2"),
+            "{}",
+            unsupported.detail()
+        );
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&setup_core::software::Manifest {
+                schema_version: 1,
+                version: "1.2.3".to_owned(),
+                executable: "1.2.3/program".to_owned(),
+                executable_sha256: setup_core::digest::of_file(&executable).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let other = version.join("other");
+            fs::write(&other, b"the installed bytes\n").unwrap();
+            fs::remove_file(&exposed).unwrap();
+            std::os::unix::fs::symlink(&other, &exposed).unwrap();
+            let drifted = verify_installed(&root, "program", &exposed).unwrap_err();
+            assert!(
+                drifted.detail().contains("no longer names"),
+                "{}",
+                drifted.detail()
+            );
+        }
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -712,5 +897,168 @@ mod tests {
             vec![("PRODUCT_CONFIG_DIR", target.display().to_string())],
             "a product with no such variable had its environment written to anyway"
         );
+    }
+
+    fn planted_prefix(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "harness-runtime-launch-{tag}-{}",
+            std::process::id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let version = root.join("1.2.3");
+        fs::create_dir_all(&version).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let payload = version.join("test-harness");
+        fs::write(&payload, crate::wire::tests_support::TEST_PAYLOAD).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let exposed = root.join("bin").join("test-harness");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&payload, &exposed).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(&payload, &exposed).unwrap();
+        (root, payload, exposed)
+    }
+
+    #[test]
+    fn launch_refuses_missing_unreadable_malformed_and_unsupported_receipts_as_distinct_states() {
+        let target = Path::new("/tmp/nddev-launch-verify-target");
+        let (root, payload, exposed) = planted_prefix("receipts");
+        let path = setup_core::software::Manifest::path(&root, "test-harness");
+
+        let missing =
+            launch(&crate::wire::tests_support::TEST, target, Some(&root), &[]).unwrap_err();
+        assert!(
+            missing.detail().contains("is missing"),
+            "{}",
+            missing.detail()
+        );
+
+        fs::write(&path, b"{not a manifest").unwrap();
+        let malformed =
+            launch(&crate::wire::tests_support::TEST, target, Some(&root), &[]).unwrap_err();
+        assert!(
+            malformed.detail().contains("not a usable launch receipt"),
+            "{}",
+            malformed.detail()
+        );
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&setup_core::software::Manifest {
+                schema_version: 2,
+                version: "1.2.3".to_owned(),
+                executable: "1.2.3/test-harness".to_owned(),
+                executable_sha256: setup_core::digest::of_file(&payload).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let unsupported =
+            launch(&crate::wire::tests_support::TEST, target, Some(&root), &[]).unwrap_err();
+        assert!(
+            unsupported.detail().contains("schema 2"),
+            "{}",
+            unsupported.detail()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(
+                &path,
+                serde_json::to_vec(&setup_core::software::Manifest {
+                    schema_version: 1,
+                    version: "1.2.3".to_owned(),
+                    executable: "1.2.3/test-harness".to_owned(),
+                    executable_sha256: setup_core::digest::of_file(&payload).unwrap(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable =
+                launch(&crate::wire::tests_support::TEST, target, Some(&root), &[]).unwrap_err();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(
+                unreadable.detail().contains("could not be read"),
+                "{}",
+                unreadable.detail()
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = exposed;
+    }
+
+    #[test]
+    fn launch_refuses_another_valid_pin_substituted_for_the_recorded_payload() {
+        let target = Path::new("/tmp/nddev-launch-pin-swap-target");
+        let (root, payload, exposed) = planted_prefix("pin-swap");
+        let digest = setup_core::digest::of_file(&payload).unwrap();
+        fs::write(
+            setup_core::software::Manifest::path(&root, "test-harness"),
+            serde_json::to_vec(&setup_core::software::Manifest {
+                schema_version: 1,
+                version: "1.2.3".to_owned(),
+                executable: "1.2.3/test-harness".to_owned(),
+                executable_sha256: digest,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&payload, crate::wire::tests_support::TEST_EARLIER_PAYLOAD).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let swapped =
+            launch(&crate::wire::tests_support::TEST, target, Some(&root), &[]).unwrap_err();
+        assert!(
+            swapped.detail().contains("recorded") && swapped.detail().contains("found"),
+            "{}",
+            swapped.detail()
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = exposed;
+    }
+
+    #[test]
+    fn launch_refuses_a_windows_wrapper_that_does_not_name_the_recorded_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-runtime-wrapper-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let version = root.join("1.2.3");
+        fs::create_dir_all(&version).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let payload = version.join("test-harness.exe");
+        fs::write(&payload, b"payload-bytes\n").unwrap();
+        let wrapper = root.join("bin").join("test-harness.cmd");
+        fs::write(&wrapper, "@call \"C:\\other\\test-harness.exe\" %*\r\n").unwrap();
+        fs::write(
+            setup_core::software::Manifest::path(&root, "test-harness"),
+            serde_json::to_vec(&setup_core::software::Manifest {
+                schema_version: 1,
+                version: "1.2.3".to_owned(),
+                executable: "1.2.3/test-harness.exe".to_owned(),
+                executable_sha256: setup_core::digest::of_file(&payload).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let refused = verify_installed(&root, "test-harness", &wrapper).unwrap_err();
+        assert!(
+            refused.detail().contains("does not name"),
+            "{}",
+            refused.detail()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

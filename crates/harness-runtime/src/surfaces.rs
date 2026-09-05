@@ -193,9 +193,10 @@ fn credentials_are_disclaimed(harness: &Harness, baseline: &Value, found: &mut V
 /// So: routing nothing is allowed, and being silent about it is not.
 /// An administrator's policy, or the signature over one, must not be owned.
 ///
-/// Owning a namespace does three things and only one of them is a benefit here:
-/// a backup captures it, an identity hashes it, and **`remove_managed` deletes
-/// it**. For a signed policy the third is the one that decides.
+/// Owning a namespace still means a backup can capture it and an identity can
+/// hash it as ours. Default `remove_managed` no longer deletes the namespace
+/// whole -- it withdraws recorded files -- so a signed policy must not be owned
+/// even after that change: capture and identity would still treat it as ours.
 ///
 /// Measured 2026-08-28 on the shipped `grok-setup-system 0.0.11`, against a
 /// target holding a managed grok home: `install` removed `managed_config.toml`

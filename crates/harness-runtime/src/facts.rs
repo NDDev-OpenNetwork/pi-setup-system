@@ -895,6 +895,7 @@ mod tests {
         }
         for optional in [
             Operation::Launch,
+            Operation::Reset,
             Operation::SoftwareInstall,
             Operation::SoftwareUpdate,
             Operation::SoftwareRemove,

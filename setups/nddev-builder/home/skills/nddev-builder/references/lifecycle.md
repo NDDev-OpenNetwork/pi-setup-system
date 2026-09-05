@@ -17,7 +17,7 @@ backups   --target <dir>                      the slots, newest first
 restore   [--backup <ref>] --target <dir>     the last backup, or a named one
 hold      --backup <ref> [--reason <why>] --target <dir>
 release   --backup <ref> --target <dir>
-remove    --target <dir>                      everything this program owns
+remove    --target <dir>                      the files this program recorded writing
 software  --prefix <dir>                      which product versions a prefix holds
 rollback  --to <version> --prefix <dir>       point the command at one already there
 ```
@@ -38,10 +38,9 @@ those.
 - **There is one write path.** A human command builds a real plan and calls the
   same `perform` the wire surface does, so a human command cannot bypass a
   guarantee the provider owes its consumer.
-- **`remove` takes owned namespaces whole**, except under `target_scope
-  user_root`, where it takes only the files this provider recorded writing --
-  because that root is shared with other products and taking a namespace whole
-  would take a neighbour's content.
+- **`remove` withdraws the files this provider recorded writing.** Unrecorded
+  neighbours stay. `reset` is the separately named whole-namespace empty;
+  default install, replace and remove do not take namespaces whole.
 
 ## The software half
 
