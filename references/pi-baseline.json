@@ -444,7 +444,7 @@
     "version": "0.85.0",
     "verified_at": "2026-09-04T13:31:46+00:00"
   },
-  "setup_catalogue_digest": "sha256:095a8289876170f4aa6de56592048360189d5a28ba13f06a81340b36284a6223",
+  "setup_catalogue_digest": "sha256:b48ddee99bccc2520b333e202e87d2ecfc4347a9d57378e1c2ff51740403ea79",
   "previous_software_artifacts": {
     "command": "pi",
     "shape": "gzip-tar",
