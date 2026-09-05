@@ -9,7 +9,7 @@
 //! ```text
 //! setups/
 //!   <setup-id>/
-//!     setup.json    identity and description
+//!     setup.json    posture id, description, and optional corpus identity
 //!     home/         copied verbatim into the target
 //! ```
 //!
@@ -70,6 +70,34 @@ pub struct SetupManifest {
     /// schema to get wrong. [`unsourced`] holds the rest.
     #[serde(default)]
     pub sources: Vec<String>,
+    /// Corpus setup id, when this catalog vendors first-party identity (`ADR-0156`).
+    ///
+    /// Distinct from [`Self::id`], which is the posture directory name
+    /// (`full-auto`). Absent on a catalog that is only id and description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_stable_id: Option<String>,
+    /// Corpus setup version, when vendored. Inventing one here is forbidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_version: Option<String>,
+    /// Digest of the corpus setup passport, when vendored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_passport_digest: Option<String>,
+    /// Corpus component identities, when vendored. Empty is a catalog without them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_refs: Vec<CatalogComponentRef>,
+}
+
+/// One component identity a catalog may vendor without minting ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogComponentRef {
+    /// The component's sealed stable id.
+    pub stable_id: String,
+    /// The component's sealed version.
+    pub version: String,
+    /// Digest of the component passport.
+    pub passport_digest: String,
+    /// The adaptation this catalog ships for the harness.
+    pub adaptation_id: String,
 }
 
 /// The setups every harness offers, whatever else it also offers.
@@ -1667,6 +1695,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_manifest_carries_corpus_identity_without_replacing_its_directory_id() {
+        let manifest: SetupManifest = serde_json::from_slice(
+            br#"{
+                "schema_version": 1,
+                "id": "full-auto",
+                "description": "full auto",
+                "setup_stable_id": "setup_01TESTIDENTITY000000000000",
+                "setup_version": "1.4",
+                "setup_passport_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "component_refs": [
+                    {
+                        "stable_id": "cmp_01TESTIDENTITY0000000000000",
+                        "version": "1.0",
+                        "passport_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "adaptation_id": "adp_01TESTIDENTITY0000000000000"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.id, "full-auto");
+        assert_eq!(
+            manifest.setup_stable_id.as_deref(),
+            Some("setup_01TESTIDENTITY000000000000")
+        );
+        assert_eq!(manifest.setup_version.as_deref(), Some("1.4"));
+        assert_eq!(manifest.component_refs.len(), 1);
+        assert_eq!(
+            manifest.component_refs[0].stable_id,
+            "cmp_01TESTIDENTITY0000000000000"
+        );
+        assert_eq!(
+            manifest.component_refs[0].adaptation_id,
+            "adp_01TESTIDENTITY0000000000000"
+        );
+    }
+
     fn write_setup(root: &Path, id: &str, files: &[(&str, &str)]) {
         let directory = root.join(id);
         fs::create_dir_all(directory.join(SETUP_PAYLOAD)).unwrap();
@@ -1677,6 +1743,10 @@ mod tests {
                 id: id.to_owned(),
                 description: format!("the {id} setup"),
                 sources: Vec::new(),
+                setup_stable_id: None,
+                setup_version: None,
+                setup_passport_digest: None,
+                component_refs: Vec::new(),
             })
             .unwrap(),
         )

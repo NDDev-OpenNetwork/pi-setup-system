@@ -4,5 +4,16 @@
   "description": "Instructions plus the same autonomous project-trust posture as the other standard variants; no extra tools.",
   "sources": [
     "https://pi.dev/docs/latest/settings"
+  ],
+  "setup_stable_id": "setup_01M18ZT99A8JW8B856JBP5WBDX",
+  "setup_version": "1.2",
+  "setup_passport_digest": "sha256:6dbdeded4ac3962767a96e090b506f4ebf5123fb6f1be6249794c687bca7a10b",
+  "component_refs": [
+    {
+      "stable_id": "component_01M18ZT99A8JW8B856JBP5WBDY",
+      "version": "1.2",
+      "passport_digest": "sha256:0a6841f568b973aab549764fc1843e20566bed3d1456e904431805c411ed96a6",
+      "adaptation_id": "adaptation_bd61a8c090865af2aef8ef2d82aac22a95d942fa3b4fe46c145b7c30dd41513b"
+    }
   ]
 }

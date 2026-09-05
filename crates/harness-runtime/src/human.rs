@@ -868,11 +868,7 @@ fn apply_setup(
         target,
         operation,
         Effect::Materialize { setup: &setup },
-        wire::Applied {
-            setup_id: Some(setup_id.to_owned()),
-            setup_definition_digest: Some(setup.definition_digest.clone()),
-            ..wire::Applied::default()
-        },
+        wire::applied_from_catalog(&setup),
     )?;
     println!("Applied setup {setup_id} to {}.", target.display());
     for line in wire::taken_before_writing(harness, HUMAN_SCOPE) {
@@ -1557,6 +1553,10 @@ mod tests {
                 id: id.to_owned(),
                 description: format!("the {id} setup"),
                 sources: Vec::new(),
+                setup_stable_id: None,
+                setup_version: None,
+                setup_passport_digest: None,
+                component_refs: Vec::new(),
             })
             .unwrap(),
         )
@@ -1649,11 +1649,7 @@ mod tests {
             target,
             operation,
             Effect::Materialize { setup: &setup },
-            wire::Applied {
-                setup_id: Some(id.to_owned()),
-                setup_definition_digest: Some(setup.definition_digest.clone()),
-                ..wire::Applied::default()
-            },
+            crate::wire::applied_from_catalog(&setup),
         )
         .unwrap();
     }
@@ -1932,7 +1928,70 @@ mod tests {
         match ProviderState::read(&target, harness().state_file).unwrap() {
             StateReading::Current(state) => {
                 assert_eq!(state.setup_stable_id.as_deref(), Some("baseline"));
+                assert!(state.setup_version.is_none());
+                assert!(state.component_refs.is_empty());
                 assert!(state.backup_ref.is_some());
+            }
+            other => panic!("expected recorded state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_catalog_that_vendors_corpus_identity_records_it_on_apply() {
+        let (catalog, target) = world("identity");
+        let directory = catalog.join("full-auto");
+        fs::create_dir_all(directory.join(crate::catalog::SETUP_PAYLOAD)).unwrap();
+        fs::write(
+            directory.join(crate::catalog::SETUP_MANIFEST),
+            br#"{
+                "schema_version": 1,
+                "id": "full-auto",
+                "description": "full auto with corpus identity",
+                "setup_stable_id": "setup_01TESTIDENTITY000000000000",
+                "setup_version": "1.4",
+                "setup_passport_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "component_refs": [
+                    {
+                        "stable_id": "cmp_01TESTIDENTITY0000000000000",
+                        "version": "1.0",
+                        "passport_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "adaptation_id": "adp_01TESTIDENTITY0000000000000"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            directory
+                .join(crate::catalog::SETUP_PAYLOAD)
+                .join("AGENTS.md"),
+            "# auto\n",
+        )
+        .unwrap();
+        let setup = setup_at(&catalog, "full-auto");
+        mutate(
+            &harness(),
+            &target,
+            Operation::Install,
+            Effect::Materialize { setup: &setup },
+            crate::wire::applied_from_catalog(&setup),
+        )
+        .unwrap();
+        match ProviderState::read(&target, harness().state_file).unwrap() {
+            StateReading::Current(state) => {
+                assert_eq!(
+                    state.setup_stable_id.as_deref(),
+                    Some("setup_01TESTIDENTITY000000000000")
+                );
+                assert_eq!(state.setup_version.as_deref(), Some("1.4"));
+                assert_eq!(
+                    state.setup_version_passport_digest.as_deref(),
+                    Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                );
+                assert_eq!(
+                    state.component_refs,
+                    vec!["cmp_01TESTIDENTITY0000000000000".to_owned()]
+                );
             }
             other => panic!("expected recorded state, got {other:?}"),
         }

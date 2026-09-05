@@ -4,5 +4,22 @@
   "description": "Full auto: a project's own settings, resources and extensions are trusted without asking. That is one key doing the work -- `defaultProjectTrust` is `ask` by default, and `always` is what lets a non-interactive run load `.pi/settings.json`, install missing project packages and execute project extensions rather than ignoring all three. `enableSkillCommands` is kept and grants nothing: the product's own shipped settings documentation gives it a default of `true` -- re-read at 0.84.4, the current pin, where `docs/settings.md` tabulates it as `boolean | true | Register skills as /skill:name commands`. It stays so the posture states what it wants, and it is recorded as a restatement rather than left looking like a switch somebody threw. Nothing else in this product's settings withholds a capability by default: images, compaction and agent-level retry are all on, `defaultTools` uses the standard built-ins when omitted, and `enableInstallTelemetry` and `enableAnalytics` are left alone because they send data outward rather than granting you a tool. This product documents no sandbox to turn off. This is a setup posture -- keys in this product's own configuration file. It is not an execution profile and it grants no environment: what it changes is what the product asks you, not what anyone is permitted to run. The key measurement behind this posture: `docs/settings.md` shipped inside the 0.84.4 artifact, whose digest was checked against this baseline's artifact table before it was read. The same file also gives `defaultProjectTrust` a default of `\"ask\"`, which is what makes the key here a change rather than a restatement. **The citation named 0.84.3 for three releases after the pin moved**, and re-reading was the way to find out whether it still held rather than editing the number; it does, and the file is byte-identical in the standalone distribution this provider now installs and in the npm package it used to.",
   "sources": [
     "https://pi.dev/docs/latest/settings"
+  ],
+  "setup_stable_id": "setup_01M18ZTC8BSBTAVVMDXT6YYR2P",
+  "setup_version": "1.4",
+  "setup_passport_digest": "sha256:a379142c99c6e67b4f8b89ddd3443532ba1a6ef65ac3cd38b94c77ecb4d55278",
+  "component_refs": [
+    {
+      "stable_id": "component_01M18ZTC8BSBTAVVMDXT6YYR2Q",
+      "version": "1.3",
+      "passport_digest": "sha256:5994f6446fec5b35179c9d14540ec0770ceacfb2c953f5b53aa809ba3f5454fd",
+      "adaptation_id": "adaptation_e5945c7a36a3a1d7e34503eef4b42a36b13de80b061f13eb77ea865c52f11120"
+    },
+    {
+      "stable_id": "component_01M18ZTCS9FV0JK3578FKF31SB",
+      "version": "1.3",
+      "passport_digest": "sha256:af66a78705db3d16827cb15e735d02aba56d60556191240548af94f4c0ef555b",
+      "adaptation_id": "adaptation_32939c60a52977243bd7ba5c0699e7ea8869ace17bb0189b4d1968347aebe20d"
+    }
   ]
 }
