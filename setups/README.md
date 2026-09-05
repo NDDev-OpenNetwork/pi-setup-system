@@ -25,7 +25,7 @@ divergence is found only after someone has implemented the prose.
 ```text
 setups/
   <setup-id>/
-    setup.json    identity, description, and the pages its format came from
+    setup.json    posture id, description, sources, and corpus identity
     home/         copied verbatim into the target
 ```
 

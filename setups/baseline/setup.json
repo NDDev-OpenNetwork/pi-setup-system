@@ -4,5 +4,22 @@
   "description": "A working floor: the same autonomous project-trust posture as the other standard variants. This product ships no sandbox and no permission popups; `defaultProjectTrust` is the key that lets a non-interactive run load project settings.",
   "sources": [
     "https://pi.dev/docs/latest/settings"
+  ],
+  "setup_stable_id": "setup_01M18ZTACPP9W86MCJ4DG73GBF",
+  "setup_version": "1.2",
+  "setup_passport_digest": "sha256:34e5167489ca743407e98766a595b2238a6c3b1f08e6f001368201f515417307",
+  "component_refs": [
+    {
+      "stable_id": "component_01M18ZTACPP9W86MCJ4DG73GBG",
+      "version": "1.2",
+      "passport_digest": "sha256:fafbcdbd5e4508c9d48da46865ed8264b6eef07f29e7687d2146839076e7a443",
+      "adaptation_id": "adaptation_5e545cc763e190fb089d67c993d98fa95a2e6b77f665b6552d022f946c0ca5c4"
+    },
+    {
+      "stable_id": "component_01M18ZTAY3TVT1D6M3167MEC40",
+      "version": "1.2",
+      "passport_digest": "sha256:6b5c6afe1bf3767f9bcc4cc9c188adb8922cdf5e0633defd3bf8f3bb5d8046b7",
+      "adaptation_id": "adaptation_4c14e83deb4a0975872c11e11277e433253ab25c61aac5ce6bd5905c7fb496b5"
+    }
   ]
 }

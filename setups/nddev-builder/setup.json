@@ -10,5 +10,46 @@
     "https://pi.dev/docs/latest/settings",
     "https://pi.dev/docs/latest/skills",
     "https://pi.dev/docs/latest/themes"
+  ],
+  "setup_stable_id": "setup_01M15EPP0MJ8HM21NW6Y74Z9RN",
+  "setup_version": "1.5",
+  "setup_passport_digest": "sha256:715436efa40da59753f9b4a20f0ff970717556849e9b74caee3a2cbf6e7c5a80",
+  "component_refs": [
+    {
+      "stable_id": "component_01M15EPFFA0CE3XRXBH3P2Z9BZ",
+      "version": "1.4",
+      "passport_digest": "sha256:759e227b1e74179285255066cd45869d3f0608770ce95ebeffcb2c8f98d06db6",
+      "adaptation_id": "adaptation_e5945c7a36a3a1d7e34503eef4b42a36b13de80b061f13eb77ea865c52f11120"
+    },
+    {
+      "stable_id": "component_01M15EPG0FD2C96RNP8Y73EN5K",
+      "version": "1.4",
+      "passport_digest": "sha256:26ba58331a9fde6bb7901654fa76316170da32164231c90cc20625602c8b65ac",
+      "adaptation_id": "adaptation_32939c60a52977243bd7ba5c0699e7ea8869ace17bb0189b4d1968347aebe20d"
+    },
+    {
+      "stable_id": "component_01M15EPGHDV2RVDFK7J84JTA1S",
+      "version": "1.4",
+      "passport_digest": "sha256:36ee39f75f2a0c1b8bfa338879b828216157a2db232553d56d61d9f051829419",
+      "adaptation_id": "adaptation_40bac5d3f2a59a2b2cb2438764eab921b1a5e598a749b197d00d7f54be056490"
+    },
+    {
+      "stable_id": "component_01M15EPH2RDJBA99ST45DW26WV",
+      "version": "1.4",
+      "passport_digest": "sha256:9506962893adc124e06658089e19ee54c18c57e2fa4c265f2ccb64344a519a83",
+      "adaptation_id": "adaptation_5d9cc26806f9f0e34e53e599f0cbabe9a8f7871cc93e04234cb52dcc77373d11"
+    },
+    {
+      "stable_id": "component_01M15EPHMZA1VV0CKKR0Y4WQ9G",
+      "version": "1.4",
+      "passport_digest": "sha256:45715624223783f9ff78a53dc38e907757a6fb21bd5e0f480791d2f99dbadb04",
+      "adaptation_id": "adaptation_a428748d6039a5468234bf2020cfe40999890aaa4d8b87bee1f2cb96bcc36d4e"
+    },
+    {
+      "stable_id": "component_01M15EPJ61HWC9TZPP865WFGMN",
+      "version": "1.4",
+      "passport_digest": "sha256:4a4b6f6fa2a5c14ef637f644dc6e64eab462a09a49e660a36656c6ee0eca6a5f",
+      "adaptation_id": "adaptation_ea1c3ae0048199b668f53f1ad0031e24de2503fa3a7a0ad7c62a8623efff4d97"
+    }
   ]
 }

@@ -1391,10 +1391,15 @@ pub(crate) struct Applied {
     pub setup_definition_digest: Option<String>,
     /// The setup version, when the thing that arrived stated one.
     ///
-    /// A bundle's setup passport does; a setup in the local catalog carries an
-    /// id and a description and no version, and inventing one there would be
-    /// worse than the null.
+    /// A bundle's setup passport does; a catalog setup records one only when
+    /// `setup.json` vendors the corpus identity. Inventing a version is worse
+    /// than the null.
     pub setup_version: Option<String>,
+    /// Digest of the corpus setup passport, when the catalog vendored it.
+    ///
+    /// Bundles still leave this null: the passport does not carry its own
+    /// digest and the contract does not define how one is taken from a bundle.
+    pub setup_version_passport_digest: Option<String>,
     /// The files this operation put on the target.
     ///
     /// Lives here rather than beside the effect because it is the same kind of
@@ -1417,10 +1422,30 @@ pub(crate) struct Applied {
     /// whatever arrived, so a target configured from a bundle reported that it
     /// held no components while holding every one the bundle named.
     ///
-    /// Empty is still correct for the local catalog: a setup there is a tree of
-    /// files with an id and a description, and it has no component identities
-    /// to record. Inventing some would be worse than the empty list.
+    /// Empty is still correct for a catalog that is only id and description.
+    /// A catalog that vendors corpus `component_refs` records those stable ids.
+    /// Inventing ids at apply time is forbidden.
     pub component_refs: Vec<String>,
+}
+
+/// Provenance a local catalog setup already carries, copied onto `Applied`.
+///
+/// The posture directory name stays `manifest.id`. Corpus identity is recorded
+/// only when `setup.json` vendors it; nothing is minted here.
+pub(crate) fn applied_from_catalog(setup: &Setup) -> Applied {
+    Applied {
+        setup_id: Some(setup.manifest.id.clone()),
+        setup_definition_digest: Some(setup.definition_digest.clone()),
+        setup_version: setup.manifest.setup_version.clone(),
+        setup_version_passport_digest: setup.manifest.setup_passport_digest.clone(),
+        component_refs: setup
+            .manifest
+            .component_refs
+            .iter()
+            .map(|item| item.stable_id.clone())
+            .collect(),
+        ..Applied::default()
+    }
 }
 
 /// Apply one exact plan under the target lock.
@@ -2729,16 +2754,13 @@ fn write_state(
         canonical_target: target.root().to_string_lossy().into_owned(),
         target_identity_digest: after.to_owned(),
         setup_stable_id: applied.setup_id.clone(),
-        // A local setup carries an id and a description and no version, so
-        // there is no version to record and inventing one would be worse than
-        // the null. A bundle states one in its passport, and that is where this
-        // comes from.
+        // A catalog without vendored identity still has no version. A bundle
+        // states one in its passport. A catalog that vendors the corpus
+        // projection records that version rather than minting one.
         setup_version: applied.setup_version.clone(),
-        // Still null, deliberately. The passport does not carry its own digest
-        // and the contract does not define how one is taken, so a value
-        // computed here would be this program's opinion of the passport's
-        // identity rather than the passport's.
-        setup_version_passport_digest: None,
+        // Bundles leave this null: the passport does not carry its own digest.
+        // A catalog that vendors `setup_passport_digest` records that digest.
+        setup_version_passport_digest: applied.setup_version_passport_digest.clone(),
         setup_definition_digest: applied.setup_definition_digest.clone(),
         component_refs: applied.component_refs.clone(),
         bundle_format: applied.bundle_format.clone(),
@@ -5605,9 +5627,10 @@ mod tests {
 
     #[test]
     fn a_setup_from_the_local_catalog_records_no_components_because_it_has_none() {
-        // A catalog setup is a tree of files with an id and a description. It
-        // carries no component identities, and inventing some would be worse
-        // than the empty list the contract allows.
+        // This fixture never applied a catalog setup that vendors corpus
+        // identity, so the empty list is still the honest answer. Inventing
+        // refs here would be worse than empty. Identity-bearing catalogs are
+        // the other test, in `human`.
         let target = seeded("catalog-components");
         plan_then_apply(&target, "backup", &[]);
         let state: serde_json::Value =
