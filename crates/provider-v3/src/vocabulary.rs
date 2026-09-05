@@ -125,6 +125,8 @@ pub enum Operation {
     Restore,
     /// Withdraw everything this provider owns.
     Remove,
+    /// Empty every declared native namespace. Optional; not composition.
+    Reset,
     /// Install the product itself. Optional.
     SoftwareInstall,
     /// Update the product itself. Optional.
@@ -143,6 +145,7 @@ impl Operation {
         Self::Backup,
         Self::Restore,
         Self::Remove,
+        Self::Reset,
         Self::SoftwareInstall,
         Self::SoftwareUpdate,
         Self::SoftwareRemove,
@@ -165,6 +168,7 @@ impl Operation {
         Self::Remove,
         Self::Replace,
         Self::Restore,
+        Self::Reset,
         Self::SoftwareInstall,
         Self::SoftwareUpdate,
         Self::SoftwareRemove,
@@ -189,6 +193,7 @@ impl Operation {
             Self::Backup => "backup",
             Self::Restore => "restore",
             Self::Remove => "remove",
+            Self::Reset => "reset",
             Self::SoftwareInstall => "software_install",
             Self::SoftwareUpdate => "software_update",
             Self::SoftwareRemove => "software_remove",

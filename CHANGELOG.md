@@ -95,7 +95,7 @@ the first push. Historical commits remain immutable.
 ## [0.0.58] - 2026-09-02
 
 A removal answers three ways when nothing records what this build
-wrote. `remove` takes the declared namespaces whole, which is exact for a
+wrote. `remove` used to take the declared namespaces whole, which is exact for a
 target this provider wrote and is guessing at one it never touched: measured on
 released 0.0.57, a target holding only a person's own configuration answered
 *"Removed everything <provider> owns"* and took it, recoverable from the

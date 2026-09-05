@@ -1768,4 +1768,220 @@ mod tests {
         assert!(first.get("baseline").is_ok());
         assert!(second.get("baseline").is_ok());
     }
+
+    /// Every shipped standard variant uses the same autonomous execution posture.
+    ///
+    /// Content footprint may differ; asking the user or sandboxing by default
+    /// may not. A planted ask/on-request/request-review setting in any standard
+    /// variant must fail this test.
+    ///
+    /// The shared source tree nests `setups/{harness}/{variant}`. A public
+    /// provider keeps `setups/{variant}` at the root. Counting only the nested
+    /// shape reported `found 0` on every rendered provider.
+    #[test]
+    fn standard_variants_share_autonomous_posture() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let harnesses = harnesses_in_workspace(&workspace);
+        let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
+        let expected = harnesses.len() * STANDARD_VARIANTS.len();
+        assert_eq!(
+            rows.len(),
+            expected,
+            "expected {expected} standard variants for {:?}, found {}",
+            harnesses,
+            rows.len()
+        );
+        let mut problems = Vec::new();
+        for (harness, variant_dir) in &rows {
+            problems.extend(autonomy_problems(harness, variant_dir));
+        }
+        assert!(
+            problems.is_empty(),
+            "standard variants are not uniformly autonomous:\n{}",
+            problems.join("\n")
+        );
+    }
+
+    const STANDARD_VARIANTS: &[&str] = &["baseline", "minimal", "full-auto", "nddev-builder"];
+
+    fn harnesses_in_workspace(workspace: &Path) -> Vec<String> {
+        let crates = workspace.join("crates");
+        let mut names = Vec::new();
+        for name in [
+            "claude",
+            "codex",
+            "grok",
+            "pi",
+            "cursor",
+            "opencode",
+            "antigravity",
+        ] {
+            if crates.join(format!("{name}-setup-system")).is_dir() {
+                names.push(name.to_owned());
+            }
+        }
+        names
+    }
+
+    fn standard_setup_dirs(setups: &Path, harnesses: &[String]) -> Vec<(String, PathBuf)> {
+        let mut rows = Vec::new();
+        if harnesses.len() == 1 {
+            let harness = &harnesses[0];
+            for variant in STANDARD_VARIANTS {
+                let variant_dir = setups.join(variant);
+                if variant_dir.join(SETUP_MANIFEST).is_file() {
+                    rows.push((harness.clone(), variant_dir));
+                }
+            }
+            return rows;
+        }
+        for harness in harnesses {
+            for variant in STANDARD_VARIANTS {
+                let variant_dir = setups.join(harness).join(variant);
+                if variant_dir.join(SETUP_MANIFEST).is_file() {
+                    rows.push((harness.clone(), variant_dir));
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn a_single_harness_tree_reads_top_level_standard_variants() {
+        let root = scratch("public-layout-setups");
+        for variant in STANDARD_VARIANTS {
+            fs::create_dir_all(root.join(variant)).unwrap();
+            fs::write(root.join(variant).join(SETUP_MANIFEST), "{}").unwrap();
+        }
+        let rows = standard_setup_dirs(&root, &["claude".to_owned()]);
+        assert_eq!(rows.len(), STANDARD_VARIANTS.len());
+        assert!(rows.iter().all(|(harness, _)| harness == "claude"));
+    }
+
+    #[test]
+    fn a_planted_ask_posture_fails_the_autonomy_matrix() {
+        let root = scratch("planted-ask");
+        fs::create_dir_all(root.join("home")).unwrap();
+        fs::write(
+            root.join("home/opencode.json"),
+            r#"{"permission":{"edit":"ask"}}"#,
+        )
+        .unwrap();
+        let problems = autonomy_problems("opencode", &root);
+        assert!(
+            problems.iter().any(|line| line.contains(r#""ask""#)),
+            "planted ask did not fail: {problems:?}"
+        );
+    }
+
+    fn autonomy_problems(harness: &str, variant_dir: &Path) -> Vec<String> {
+        let variant = variant_dir.file_name().unwrap().to_string_lossy();
+        let home = variant_dir.join(SETUP_PAYLOAD);
+        let label = format!("{harness}/{variant}");
+        match harness {
+            "claude" => json_autonomy(
+                &label,
+                &home.join("settings.json"),
+                &[
+                    r#""defaultMode": "bypassPermissions""#,
+                    r#""enabled": false"#,
+                ],
+                &["on-request", r#""ask""#, "request-review"],
+            ),
+            "codex" => text_autonomy(
+                &label,
+                &home.join("config.toml"),
+                &[
+                    r#"approval_policy = "never""#,
+                    r#"sandbox_mode = "danger-full-access""#,
+                ],
+                &["on-request", "workspace-write"],
+            ),
+            "grok" => text_autonomy(
+                &label,
+                &home.join("config.toml"),
+                &[
+                    r#"permission_mode = "always-approve""#,
+                    "yolo = true",
+                    r#"profile = "off""#,
+                ],
+                &["on-request", r#"permission_mode = "ask""#],
+            ),
+            "cursor" => json_autonomy(
+                &label,
+                &home.join("cli-config.json"),
+                &[r#""approvalMode": "unrestricted""#, r#""mode": "disabled""#],
+                &["on-request", r#""ask""#, "request-review"],
+            ),
+            "opencode" => json_autonomy(
+                &label,
+                &home.join("opencode.json"),
+                &[r#""*": "allow""#],
+                &[r#""ask""#],
+            ),
+            "pi" => json_autonomy(
+                &label,
+                &home.join("settings.json"),
+                &[r#""defaultProjectTrust": "always""#],
+                &[r#""ask""#],
+            ),
+            "antigravity" => json_autonomy(
+                &label,
+                &home.join("antigravity-cli/settings.json"),
+                &[
+                    r#""toolPermission": "always-proceed""#,
+                    r#""enableTerminalSandbox": false"#,
+                ],
+                &["request-review", "on-request"],
+            ),
+            other => vec![format!("{label}: unknown harness {other}")],
+        }
+    }
+
+    fn json_autonomy(
+        label: &str,
+        path: &Path,
+        required: &[&str],
+        forbidden: &[&str],
+    ) -> Vec<String> {
+        text_autonomy(label, path, required, forbidden)
+    }
+
+    fn text_autonomy(
+        label: &str,
+        path: &Path,
+        required: &[&str],
+        forbidden: &[&str],
+    ) -> Vec<String> {
+        let mut problems = Vec::new();
+        let Ok(raw) = fs::read_to_string(path) else {
+            problems.push(format!("{label}: missing {}", path.display()));
+            return problems;
+        };
+        let text = if path.extension().is_some_and(|ext| ext == "toml") {
+            raw.lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            raw
+        };
+        for marker in required {
+            if !text.contains(marker) {
+                problems.push(format!(
+                    "{label}: {} does not contain {marker}",
+                    path.display()
+                ));
+            }
+        }
+        for marker in forbidden {
+            if text.contains(marker) {
+                problems.push(format!(
+                    "{label}: {} still contains {marker}",
+                    path.display()
+                ));
+            }
+        }
+        problems
+    }
 }

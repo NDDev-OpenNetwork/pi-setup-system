@@ -733,8 +733,11 @@ fn list(harness: &Harness) -> Result<()> {
 
 fn status(harness: &Harness, target: &Path) -> Result<()> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(None), &harness.not_our_identity())?;
+    let owned = wire::owned_here(harness, &resolved, HUMAN_SCOPE)?;
+    let identity = resolved.identity_of_owned(
+        &owned.iter().map(String::as_str).collect::<Vec<_>>(),
+        &harness.not_our_identity(),
+    )?;
     println!("Target   {}", resolved.root().display());
     println!("Identity {}", short(&identity));
 
@@ -810,8 +813,14 @@ fn backups(harness: &Harness, target: &Path) -> Result<()> {
 
 fn diff(harness: &Harness, target: &Path) -> Result<()> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(None), &harness.not_our_identity())?;
+    let owned = match ProviderState::read(resolved.root(), harness.state_file)? {
+        StateReading::Current(state) => state.written_paths.clone(),
+        _ => Vec::new(),
+    };
+    let identity = resolved.identity_of_owned(
+        &owned.iter().map(String::as_str).collect::<Vec<_>>(),
+        &harness.not_our_identity(),
+    )?;
     let StateReading::Current(state) = ProviderState::read(resolved.root(), harness.state_file)?
     else {
         println!(
@@ -866,12 +875,6 @@ fn apply_setup(
         },
     )?;
     println!("Applied setup {setup_id} to {}.", target.display());
-    // **The same sentence `remove` says, because an install does the same
-    // thing.** `replace_managed_from` removes each owned namespace whole before
-    // copying into it, so an install takes whatever a person kept under one --
-    // and until now only `remove` said so. The correction reached the result
-    // line of one verb, the plan preview of both, and not this line, which is
-    // the one somebody reads after an install has already happened.
     for line in wire::taken_before_writing(harness, HUMAN_SCOPE) {
         println!("  {line}");
     }
@@ -923,26 +926,9 @@ fn restore(harness: &Harness, target: &Path, backup: Option<String>) -> Result<(
 }
 
 fn remove(harness: &Harness, target: &Path) -> Result<()> {
-    // **A removal with no record of its own is not this provider's removal.**
-    // `remove_managed` walks the declared namespaces and takes each whole, which
-    // is exactly right for a target this build wrote: the setup owns those
-    // entries and the state file says so. On a target it never wrote, the same
-    // walk empties somebody else's home while the report says "removed
-    // everything <provider> owns" -- and it owned nothing here. Measured
-    // 2026-09-02 on a target holding only a person's own `config.toml`,
-    // `AGENTS.md` and `prompts/`: all three went, recoverable from the slot the
-    // capture took, under a sentence that did not describe what happened.
-    //
-    // The scoped branch of `remove_managed` already refuses for the same
-    // reason, in the same words -- *this build does not know what it wrote* --
-    // and this is that refusal on the surface a person types. The wire is not
-    // changed: a consumer's removal is authorized by a plan it made against a
-    // target it installed, and its own flow writes state first.
-    // Three answers, and the middle one is why this is not a flat refusal: a
-    // target with nothing of ours on it is *already removed*, and saying so
-    // quietly keeps a repeat from becoming an error where nothing happened.
-    // The consumer chose this shape on 2026-09-02 and takes the same three
-    // over the wire.
+    // A target with no record of ours is already removed: composition no
+    // longer guesses ownership from declared namespaces. Repeating remove
+    // stays a quiet no-op.
     let resolved = Target::resolve(target, harness.control_directory)?;
     match wire::classify_removal(harness, &resolved, HUMAN_SCOPE)? {
         wire::Removal::Recorded => {}
@@ -969,26 +955,10 @@ fn remove(harness: &Harness, target: &Path) -> Result<()> {
         wire::Applied::default(),
     )?;
     println!(
-        "Removed everything {} owns from {}.",
+        "Removed the files {} recorded writing from {}.",
         harness.provider_id,
         target.display()
     );
-    // **Say what "owns" means, because the sentence above is true and is heard
-    // wrong.** A person reads "removed everything it owns" as "removed the
-    // files it installed". `remove_managed` walks `native_namespaces` and calls
-    // `remove_dir_all` on each, so a namespace goes whole -- including whatever
-    // the person put there themselves.
-    //
-    // It matters most where a declaration keeps a transition window open. Cursor
-    // owns `plugins` *and* `plugins/local`; the bytes this provider writes are
-    // all under the second, and `remove` takes the first, which is where a
-    // marketplace plugin lives. Nothing is lost -- the capture named below runs
-    // before the removal, over exactly these namespaces, and `restore` returns
-    // them byte-exact -- but "nothing is lost" is only true if the person knows
-    // to restore, and they only know if they are told what went.
-    // One sentence, from the one place that owns it. This used to be a second
-    // copy saying "the capture below" while the plan preview said "above" --
-    // two wordings of one fact, each true only where it happened to be printed.
     for line in wire::taken_before_writing(harness, HUMAN_SCOPE) {
         println!("  {line}");
     }
@@ -1099,8 +1069,16 @@ fn mutate(
     applied: wire::Applied,
 ) -> Result<serde_json::Value> {
     let resolved = Target::resolve(target, harness.control_directory)?;
-    let identity =
-        resolved.identity_of_owned(harness.owned_projection(None), &harness.not_our_identity())?;
+    let owned = wire::owned_here(harness, &resolved, HUMAN_SCOPE)?;
+    let identity_paths =
+        wire::snapshot_if_unmanaged_backup(harness, &resolved, HUMAN_SCOPE, &owned, operation)?;
+    let identity = resolved.identity_of_owned(
+        &identity_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        &harness.not_our_identity(),
+    )?;
     let build_digest = harness.build_digest()?;
     let profile = harness.projection_profile()?;
     let operation_id = operation_id(harness, &identity);
@@ -1160,6 +1138,8 @@ fn mutate(
         // install: that arrives over the wire, with artifacts somebody else
         // downloaded between planning and applying.
         software_artifacts: Vec::new(),
+        software_prefix: None,
+        software_version: None,
         // The human surface removes whole and carries no bundle, so no path
         // has a second sentence.
         end_state: Vec::new(),
@@ -1204,10 +1184,16 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
     match effect {
         Effect::Backup => vec![capture],
         Effect::Remove => {
-            // A count, where the result line four hundred lines above names
-            // them. `wire::taken_before_writing` carries the words both say.
             let mut lines = vec![capture];
             lines.extend(wire::taken_before_writing(harness, HUMAN_SCOPE));
+            lines
+        }
+        Effect::ResetNamespaces => {
+            let mut lines = vec![capture];
+            lines.push(format!(
+                "these entries go whole, not file by file: {}",
+                harness.native_namespaces.join(", ")
+            ));
             lines
         }
         Effect::Adopt { stamp } => vec![
@@ -1246,10 +1232,6 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
             lines
         }
         Effect::Materialize { setup } => {
-            // "over the entries this provider owns" is true and is heard as
-            // "writes the setup's files". `replace_managed_from` removes each
-            // owned namespace whole first, so the removal is named before the
-            // write it precedes.
             let mut lines = vec![capture];
             lines.extend(wire::taken_before_writing(harness, HUMAN_SCOPE));
             lines.push(format!(
@@ -1613,8 +1595,8 @@ mod tests {
     /// `remove`'s *result* line has named the namespaces since `0.0.24`; the
     /// preview beside it still printed a count, and `install`'s preview said
     /// *"write setup X over the entries this provider owns"* -- true, and heard
-    /// as "writes the setup's files", while `replace_managed_from` removes each
-    /// owned namespace whole before copying into it.
+    /// as "writes the setup's files". Default `replace_managed_from` now
+    /// withdraws recorded files, then copies the payload's recorded members.
     ///
     /// Observed red against the shipped wording: the old `Remove` line held a
     /// number and no name, and the old `Materialize` line held no removal at
@@ -1624,10 +1606,14 @@ mod tests {
         let facts = harness();
 
         let removal = effect_lines(&facts, &Effect::Remove, None).join("\n");
-        for namespace in facts.native_namespaces {
-            assert!(removal.contains(namespace), "{removal}");
-        }
-        assert!(removal.contains("whole, not file by file"), "{removal}");
+        assert!(
+            removal.contains("only the files this provider recorded writing"),
+            "{removal}"
+        );
+        assert!(
+            !removal.contains("whole, not file by file"),
+            "default remove still claimed namespaces go whole: {removal}"
+        );
 
         let (catalog, _) = world("preview-names-what-goes");
         let setup = setup_at(&catalog, "baseline");
@@ -1637,9 +1623,17 @@ mod tests {
             Some("baseline"),
         );
         let text = writing.join("\n");
-        assert!(text.contains("whole, not file by file"), "{text}");
-        // And in that order: what goes, then what arrives.
-        let removed = text.find("whole, not file by file").unwrap();
+        assert!(
+            text.contains("only the files this provider recorded writing"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("whole, not file by file"),
+            "default install still claimed namespaces go whole: {text}"
+        );
+        let removed = text
+            .find("only the files this provider recorded writing")
+            .unwrap();
         let written = text.find("write setup baseline").unwrap();
         assert!(removed < written, "the write is announced first: {text}");
     }
@@ -1710,13 +1704,19 @@ mod tests {
         .unwrap();
 
         let resolved = Target::resolve(&target, harness().control_directory).unwrap();
-        let identity = resolved
-            .identity_of_owned(
-                harness().owned_projection(None),
-                &harness().not_our_identity(),
-            )
-            .unwrap();
-        assert_eq!(identity, setup.definition_digest);
+        let owned = wire::owned_here(&harness(), &resolved, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# exact\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("skills/a.md")).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            owned,
+            vec!["AGENTS.md".to_owned(), "skills/a.md".to_owned()]
+        );
     }
 
     #[test]
@@ -2256,14 +2256,14 @@ mod tests {
 
         install(&catalog, &target, "baseline", Operation::Install);
 
-        // What the setup declares is now what is there, and the deep tree that
-        // was in the same namespace is gone with it — that is what owning a
-        // namespace means.
         assert_eq!(
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             "# baseline\n"
         );
-        assert!(!target.join("skills/one").exists());
+        assert!(
+            target.join("skills/one").exists(),
+            "install took an unrecorded nested tree"
+        );
 
         // Nothing outside those namespaces moved.
         assert_eq!(
@@ -2353,12 +2353,12 @@ mod tests {
         )
         .unwrap();
 
-        for owned in ["AGENTS.md", "settings.json", "skills"] {
-            assert!(
-                !target.join(owned).exists(),
-                "{owned} survived a remove that claims to own it"
-            );
-        }
+        assert!(!target.join("AGENTS.md").exists());
+        assert!(!target.join("settings.json").exists());
+        assert!(
+            target.join("skills/one").exists(),
+            "remove took an unrecorded nested tree"
+        );
         assert_eq!(
             fs::read_to_string(target.join("unrelated.txt")).unwrap(),
             "mine"
@@ -2380,7 +2380,10 @@ mod tests {
         fs::set_permissions(&stubborn, fs::Permissions::from_mode(0o444)).unwrap();
 
         install(&catalog, &target, "baseline", Operation::Install);
-        assert!(!stubborn.exists(), "a read-only file blocked the install");
+        assert!(
+            stubborn.exists(),
+            "composition deleted an unrecorded read-only file"
+        );
 
         let _ = fs::remove_dir_all(target.parent().unwrap());
     }
