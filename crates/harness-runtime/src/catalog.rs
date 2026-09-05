@@ -2007,17 +2007,46 @@ mod tests {
         }
     }
 
-    fn full_auto_home(harness: &str) -> PathBuf {
+    /// Policy file under config home plus bytes that
+    /// [`effective_autonomy`] reports as leftover ask/on-request.
+    fn planted_ask_file(harness: &str) -> (&'static str, &'static [u8]) {
+        match harness {
+            "claude" => ("settings.json", br#"{"defaultMode":"ask"}"#),
+            "codex" => ("config.toml", b"approval_policy = \"on-request\"\n"),
+            "grok" => ("config.toml", b"permission_mode = \"ask\"\n"),
+            "cursor" => ("cli-config.json", br#"{"approvalMode":"ask"}"#),
+            "opencode" => ("opencode.json", br#"{"permission":{"*":"ask"}}"#),
+            "pi" => ("settings.json", br#"{"defaultProjectTrust":"ask"}"#),
+            "antigravity" => (
+                "antigravity-cli/settings.json",
+                br#"{"toolPermission":"request-review"}"#,
+            ),
+            other => panic!("{other}: no planted-ask fixture"),
+        }
+    }
+
+    fn write_planted_ask(home: &Path, harness: &str) {
+        let (relative, bytes) = planted_ask_file(harness);
+        let path = home.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, bytes).unwrap();
+    }
+
+    /// The first full-auto payload this workspace actually ships.
+    ///
+    /// Authoring has seven harnesses; a public tree has one. Hard-coding
+    /// `opencode` panics on every rendered provider except opencode itself.
+    fn present_full_auto() -> (String, PathBuf) {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let harnesses = harnesses_in_workspace(&workspace);
         let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
         rows.into_iter()
-            .find(|(name, dir)| {
-                name == harness && dir.file_name().is_some_and(|leaf| leaf == "full-auto")
-            })
+            .find(|(_, dir)| dir.file_name().is_some_and(|leaf| leaf == "full-auto"))
             .map_or_else(
-                || panic!("{harness} full-auto home missing"),
-                |(_, dir)| dir.join(SETUP_PAYLOAD),
+                || panic!("no full-auto home among {harnesses:?}"),
+                |(name, dir)| (name, dir.join(SETUP_PAYLOAD)),
             )
     }
 
@@ -2026,44 +2055,36 @@ mod tests {
     /// directory must not be reported as the launched posture.
     #[test]
     fn effective_autonomy_is_the_launched_config_home_not_a_decoy() {
-        let launched = scratch("launched-opencode");
-        copy_tree(&full_auto_home("opencode"), &launched);
+        let (harness, full_auto) = present_full_auto();
+        let launched = scratch("launched-config-home");
+        copy_tree(&full_auto, &launched);
         assert!(
-            effective_autonomy("opencode", &launched).is_empty(),
-            "copied full-auto home was not autonomous: {:?}",
-            effective_autonomy("opencode", &launched)
+            effective_autonomy(&harness, &launched).is_empty(),
+            "copied {harness} full-auto home was not autonomous: {:?}",
+            effective_autonomy(&harness, &launched)
         );
 
-        let decoy = scratch("decoy-opencode");
-        fs::create_dir_all(&decoy).unwrap();
-        fs::write(
-            decoy.join("opencode.json"),
-            r#"{"permission":{"edit":"ask"}}"#,
-        )
-        .unwrap();
+        let decoy = scratch("decoy-config-home");
+        write_planted_ask(&decoy, &harness);
+        let decoy_problems = effective_autonomy(&harness, &decoy);
         assert!(
-            effective_autonomy("opencode", &decoy)
+            decoy_problems
                 .iter()
-                .any(|line| line.contains(r#""ask""#)),
-            "decoy ask was not reported: {:?}",
-            effective_autonomy("opencode", &decoy)
+                .any(|line| line.contains("still contains")),
+            "decoy ask was not reported as leftover policy: {decoy_problems:?}"
         );
         assert!(
-            effective_autonomy("opencode", &launched).is_empty(),
+            effective_autonomy(&harness, &launched).is_empty(),
             "decoy taint leaked into the launched home"
         );
 
-        fs::write(
-            launched.join("opencode.json"),
-            r#"{"permission":{"*":"ask"}}"#,
-        )
-        .unwrap();
+        write_planted_ask(&launched, &harness);
+        let overwritten = effective_autonomy(&harness, &launched);
         assert!(
-            effective_autonomy("opencode", &launched)
+            overwritten
                 .iter()
-                .any(|line| line.contains(r#""ask""#)),
-            "overwriting the launched policy file did not fail: {:?}",
-            effective_autonomy("opencode", &launched)
+                .any(|line| line.contains("still contains")),
+            "overwriting the launched policy file did not fail: {overwritten:?}"
         );
     }
 
@@ -2071,6 +2092,11 @@ mod tests {
     fn antigravity_settings_only_use_keys_measured_in_the_pin() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let harnesses = harnesses_in_workspace(&workspace);
+        if !harnesses.iter().any(|name| name == "antigravity") {
+            // Public tree for another product. The pin-key contract still
+            // runs in authoring and in the antigravity public tree.
+            return;
+        }
         let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
         let mut seen = 0;
         for (harness, variant_dir) in rows {
@@ -2095,9 +2121,11 @@ mod tests {
                 "{path:?} wrote artifactReviewPolicy, which the 1.1.22 pin registry does not name"
             );
         }
-        assert!(
-            seen >= 4,
-            "expected four antigravity variants, found {seen}"
+        assert_eq!(
+            seen,
+            STANDARD_VARIANTS.len(),
+            "expected {} antigravity variants, found {seen}",
+            STANDARD_VARIANTS.len()
         );
     }
 }
