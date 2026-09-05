@@ -1774,39 +1774,88 @@ mod tests {
     /// Content footprint may differ; asking the user or sandboxing by default
     /// may not. A planted ask/on-request/request-review setting in any standard
     /// variant must fail this test.
+    ///
+    /// The authoring workspace nests `setups/{harness}/{variant}`. A public
+    /// tree is one harness and keeps `setups/{variant}` at the root. Counting
+    /// only the nested shape reported `found 0` on every rendered provider.
     #[test]
     fn standard_variants_share_autonomous_posture() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../setups");
-        let mut problems = Vec::new();
-        let mut seen = 0;
-        for harness_entry in fs::read_dir(&root).unwrap() {
-            let harness_dir = harness_entry.unwrap().path();
-            if !harness_dir.is_dir() {
-                continue;
-            }
-            let harness = harness_dir
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            for variant_entry in fs::read_dir(&harness_dir).unwrap() {
-                let variant_dir = variant_entry.unwrap().path();
-                if !variant_dir.join(SETUP_MANIFEST).is_file() {
-                    continue;
-                }
-                seen += 1;
-                problems.extend(autonomy_problems(&harness, &variant_dir));
-            }
-        }
-        assert!(
-            seen >= 28,
-            "expected every shipped standard variant, found {seen}"
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let harnesses = harnesses_in_workspace(&workspace);
+        let rows = standard_setup_dirs(&workspace.join("setups"), &harnesses);
+        let expected = harnesses.len() * STANDARD_VARIANTS.len();
+        assert_eq!(
+            rows.len(),
+            expected,
+            "expected {expected} standard variants for {:?}, found {}",
+            harnesses,
+            rows.len()
         );
+        let mut problems = Vec::new();
+        for (harness, variant_dir) in &rows {
+            problems.extend(autonomy_problems(harness, variant_dir));
+        }
         assert!(
             problems.is_empty(),
             "standard variants are not uniformly autonomous:\n{}",
             problems.join("\n")
         );
+    }
+
+    const STANDARD_VARIANTS: &[&str] = &["baseline", "minimal", "full-auto", "nddev-builder"];
+
+    fn harnesses_in_workspace(workspace: &Path) -> Vec<String> {
+        let crates = workspace.join("crates");
+        let mut names = Vec::new();
+        for name in [
+            "claude",
+            "codex",
+            "grok",
+            "pi",
+            "cursor",
+            "opencode",
+            "antigravity",
+        ] {
+            if crates.join(format!("{name}-setup-system")).is_dir() {
+                names.push(name.to_owned());
+            }
+        }
+        names
+    }
+
+    fn standard_setup_dirs(setups: &Path, harnesses: &[String]) -> Vec<(String, PathBuf)> {
+        let mut rows = Vec::new();
+        if harnesses.len() == 1 {
+            let harness = &harnesses[0];
+            for variant in STANDARD_VARIANTS {
+                let variant_dir = setups.join(variant);
+                if variant_dir.join(SETUP_MANIFEST).is_file() {
+                    rows.push((harness.clone(), variant_dir));
+                }
+            }
+            return rows;
+        }
+        for harness in harnesses {
+            for variant in STANDARD_VARIANTS {
+                let variant_dir = setups.join(harness).join(variant);
+                if variant_dir.join(SETUP_MANIFEST).is_file() {
+                    rows.push((harness.clone(), variant_dir));
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn a_single_harness_tree_reads_top_level_standard_variants() {
+        let root = scratch("public-layout-setups");
+        for variant in STANDARD_VARIANTS {
+            fs::create_dir_all(root.join(variant)).unwrap();
+            fs::write(root.join(variant).join(SETUP_MANIFEST), "{}").unwrap();
+        }
+        let rows = standard_setup_dirs(&root, &["claude".to_owned()]);
+        assert_eq!(rows.len(), STANDARD_VARIANTS.len());
+        assert!(rows.iter().all(|(harness, _)| harness == "claude"));
     }
 
     #[test]
