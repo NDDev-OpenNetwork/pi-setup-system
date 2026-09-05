@@ -275,10 +275,19 @@ pub enum LaunchBinding {
     ///
     /// `unbound` names the ones that do not, because that list is the whole
     /// reason a launch here would be a different harness from the one selected.
+    /// `home_rooted` are the same surfaces as paths under the process home
+    /// (`~/.cursor/...`). When it is non-empty, launch materialises them from
+    /// `--target` into a provider-owned overlay and points only the child
+    /// process home at that overlay. The product still ignores the config-home
+    /// variable for those files; the overlay is how the selected setup is what
+    /// `homedir()` resolves.
     Partial {
         /// The owned surfaces that do *not* follow the target, because that list
         /// is the whole reason a launch here would be a different harness.
         unbound: &'static str,
+        /// Paths under the process-home leaf (`~/.cursor` → `.cursor/...`).
+        /// Empty means launch cannot isolate them and must keep refusing.
+        home_rooted: &'static [&'static str],
     },
     /// The product documents no way to be pointed at a target at all.
     Undocumented,
@@ -591,25 +600,25 @@ impl Harness {
         }
     }
 
-    /// The complete `provider-info` answer for this build.
+    /// Whether launch can point the product at `--target` for every owned surface.
     ///
-    /// Only the five core operations are declared. The software lifecycle and
-    /// `launch` are optional in the contract, and this runtime does not
-    /// implement them — declaring one would let a consumer call an operation
-    /// that cannot be honoured, which is worse than not offering it.
-    ///
+    /// Complete bindings follow the config-home variable. Partial bindings do
+    /// not, unless `home_rooted` names the process-home surfaces so launch can
+    /// materialise them under a child-only home overlay.
+    #[must_use]
+    pub fn launch_is_bound(&self) -> bool {
+        match self.launch_binding {
+            LaunchBinding::Complete { .. } => true,
+            LaunchBinding::Partial { home_rooted, .. } => !home_rooted.is_empty(),
+            LaunchBinding::Undocumented => false,
+        }
+    }
+
     /// Whether this build can start the product it installed.
     ///
-    /// Two things have to hold. It must have installed one -- launching a name
-    /// found on `PATH` starts whatever else shares that spelling, which is not
-    /// this product and not this build's business. And the product must
-    /// document an environment variable for its configuration home, because
-    /// every command in this contract takes a `--target` and a launch that
-    /// could not point the product at it would be answering a different
-    /// question than the one asked.
-    ///
-    /// Antigravity documents no such variable. It installs and does not launch,
-    /// and that is the honest pair rather than a launch that ignores its target.
+    /// It must have installed one, document a configuration-home variable, and
+    /// either follow that variable completely or isolate process-home surfaces
+    /// under a child-only overlay. Antigravity documents no such variable.
     #[must_use]
     pub fn can_launch(&self) -> bool {
         // Three conditions, and the history is in the order. This used to be the
@@ -621,7 +630,7 @@ impl Harness {
         // the binding, because a product that documents none cannot be pointed
         // at a target at all, and that is a different sentence from a product
         // that can be pointed at one and only half follows.
-        matches!(self.launch_binding, LaunchBinding::Complete { .. })
+        self.launch_is_bound()
             && !self.config_home_env.is_empty()
             && matches!(
                 self.software,
@@ -652,7 +661,7 @@ impl Harness {
                 "{} documents no way to be pointed at a target",
                 self.product
             ),
-            LaunchBinding::Partial { unbound } => format!(
+            LaunchBinding::Partial { unbound, .. } => format!(
                 "{} follows {} for some of what this provider owns and not for the rest: \
                  {}. A launch would assemble a session from this target and the caller's \
                  own home, which is a different harness from the one selected",
@@ -804,6 +813,7 @@ mod tests {
         let partial = Harness {
             launch_binding: LaunchBinding::Partial {
                 unbound: "rules, hooks.json",
+                home_rooted: &[],
             },
             ..with_software
         };
@@ -815,6 +825,18 @@ mod tests {
             partial.why_no_launch().contains("rules, hooks.json"),
             "the refusal does not name the surfaces that would come from elsewhere: {}",
             partial.why_no_launch()
+        );
+
+        let isolated = Harness {
+            launch_binding: LaunchBinding::Partial {
+                unbound: "rules, hooks.json",
+                home_rooted: &["rules", "hooks.json"],
+            },
+            ..with_software
+        };
+        assert!(
+            isolated.can_launch(),
+            "a partial binding with home-rooted surfaces to isolate cannot launch"
         );
 
         let undocumented = Harness {

@@ -43,7 +43,7 @@ use provider_v3::{Error, Operation, Result, WireReason};
 use setup_core::platform_of_this_host;
 use setup_core::software::{self, Delivery, Software};
 
-use crate::facts::Harness;
+use crate::facts::{Harness, LaunchBinding};
 
 /// The software this harness installs, or the reason it installs none.
 fn declared(harness: &Harness) -> Result<Software> {
@@ -464,6 +464,8 @@ pub(crate) fn launch(
 
     verify_installed(&root, declared.command, &executable)?;
 
+    let overlay = prepare_launch_overlay(harness, target)?;
+
     // One of the two places in this program that may spawn, and the reason it
     // may: `launch` starts the product, which the contract declares
     // `runtime_external` rather than a local phase. The lint refuses the type
@@ -474,7 +476,7 @@ pub(crate) fn launch(
     )]
     let mut command = std::process::Command::new(&executable);
     command.args(arguments);
-    for (name, value) in launch_environment(harness, target) {
+    for (name, value) in launch_environment(harness, target, overlay.as_deref()) {
         command.env(name, value);
     }
 
@@ -653,7 +655,11 @@ fn verify_exposed_chain(exposed: &Path, payload: &Path, payload_digest: &str) ->
 /// rollback to the version beside it. A product that replaces those bytes while
 /// running makes all three false, and this prefix is a distribution channel its
 /// vendor did not build.
-fn launch_environment(harness: &Harness, target: &Path) -> Vec<(&'static str, String)> {
+fn launch_environment(
+    harness: &Harness,
+    target: &Path,
+    overlay: Option<&Path>,
+) -> Vec<(&'static str, String)> {
     let mut pairs = vec![(
         harness.config_home_env,
         target.to_string_lossy().into_owned(),
@@ -661,7 +667,107 @@ fn launch_environment(harness: &Harness, target: &Path) -> Vec<(&'static str, St
     if !harness.updates_off_env.is_empty() {
         pairs.push((harness.updates_off_env, "1".to_owned()));
     }
+    if let Some(home) = overlay {
+        let home = home.to_string_lossy().into_owned();
+        pairs.push(("HOME", home.clone()));
+        if cfg!(windows) {
+            pairs.push(("USERPROFILE", home));
+        }
+    }
     pairs
+}
+
+/// Materialise process-home surfaces from `--target` into a child-only home.
+///
+/// Cursor joins `rules`, `commands`, `hooks.json`, `mcp.json`, `plugins/local`
+/// and `skills` to `homedir()/.cursor`, ignoring `CURSOR_CONFIG_DIR`. Copying
+/// those files into `{target}/{control}/launch-home/.cursor` and pointing only
+/// the child `HOME` there makes the selected setup what `homedir()` resolves,
+/// without writing the caller's home.
+pub(crate) fn prepare_launch_overlay(
+    harness: &Harness,
+    target: &Path,
+) -> Result<Option<std::path::PathBuf>> {
+    let LaunchBinding::Partial { home_rooted, .. } = harness.launch_binding else {
+        return Ok(None);
+    };
+    if home_rooted.is_empty() {
+        return Ok(None);
+    }
+    let Some(leaf) = harness.documented_config_home.strip_prefix("~/") else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} names process-home surfaces but its documented config home is not under ~/",
+                harness.provider_id
+            ),
+        ));
+    };
+    let overlay = target.join(harness.control_directory).join("launch-home");
+    let rooted = overlay.join(leaf);
+    if rooted.exists() {
+        fs::remove_dir_all(&rooted).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("cannot reset {}: {error}", rooted.display()),
+            )
+        })?;
+    }
+    fs::create_dir_all(&rooted).map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!("cannot create {}: {error}", rooted.display()),
+        )
+    })?;
+    for relative in home_rooted {
+        let from = target.join(relative);
+        if !from.exists() {
+            continue;
+        }
+        let to = rooted.join(relative);
+        copy_owned(&from, &to)?;
+    }
+    Ok(Some(overlay))
+}
+
+fn copy_owned(from: &Path, to: &Path) -> Result<()> {
+    if from.is_dir() {
+        fs::create_dir_all(to).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("cannot create {}: {error}", to.display()),
+            )
+        })?;
+        let read = fs::read_dir(from).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("cannot list {}: {error}", from.display()),
+            )
+        })?;
+        for entry in read.flatten() {
+            copy_owned(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!("cannot create {}: {error}", parent.display()),
+            )
+        })?;
+    }
+    fs::copy(from, to).map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "cannot copy {} to {}: {error}",
+                from.display(),
+                to.display()
+            ),
+        )
+    })?;
+    Ok(())
 }
 
 /// Whether the mode bits say this host can run it.
@@ -880,7 +986,7 @@ mod tests {
             ..crate::wire::tests_support::TEST
         };
         assert_eq!(
-            launch_environment(&with, target),
+            launch_environment(&with, target, None),
             vec![
                 ("PRODUCT_CONFIG_DIR", target.display().to_string()),
                 ("DISABLE_UPDATES", "1".to_owned()),
@@ -893,7 +999,7 @@ mod tests {
             ..crate::wire::tests_support::TEST
         };
         assert_eq!(
-            launch_environment(&without, target),
+            launch_environment(&without, target, None),
             vec![("PRODUCT_CONFIG_DIR", target.display().to_string())],
             "a product with no such variable had its environment written to anyway"
         );
@@ -1059,6 +1165,85 @@ mod tests {
             "{}",
             refused.detail()
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn cursor_like() -> Harness {
+        Harness {
+            documented_config_home: "~/.cursor",
+            config_home_env: "CURSOR_CONFIG_DIR",
+            control_directory: ".cursor-setup-system",
+            launch_binding: LaunchBinding::Partial {
+                unbound: "rules, hooks.json",
+                home_rooted: &["rules", "hooks.json", "skills"],
+            },
+            ..crate::wire::tests_support::TEST
+        }
+    }
+
+    /// Process-home surfaces come from `--target`, not from the caller's home.
+    ///
+    /// `cli-config.json` follows `CURSOR_CONFIG_DIR` and must stay at the
+    /// target. Overlaying it under `.cursor/` would duplicate the bound file
+    /// and still leave rules/hooks coming from the caller.
+    #[test]
+    fn launch_overlay_copies_home_rooted_surfaces_from_the_target_not_the_caller() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-runtime-overlay-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let caller = root.join("caller-home");
+        fs::create_dir_all(target.join("rules")).unwrap();
+        fs::write(target.join("rules").join("a.mdc"), "from-target\n").unwrap();
+        fs::write(target.join("hooks.json"), "{\"from\":\"target\"}\n").unwrap();
+        fs::write(
+            target.join("cli-config.json"),
+            "{\"approvalMode\":\"unrestricted\"}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(caller.join(".cursor").join("rules")).unwrap();
+        fs::write(
+            caller.join(".cursor").join("rules").join("a.mdc"),
+            "from-caller\n",
+        )
+        .unwrap();
+
+        let harness = cursor_like();
+        let overlay = prepare_launch_overlay(&harness, &target).unwrap().unwrap();
+        assert_eq!(
+            overlay,
+            target.join(".cursor-setup-system").join("launch-home")
+        );
+        let cursor_leaf = overlay.join(".cursor");
+        assert_eq!(
+            fs::read_to_string(cursor_leaf.join("rules").join("a.mdc")).unwrap(),
+            "from-target\n"
+        );
+        assert_eq!(
+            fs::read_to_string(cursor_leaf.join("hooks.json")).unwrap(),
+            "{\"from\":\"target\"}\n"
+        );
+        assert!(
+            !cursor_leaf.join("cli-config.json").exists(),
+            "bound cli-config.json was copied into the process-home leaf"
+        );
+        assert_eq!(
+            fs::read_to_string(caller.join(".cursor").join("rules").join("a.mdc")).unwrap(),
+            "from-caller\n",
+            "the caller's home was written"
+        );
+
+        let env = launch_environment(&harness, &target, Some(&overlay));
+        assert!(env.contains(&("CURSOR_CONFIG_DIR", target.display().to_string())));
+        assert!(env.contains(&("HOME", overlay.display().to_string())));
+        assert!(
+            !env.iter()
+                .any(|(name, value)| *name == "HOME" && Path::new(value) == caller)
+        );
+
         let _ = fs::remove_dir_all(&root);
     }
 }
