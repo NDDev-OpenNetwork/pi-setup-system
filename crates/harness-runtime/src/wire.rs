@@ -1434,11 +1434,7 @@ pub(crate) struct Applied {
 /// only when `setup.json` vendors it; nothing is minted here.
 pub(crate) fn applied_from_catalog(setup: &Setup) -> Applied {
     Applied {
-        setup_id: setup
-            .manifest
-            .setup_stable_id
-            .clone()
-            .or_else(|| Some(setup.manifest.id.clone())),
+        setup_id: Some(setup.manifest.id.clone()),
         setup_definition_digest: Some(setup.definition_digest.clone()),
         setup_version: setup.manifest.setup_version.clone(),
         setup_version_passport_digest: setup.manifest.setup_passport_digest.clone(),

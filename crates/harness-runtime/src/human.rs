@@ -1979,10 +1979,7 @@ mod tests {
         .unwrap();
         match ProviderState::read(&target, harness().state_file).unwrap() {
             StateReading::Current(state) => {
-                assert_eq!(
-                    state.setup_stable_id.as_deref(),
-                    Some("setup_01TESTIDENTITY000000000000")
-                );
+                assert_eq!(state.setup_stable_id.as_deref(), Some("full-auto"));
                 assert_eq!(state.setup_version.as_deref(), Some("1.4"));
                 assert_eq!(
                     state.setup_version_passport_digest.as_deref(),
