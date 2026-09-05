@@ -486,10 +486,10 @@ mod tests {
             &harness_runtime::Catalog::at(&root).list().unwrap(),
         );
         assert!(found.problems.is_empty(), "{}", found.problems.join("\n  "));
-        // pi carries 9 file(s) inside its skill. Stated so that a layout change emptying the skill fails here rather than passing a guard with nothing left to walk.
+        // pi carries 10 file(s) inside its skill. Stated so that a layout change emptying the skill fails here rather than passing a guard with nothing left to walk.
         assert_eq!(
-            found.entry_points, 9,
-            "the stranded-file guard walked {} files inside skills, not 9",
+            found.entry_points, 10,
+            "the stranded-file guard walked {} files inside skills, not 10",
             found.entry_points
         );
     }

@@ -30,6 +30,7 @@ target-explicit, reversible, and backed by this tree's checks.
 
 - **What this harness owns, declines, and why** — `references/surfaces.md`
 - **The commands, the invariants, and the software half** — `references/lifecycle.md`
+- **The ai-stp CLI lifecycle: scaffold, compose, install, release, publish** — `references/ai-stp-lifecycle.md`
 - **The checks this tree's CI runs, a disposable lifecycle smoke, and the consumer** — `references/validation.md`
 - **Writing this harness's configuration file** — `references/authoring-settings.md`
 - **Writing this harness's instruction file** — `references/authoring-instructions.md`
