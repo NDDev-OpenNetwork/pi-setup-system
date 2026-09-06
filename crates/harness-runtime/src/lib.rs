@@ -19,18 +19,18 @@
 //!
 //! The software lifecycle is optional in the contract, and a harness declares
 //! it exactly when it carries an artifact table -- `Harness::installs_a_program`
-//! is the whole rule, and `launch` adds one condition on top of it, that the
-//! product documents an environment variable this build can point at a target.
-//! Declaring an optional operation this runtime cannot perform would let a
-//! consumer call something that cannot be honoured, which is worse than not
-//! offering it.
+//! is the whole rule, and `launch` adds the condition that the product will
+//! actually read `--target`. For six harnesses that is a documented environment
+//! variable. For Antigravity there is none: launch is honest only when the
+//! target *is* `~/.gemini`. Declaring an optional operation this runtime cannot
+//! perform would let a consumer call something that cannot be honoured, which
+//! is worse than not offering it.
 //!
 //! **The rule is stated here and the tally is not, deliberately.** This
 //! paragraph used to carry one -- *"six of the seven do, and pi does not"*,
 //! plus *"`launch` is declared by none"* -- and both were false by the time
-//! anyone read them: pi gained an artifact table in `7180648`, and every
-//! harness but antigravity declares `launch`. A count in prose has nothing
-//! holding it. Ask the predicate.
+//! anyone read them. A count in prose has nothing holding it. Ask the
+//! predicate.
 
 pub(crate) mod adopt;
 pub mod catalog;

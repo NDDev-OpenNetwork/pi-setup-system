@@ -425,6 +425,9 @@ pub(crate) fn launch(
             ),
         ));
     }
+    if harness.config_home_env.is_empty() {
+        refuse_unless_documented_home(harness, target)?;
+    }
 
     let declared = declared(harness)?;
     let root = program_directory(prefix, Operation::Launch)?;
@@ -481,6 +484,61 @@ pub(crate) fn launch(
     }
 
     Err(replace_this_process(command, &executable))
+}
+
+/// Launch against a product that documents no home-override variable.
+///
+/// The product always reads [`Harness::documented_config_home`]. Honouring a
+/// different `--target` would start it against that home while reporting that
+/// the target had been used. Inventing an environment name does not change
+/// what the product reads.
+fn refuse_unless_documented_home(harness: &Harness, target: &Path) -> Result<()> {
+    let expected = documented_home_path(harness)?;
+    if same_directory(target, &expected) {
+        return Ok(());
+    }
+    Err(Error::refuse(
+        WireReason::UnsupportedOperation,
+        format!(
+            "{} documents no environment variable for its configuration home, so launch \
+             is honest only when --target is {}; this target is not that home",
+            harness.product, harness.documented_config_home
+        ),
+    ))
+}
+
+fn documented_home_path(harness: &Harness) -> Result<PathBuf> {
+    let Some(leaf) = harness.documented_config_home.strip_prefix("~/") else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} documented configuration home is not under ~/",
+                harness.provider_id
+            ),
+        ));
+    };
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "cannot resolve {} without HOME or USERPROFILE",
+                    harness.documented_config_home
+                ),
+            )
+        })?;
+    Ok(PathBuf::from(home).join(leaf))
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => match (std::path::absolute(left), std::path::absolute(right)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => left == right,
+        },
+    }
 }
 
 /// The bytes under the exposed command are the bytes this provider installed.
@@ -660,10 +718,13 @@ fn launch_environment(
     target: &Path,
     overlay: Option<&Path>,
 ) -> Vec<(&'static str, String)> {
-    let mut pairs = vec![(
-        harness.config_home_env,
-        target.to_string_lossy().into_owned(),
-    )];
+    let mut pairs = Vec::new();
+    if !harness.config_home_env.is_empty() {
+        pairs.push((
+            harness.config_home_env,
+            target.to_string_lossy().into_owned(),
+        ));
+    }
     if !harness.updates_off_env.is_empty() {
         pairs.push((harness.updates_off_env, "1".to_owned()));
     }
@@ -1003,6 +1064,59 @@ mod tests {
             vec![("PRODUCT_CONFIG_DIR", target.display().to_string())],
             "a product with no such variable had its environment written to anyway"
         );
+
+        let documented = Harness {
+            config_home_env: "",
+            updates_off_env: "",
+            launch_binding: LaunchBinding::DocumentedHome { how: "measured" },
+            ..crate::wire::tests_support::TEST
+        };
+        assert_eq!(
+            launch_environment(&documented, target, None),
+            Vec::<(&str, String)>::new(),
+            "an empty config-home variable must not be written into the child environment"
+        );
+    }
+
+    #[test]
+    fn documented_home_launch_refuses_an_alternate_root_by_name() {
+        let harness = Harness {
+            config_home_env: "",
+            launch_binding: LaunchBinding::DocumentedHome {
+                how: "the product always reads ~/.test",
+            },
+            documented_config_home: "~/.test",
+            ..crate::wire::tests_support::TEST
+        };
+        assert!(harness.can_launch());
+        let elsewhere = std::env::temp_dir().join(format!(
+            "harness-runtime-not-documented-home-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&elsewhere);
+        let error = launch(&harness, &elsewhere, None, &[]).unwrap_err();
+        let _ = fs::remove_dir_all(&elsewhere);
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error.detail().contains("this target is not that home"),
+            "{}",
+            error.detail()
+        );
+        assert!(error.detail().contains("~/.test"), "{}", error.detail());
+    }
+
+    #[test]
+    fn documented_home_launch_accepts_the_resolved_home() {
+        let harness = Harness {
+            config_home_env: "",
+            launch_binding: LaunchBinding::DocumentedHome {
+                how: "the product always reads ~/.test",
+            },
+            documented_config_home: "~/.test",
+            ..crate::wire::tests_support::TEST
+        };
+        let target = documented_home_path(&harness).unwrap();
+        refuse_unless_documented_home(&harness, &target).unwrap();
     }
 
     fn planted_prefix(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
