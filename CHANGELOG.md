@@ -15,6 +15,16 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.66] - 2026-09-07
+
+Reset is an optional protocol operation: it empties declared native
+namespaces and is not composition. Software apply binds to the planned
+prefix, version and artifact. Launch is refused unless the receipt names
+the started bytes. Cursor launch is declared when the process-home overlay
+isolates those surfaces; Antigravity launch is honest against the
+documented ~/.gemini home. Public setup.json carries the vendor corpus
+identity. nddev-builder teaches the ai-stp CLI lifecycle on every harness.
+
 ## [0.0.65] - 2026-09-04
 
 nddev-builder validation names the checks this tree actually runs:
