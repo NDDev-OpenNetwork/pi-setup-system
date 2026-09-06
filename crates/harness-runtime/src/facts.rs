@@ -291,6 +291,15 @@ pub enum LaunchBinding {
     },
     /// The product documents no way to be pointed at a target at all.
     Undocumented,
+    /// The product always reads its documented home. There is no override
+    /// variable, so launch is honest only when `--target` *is* that home.
+    ///
+    /// Alternate-root launch stays refused by name. Inventing an environment
+    /// variable the product does not read is not a repair.
+    DocumentedHome {
+        /// What established that the product reads this home and no other.
+        how: &'static str,
+    },
 }
 
 /// A name the product reads that sits beside one this provider owns.
@@ -604,11 +613,13 @@ impl Harness {
     ///
     /// Complete bindings follow the config-home variable. Partial bindings do
     /// not, unless `home_rooted` names the process-home surfaces so launch can
-    /// materialise them under a child-only home overlay.
+    /// materialise them under a child-only home overlay. Documented-home
+    /// bindings follow no variable: the product always reads one home, and
+    /// launch is bound only when `--target` is that home.
     #[must_use]
     pub fn launch_is_bound(&self) -> bool {
         match self.launch_binding {
-            LaunchBinding::Complete { .. } => true,
+            LaunchBinding::Complete { .. } | LaunchBinding::DocumentedHome { .. } => true,
             LaunchBinding::Partial { home_rooted, .. } => !home_rooted.is_empty(),
             LaunchBinding::Undocumented => false,
         }
@@ -616,29 +627,29 @@ impl Harness {
 
     /// Whether this build can start the product it installed.
     ///
-    /// It must have installed one, document a configuration-home variable, and
-    /// either follow that variable completely or isolate process-home surfaces
-    /// under a child-only overlay. Antigravity documents no such variable.
+    /// It must have installed one, and either follow a configuration-home
+    /// variable completely, isolate process-home surfaces under a child-only
+    /// overlay, or launch only against the documented home when the product
+    /// documents no override. Antigravity is the last of those: empty
+    /// `config_home_env` is a fact, not a hole to fill with an invented name.
     #[must_use]
     pub fn can_launch(&self) -> bool {
-        // Three conditions, and the history is in the order. This used to be the
-        // last two: a variable exists and software is installed. Both are
-        // necessary and neither is sufficient -- what decides is whether the
-        // variable moves what this provider owns, which is the first.
-        //
-        // The variable stays in the conjunction rather than being folded into
-        // the binding, because a product that documents none cannot be pointed
-        // at a target at all, and that is a different sentence from a product
-        // that can be pointed at one and only half follows.
-        self.launch_is_bound()
-            && !self.config_home_env.is_empty()
-            && matches!(
-                self.software,
-                Some(Software {
-                    delivery: Delivery::Artifacts(_),
-                    ..
-                })
-            )
+        // History is in the order. This used to be "a variable exists and
+        // software is installed". Both are necessary for products that have a
+        // variable, and neither is sufficient -- what decides is whether the
+        // product will actually read the target. A product that documents no
+        // override cannot be pointed at an alternate root, but it *can* be
+        // started when the target is the documented home.
+        if !self.launch_is_bound() || !self.installs_a_program() {
+            return false;
+        }
+        match self.launch_binding {
+            LaunchBinding::DocumentedHome { .. } => true,
+            LaunchBinding::Complete { .. } | LaunchBinding::Partial { .. } => {
+                !self.config_home_env.is_empty()
+            }
+            LaunchBinding::Undocumented => false,
+        }
     }
 
     /// Why this build does not start its product, for a caller that asked.
@@ -649,6 +660,15 @@ impl Harness {
     /// else.
     #[must_use]
     pub fn why_no_launch(&self) -> String {
+        if matches!(self.launch_binding, LaunchBinding::DocumentedHome { .. })
+            && self.installs_a_program()
+        {
+            return format!(
+                "{} documents no environment variable for its configuration home, so \
+                 launch is honest only when --target is {}",
+                self.product, self.documented_config_home
+            );
+        }
         if self.config_home_env.is_empty() {
             return format!(
                 "{} documents no environment variable for its configuration home, so a \
@@ -667,7 +687,7 @@ impl Harness {
                  own home, which is a different harness from the one selected",
                 self.product, self.config_home_env, unbound
             ),
-            LaunchBinding::Complete { .. } => {
+            LaunchBinding::Complete { .. } | LaunchBinding::DocumentedHome { .. } => {
                 "this build installs no software, and launching a name found on PATH would \
                  start whatever else shares it"
                     .to_owned()
@@ -845,6 +865,36 @@ mod tests {
             ..with_software
         };
         assert!(!undocumented.can_launch());
+
+        let documented_home = Harness {
+            launch_binding: LaunchBinding::DocumentedHome {
+                how: "the product always reads ~/.sample",
+            },
+            config_home_env: "",
+            documented_config_home: "~/.sample",
+            ..with_software
+        };
+        assert!(
+            documented_home.can_launch(),
+            "a documented-home binding with artifacts cannot launch against that home"
+        );
+        assert!(
+            documented_home
+                .why_no_launch()
+                .contains(documented_home.documented_config_home),
+            "the documented-home sentence must name the home: {}",
+            documented_home.why_no_launch()
+        );
+        let documented_without_software = Harness {
+            launch_binding: LaunchBinding::DocumentedHome { how: "measured" },
+            config_home_env: "",
+            software: None,
+            ..SAMPLE
+        };
+        assert!(
+            !documented_without_software.can_launch(),
+            "a documented-home binding with nothing installed declared launch"
+        );
     }
 
     use super::*;
