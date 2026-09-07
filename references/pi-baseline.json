@@ -9,11 +9,11 @@
   },
   "package": {
     "name": "@earendil-works/pi-coding-agent",
-    "version": "0.85.0",
+    "version": "0.85.1",
     "registry": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent",
-    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.85.0.tgz",
-    "integrity": "sha512-INxVkLAVfAMju5MojJpmyu/0bMP+r+ffZuS7UqVv32E2JwHBRbcHfELDfmFNvapEbgYfKN2r9OYO1p3TqDBR+g==",
-    "shasum": "063fab0fe6d5f6654e09b479e95dd5e2359824c4",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.85.1.tgz",
+    "integrity": "sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==",
+    "shasum": "4cd00f653c3dabeb193b46f511044e7fbfe0f947",
     "node": ">=22.19.0",
     "repository_directory": "packages/coding-agent",
     "note": "**This block describes the npm distribution, which this provider no longer installs.** It is kept because it is a true and useful record of the product -- `bin.pi`, `engines.node`, the registry tarball and its integrity -- and because the version it names is the one the standalone release carries. `node: >=22.19.0` is a requirement of *that* distribution: the artifacts installed here carry their own runtime, and the whole lifecycle was measured 2026-08-31 with `node` absent from `PATH`."
@@ -25,7 +25,7 @@
         "pi",
         "--version"
       ],
-      "expected_stdout": "0.85.0",
+      "expected_stdout": "0.85.1",
       "package_version_source": "package.version",
       "independent_package_identity_required": true
     },
@@ -189,7 +189,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-09-04T13:31:46+00:00",
+  "verified_at": "2026-09-07T03:14:53+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
@@ -402,6 +402,54 @@
     "shape": "gzip-tar",
     "platforms": {
       "linux/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-linux-arm64.tar.gz",
+        "bytes": 42628180,
+        "sha256": "sha256:042d20ae885ee4f3b102815f3280b962c377b2e9fb44de4037908cc530eae4d4",
+        "member": "pi/pi"
+      },
+      "linux/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-linux-x64.tar.gz",
+        "bytes": 42560927,
+        "sha256": "sha256:494e498f47d74d21f40b3386f6a5e921a3d49531a169cab55bbdaca0ea1fe25a",
+        "member": "pi/pi"
+      },
+      "macos/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-darwin-arm64.tar.gz",
+        "bytes": 31035676,
+        "sha256": "sha256:d5f70e3c0cf7398eac239fd0261ee074d98b7ba7f6b43fe3617f052ed5b79d06",
+        "member": "pi/pi"
+      },
+      "macos/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-darwin-x64.tar.gz",
+        "bytes": 33544584,
+        "sha256": "sha256:adb918b845625f184d8bea408d55eacaf21aa87238793c0f5b4f3b9737bce62b",
+        "member": "pi/pi"
+      },
+      "windows/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-windows-arm64.zip",
+        "bytes": 43556369,
+        "sha256": "sha256:b25e96fe64c9f41f75a924c0d36f395abb98d6c6fec0b78aaa0b86926f938bb4",
+        "shape": "zip",
+        "member": "pi.exe"
+      },
+      "windows/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v0.85.1/pi-windows-x64.zip",
+        "bytes": 45009021,
+        "sha256": "sha256:002fa95b90d521245b9985d8f168caebc237ad56e7e30b319807dee1b2e17e1c",
+        "shape": "zip",
+        "member": "pi.exe"
+      }
+    },
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
+    "version": "0.85.1",
+    "verified_at": "2026-09-07T03:14:53+00:00"
+  },
+  "setup_catalogue_digest": "sha256:de5f86bef10a8b99b6049fe6d72069fbff4a9391fa29575690d66091a9e1a66d",
+  "previous_software_artifacts": {
+    "command": "pi",
+    "shape": "gzip-tar",
+    "platforms": {
+      "linux/arm64": {
         "url": "https://github.com/earendil-works/pi/releases/download/v0.85.0/pi-linux-arm64.tar.gz",
         "bytes": 42774976,
         "sha256": "sha256:821750e0ac6bf6e10c35b93ddab88a44f2d0ef8411af9ea4e8ffe620f62130df",
@@ -443,54 +491,6 @@
     "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
     "version": "0.85.0",
     "verified_at": "2026-09-04T13:31:46+00:00"
-  },
-  "setup_catalogue_digest": "sha256:b48ddee99bccc2520b333e202e87d2ecfc4347a9d57378e1c2ff51740403ea79",
-  "previous_software_artifacts": {
-    "command": "pi",
-    "shape": "gzip-tar",
-    "platforms": {
-      "linux/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-arm64.tar.gz",
-        "bytes": 42529658,
-        "sha256": "sha256:135580f6b942151646e67b8b866d987d28ce3cff5a497030775ddd29659f943d",
-        "member": "pi/pi"
-      },
-      "linux/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz",
-        "bytes": 42464648,
-        "sha256": "sha256:c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972",
-        "member": "pi/pi"
-      },
-      "macos/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-darwin-arm64.tar.gz",
-        "bytes": 30928407,
-        "sha256": "sha256:c68e3ac4d05b4e282aaab2e6c76f161d3e9e68f19a22e38913cbfaadb6c800f0",
-        "member": "pi/pi"
-      },
-      "macos/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-darwin-x64.tar.gz",
-        "bytes": 33440191,
-        "sha256": "sha256:7a042d6413065421387001a4986190a1a03186c95a695f4dee0bdc76e60de8f7",
-        "member": "pi/pi"
-      },
-      "windows/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-windows-arm64.zip",
-        "bytes": 43455125,
-        "sha256": "sha256:6b2726efc34a9158ab06bf7b981f7bcccf15de9ea236a3f4ef7a894a78aa386e",
-        "shape": "zip",
-        "member": "pi.exe"
-      },
-      "windows/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-windows-x64.zip",
-        "bytes": 44907374,
-        "sha256": "sha256:03b2318774f18721e959d9f8f3340a9f942e7aa516fb7030d3007a12a40a4a97",
-        "shape": "zip",
-        "member": "pi.exe"
-      }
-    },
-    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
-    "version": "0.84.4",
-    "verified_at": "2026-09-03T14:08:27+00:00"
   },
   "surface_presence": {
     "measured_at": "2026-09-02",

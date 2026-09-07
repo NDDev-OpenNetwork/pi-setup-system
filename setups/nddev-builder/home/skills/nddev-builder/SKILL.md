@@ -1,30 +1,36 @@
 ---
 name: nddev-builder
-description: Build, review or validate a Pi Coding Agent setup for pi-setup-system -- its owned surfaces, the components it carries, the lifecycle it performs, and the checks it must pass. Use when changing pi-setup-system or the native artifacts a setup writes.
+description: Create, improve or review a complete Pi Coding Agent setup -- a native collection of tools for the user's tasks. Use for selecting and authoring components, composing setups, explaining their capabilities, adapting them to this harness, and validating installation and recovery through pi-setup-system.
 ---
 
 # NDDev Builder
 
-The entry point for work on `pi-setup-system`. Keep changes
-target-explicit, reversible, and backed by this tree's checks.
+Build a complete native tool collection for the user's tasks. Start with
+`references/ai-stp-lifecycle.md` for outcome, component selection, composition,
+evaluation, installation and delivery. Keep changes target-explicit and
+reversible. The provider's implementation is changed only when that is the task.
 
 ## Workflow
 
-1. **Name the surface being changed**, and check this harness actually owns it:
+1. **Name the user outcome and required capabilities.** Inventory and reuse
+   existing components, then compose one setup for this harness through
+   `references/ai-stp-lifecycle.md`.
+2. **Name the surface being changed**, and check this harness actually owns it:
    `references/surfaces.md`, which is generated from the baseline rather than
    written beside it.
-2. **Prefer what the program answers over a copy of it.** Ask the binary:
+3. **Prefer what the program answers over a copy of it.** Ask the binary:
    `list`, `status --target <dir>`, `provider-info`. In a checkout, read
    `crates/pi-setup-system/src/main.rs` and the baseline a test binds it to.
-3. **Declare against the vendor, never against a routing table.** A path with no
+4. **Declare against the vendor, never against a routing table.** A path with no
    page behind it is a false statement in `provider-info`, and the consumer
    plans postconditions and target identity from that statement.
-4. **A declaration can refute a route and cannot confirm one.** Reading finds a
+5. **A declaration can refute a route and cannot confirm one.** Reading finds a
    directory; only running the product says what it is read *as*. Where a run is
    impossible, confirm at the line in the product's own code -- a path literal
    alone is not evidence that the path is used.
-5. **Run the checks in `references/validation.md`**, and report what each one
-   said rather than that it passed.
+6. **Exercise the setup's acceptance scenarios and recovery.** For provider
+   implementation changes also run `references/validation.md`. Report observed
+   results, exact versions and unmeasured cases.
 
 ## Routing
 
