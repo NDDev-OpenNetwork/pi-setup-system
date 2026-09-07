@@ -47,6 +47,9 @@ pub const SLOT_HELD_NAME: &str = "HELD";
 /// The schema this kernel writes and is willing to read.
 pub const SLOT_SCHEMA: u32 = 1;
 
+/// Complete native snapshots require a reader that understands their coverage.
+pub const NATIVE_SLOT_SCHEMA: u32 = 2;
+
 /// A target-bound reference to one backup slot.
 ///
 /// The reference is meaningful only against the target it was captured from;
@@ -122,6 +125,15 @@ pub struct SlotRecord {
     /// refusing to read one would trade a recoverable target for a field.
     #[serde(default)]
     pub setup_definition_digest: Option<String>,
+    /// Verified complete native coverage, absent for write-only backups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_snapshot: Option<crate::native_snapshot::NativeSnapshot>,
+    /// Installation ownership before capture, independent of preserved coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_written_paths: Option<Vec<String>>,
+    /// Exact pre-operation provider metadata for complete recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_provider_state: Option<Box<crate::stamp::ProviderState>>,
 }
 
 /// The bounded pool of backup slots for one target.
@@ -154,6 +166,17 @@ impl Pool {
             )
             .with_source(source)
         })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|source| {
+                Error::new(
+                    ReasonCode::StateUnavailable,
+                    "cannot protect local recovery storage",
+                )
+                .with_source(source)
+            })?;
+        }
         Ok(Self { root, capacity })
     }
 
@@ -226,6 +249,53 @@ impl Pool {
         Ok(partial)
     }
 
+    /// Move incomplete captures aside without discarding their bytes.
+    ///
+    /// The caller must hold the target lock and establish that no journal is
+    /// published. An unpublished capture cannot have authorized target writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReasonCode::StateUnavailable`] if listing or renaming fails.
+    pub fn quarantine_partial(&self) -> Result<usize> {
+        let partial = self.partial_slots()?;
+        if partial.is_empty() {
+            return Ok(0);
+        }
+        let archive = self.root.join("incomplete");
+        fs::create_dir_all(&archive).map_err(|source| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                "cannot create incomplete capture archive",
+            )
+            .with_source(source)
+        })?;
+        for slot in &partial {
+            let name = slot
+                .file_name()
+                .ok_or_else(|| {
+                    Error::new(ReasonCode::IntegrityMismatch, "a capture slot has no name")
+                })?
+                .to_string_lossy();
+            let mut sequence = 0_u64;
+            let destination = loop {
+                let candidate = archive.join(format!("{name}-{sequence}"));
+                if !candidate.exists() {
+                    break candidate;
+                }
+                sequence += 1;
+            };
+            fs::rename(slot, destination).map_err(|source| {
+                Error::new(
+                    ReasonCode::StateUnavailable,
+                    "cannot quarantine incomplete capture",
+                )
+                .with_source(source)
+            })?;
+        }
+        Ok(partial.len())
+    }
+
     /// The payload directory of one completed slot.
     ///
     /// # Errors
@@ -240,7 +310,23 @@ impl Pool {
                 format!("backup {} is absent or incomplete", backup_ref.as_str()),
             ));
         }
-        Ok(slot.join(SLOT_PAYLOAD_NAME))
+        let payload = slot.join(SLOT_PAYLOAD_NAME);
+        let record = read_record(&slot)?.ok_or_else(|| {
+            Error::new(
+                ReasonCode::IntegrityMismatch,
+                "backup completion record is absent",
+            )
+        })?;
+        if record.backup_ref != *backup_ref {
+            return Err(Error::new(
+                ReasonCode::IntegrityMismatch,
+                "backup reference does not match its slot",
+            ));
+        }
+        if let Some(snapshot) = record.native_snapshot {
+            snapshot.verify(&payload)?;
+        }
+        Ok(payload)
     }
 
     /// The reference the next capture will use.
@@ -328,7 +414,40 @@ impl Pool {
             }
         }
 
-        let record = record(backup_ref);
+        self.complete(&slot, record(backup_ref))
+    }
+
+    /// Capture and read back a complete native snapshot before publishing its marker.
+    ///
+    /// # Errors
+    /// Refuses changed source state, failed copies and verification or retention errors.
+    pub fn capture_native(
+        &self,
+        source: &Path,
+        snapshot: &crate::native_snapshot::NativeSnapshot,
+        record: impl FnOnce(BackupRef) -> SlotRecord,
+    ) -> Result<SlotRecord> {
+        let backup_ref = self.next_ref()?;
+        let slot = self.root.join(backup_ref.as_str());
+        let payload = slot.join(SLOT_PAYLOAD_NAME);
+        fs::create_dir_all(&payload).map_err(|error| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                "cannot create native backup payload",
+            )
+            .with_source(error)
+        })?;
+        snapshot.copy_to(source, &payload)?;
+        let mut record = record(backup_ref);
+        record.schema_version = NATIVE_SLOT_SCHEMA;
+        record.native_snapshot = Some(snapshot.clone());
+        // Publish retention before completion: a completed preserved setup must
+        // never enter the reclaimable rolling window, even after a lost response.
+        lock::atomic_write(&slot.join(SLOT_HELD_NAME), b"preserved native setup")?;
+        self.complete(&slot, record)
+    }
+
+    fn complete(&self, slot: &Path, record: SlotRecord) -> Result<SlotRecord> {
         let value = serde_json::to_value(&record).map_err(|source_error| {
             Error::new(
                 ReasonCode::StateUnavailable,
@@ -359,11 +478,8 @@ impl Pool {
     ///
     /// # Errors
     ///
-    /// Refuses a reference this pool does not hold, and refuses a hold that
-    /// would leave the pool no slot to rotate — ten held slots is a target that
-    /// can never be backed up again, which is a worse failure than the eviction
-    /// it was protecting against. The refusal names what is already held so a
-    /// caller knows what to release.
+    /// Refuses a reference this pool does not hold or an unreadable hold marker.
+    /// Held snapshots are outside the rolling capacity and remain until released.
     pub fn hold(&self, backup_ref: &BackupRef, reason: &str) -> Result<bool> {
         let slot = self.root.join(backup_ref.as_str());
         if read_record(&slot)?.is_none() {
@@ -378,24 +494,6 @@ impl Pool {
         let already = self.held()?;
         if already.iter().any(|(held, _)| held == backup_ref) {
             return Ok(false);
-        }
-        // One slot must stay reclaimable, or the next capture has nothing to
-        // evict and the pool grows past the bound it was opened with.
-        if already.len() + 1 >= self.capacity {
-            return Err(Error::new(
-                ReasonCode::InvalidTarget,
-                format!(
-                    "holding {} would leave this pool of {} no slot to rotate; release one of \
-                     these first, and the reason each names is who would lose it: {}",
-                    backup_ref.as_str(),
-                    self.capacity,
-                    already
-                        .iter()
-                        .map(|(held, why)| format!("{} ({why})", held.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ));
         }
         // The reason travels with the hold. Without it a caller reading a full
         // pool knows what to release and not what releasing it would cost.
@@ -574,11 +672,16 @@ fn read_record(slot: &Path) -> Result<Option<SlotRecord>> {
         )
         .with_source(source)
     })?;
-    if record.schema_version != SLOT_SCHEMA {
+    let valid = match record.schema_version {
+        SLOT_SCHEMA => record.native_snapshot.is_none(),
+        NATIVE_SLOT_SCHEMA => record.native_snapshot.is_some(),
+        _ => false,
+    };
+    if !valid {
         return Err(Error::new(
             ReasonCode::StateUnavailable,
             format!(
-                "backup schema {} is not the {SLOT_SCHEMA} this build writes",
+                "backup schema {} does not match a supported recovery record",
                 record.schema_version
             ),
         ));
@@ -805,7 +908,32 @@ mod tests {
             target_identity_digest: "sha256:target".to_owned(),
             setup_id: Some("full-auto".to_owned()),
             setup_definition_digest: Some("sha256:definition".to_owned()),
+            native_snapshot: None,
+            previous_written_paths: None,
+            previous_provider_state: None,
         }
+    }
+
+    #[test]
+    fn complete_native_slots_verify_payload_integrity_on_read() {
+        let root = scratch("native-integrity");
+        let source = root.join("source");
+        fs::create_dir_all(source.join("skills/empty")).unwrap();
+        fs::write(source.join("skills/tool.sh"), b"echo captured\n").unwrap();
+        let snapshot =
+            crate::native_snapshot::NativeSnapshot::inspect(&source, &["skills"], &[]).unwrap();
+        let pool = Pool::open(&root.join("control"), 3).unwrap();
+        let record = pool.capture_native(&source, &snapshot, record_for).unwrap();
+        assert_eq!(record.schema_version, NATIVE_SLOT_SCHEMA);
+        assert_eq!(record.native_snapshot, Some(snapshot));
+        let payload = pool.payload_of(&record.backup_ref).unwrap();
+        assert!(payload.join("skills/empty").is_dir());
+        fs::write(payload.join("skills/tool.sh"), b"corrupted").unwrap();
+        assert!(pool.payload_of(&record.backup_ref).is_err());
+        assert_eq!(
+            fs::read(source.join("skills/tool.sh")).unwrap(),
+            b"echo captured\n"
+        );
     }
 
     #[test]
@@ -905,38 +1033,27 @@ mod tests {
         assert!(pool.payload_of(&baseline.backup_ref).is_err());
     }
 
-    /// A pool that is entirely held is a target that can never be backed up
-    /// again, which is a worse failure than the eviction a hold prevents.
     #[test]
-    fn a_hold_that_would_leave_nothing_to_rotate_is_refused_naming_what_to_release() {
+    fn preserved_slots_do_not_consume_the_rolling_capacity() {
         let base = scratch("held-full");
         let target = base.join("target");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("a.txt"), "x").unwrap();
-
         let pool = Pool::open(&base.join("control"), 3).unwrap();
-        let first = pool.capture(&target, &["a.txt"], record_for).unwrap();
-        let second = pool.capture(&target, &["a.txt"], record_for).unwrap();
-        let third = pool.capture(&target, &["a.txt"], record_for).unwrap();
-
-        assert!(pool.hold(&first.backup_ref, "series A baseline").unwrap());
-        assert!(pool.hold(&second.backup_ref, "series B baseline").unwrap());
-        // Holding a third of three would leave nothing to evict.
-        let error = pool.hold(&third.backup_ref, "series C").unwrap_err();
-        assert!(error.to_string().contains("no slot to rotate"), "{error}");
-        assert!(
-            error.to_string().contains(first.backup_ref.as_str()),
-            "the refusal does not say what to release: {error}"
-        );
-        // And what releasing it would cost, so nobody releases blind.
-        assert!(
-            error.to_string().contains("series A baseline"),
-            "the refusal does not say who holds it: {error}"
-        );
-
-        // Holding one that is already held is not an error and not a second
-        // hold: a run that re-runs its own setup should not have to check.
-        assert!(!pool.hold(&first.backup_ref, "series A again").unwrap());
+        let mut saved = Vec::new();
+        for _ in 0..7 {
+            let record = pool.capture(&target, &["a.txt"], record_for).unwrap();
+            assert!(pool.hold(&record.backup_ref, "saved setup").unwrap());
+            saved.push(record.backup_ref);
+        }
+        for _ in 0..8 {
+            pool.capture(&target, &["a.txt"], record_for).unwrap();
+        }
+        assert_eq!(pool.list().unwrap().len(), saved.len() + 3);
+        for reference in saved {
+            assert!(pool.payload_of(&reference).is_ok());
+            assert!(!pool.hold(&reference, "retry").unwrap());
+        }
     }
 
     /// A reference this pool never minted is refused rather than marked.

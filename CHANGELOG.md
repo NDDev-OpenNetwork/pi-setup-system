@@ -15,6 +15,22 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.68] - 2026-09-07
+
+Complete native setup preservation captures user additions, installed plugin
+state and measured configuration outside portable installation ownership.
+Returning to a saved setup first preserves current edits, then restores exact
+covered bytes, empty directories and supported permissions. Complete backup
+format 2 prevents legacy readers from misinterpreting the coverage base.
+
+The Pi Coding Agent provider retains prior setup identity and written ownership.
+Prepared recovery restores previous provider metadata even after an interrupted
+state write. Complete snapshots remain held against rolling retention and status
+reports verified recovery integrity and current native-state comparison.
+
+This release uses consumer kit 0.2.11. Install a compatible released ai-stp CLI
+reader before using the new provider declaration.
+
 ## [0.0.67] - 2026-09-07
 
 nddev-builder creates complete native tool collections: select and author

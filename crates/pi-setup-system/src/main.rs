@@ -23,7 +23,7 @@ use std::process::ExitCode;
 
 mod software;
 
-use harness_runtime::{Foreign, Harness, LaunchBinding, Scoped};
+use harness_runtime::{Foreign, Harness, LaunchBinding, PreservationSurface, Scoped};
 use provider_v3::{ComponentKind, ProjectionKind, TargetScope};
 
 /// Everything specific to Pi Coding Agent, verified against `pi-baseline.json`.
@@ -120,6 +120,17 @@ pub const PI: Harness = Harness {
     // them -- every posture agrees there is nothing, which makes the
     // emptiness a statement none of them made.
     custody_namespaces: &["APPEND_SYSTEM.md", "SYSTEM.md", "themes"],
+    preservation_surfaces: &[PreservationSurface {
+        scope: None,
+        roots: &[
+            "AGENTS.override.md",
+            "keybindings.json",
+            "models.json",
+            "git",
+            "npm",
+        ],
+        excluded: &["auth.json", "trust.json", "sessions"],
+    }],
     never_touch: &["auth.json", "trust.json", "sessions"],
     // Oh My Pi is a separate product descended from the same code: package
     // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its

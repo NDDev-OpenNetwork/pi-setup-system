@@ -1105,6 +1105,20 @@ fn mutate(
         (effect, None)
     };
 
+    let control = resolved.ensure_control_directory()?;
+    let pool = Pool::open(&control, facts::BACKUP_SLOTS)?;
+    let native_capture = wire::plan_native_capture(
+        harness,
+        &resolved,
+        HUMAN_SCOPE,
+        operation,
+        None,
+        match &effect {
+            Effect::Restore { backup_ref } => backup_ref.as_deref(),
+            _ => None,
+        },
+        &pool,
+    )?;
     let artifact = PlanArtifact::new(PlanInputs {
         // No scope: the human surface is a person at a terminal, and a
         // scope is something a consumer resolves. Omitted rather than
@@ -1128,6 +1142,7 @@ fn mutate(
             _ => None,
         },
         restore_target_digest,
+        native_capture,
         permission_profile: None,
         expires_at: &expiry::deadline_in(PLAN_WINDOW_SECONDS, SystemTime::now()),
         // The human surface drives configuration, never the product's own

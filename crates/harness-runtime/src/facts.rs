@@ -174,6 +174,10 @@ pub struct Harness {
     /// Excluded from backups so a slot never holds credentials, and excluded
     /// from target identity so the product's own traffic cannot strand a plan.
     pub never_touch: &'static [&'static str],
+    /// Complete preservation surfaces that differ from installation ownership.
+    /// These may preserve product-managed plugin bytes without making them
+    /// writable destinations for portable component installation.
+    pub preservation_surfaces: &'static [PreservationSurface],
     /// What a *neighbour's* configuration home looks like from inside a target.
     ///
     /// Every command here takes an explicit `--target` because a change aimed at
@@ -335,6 +339,17 @@ pub const BACKUP_SLOTS: usize = 10;
 
 /// The bundle format every setup system reads.
 pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/2";
+
+/// A native configuration cover used only for explicit complete preservation.
+#[derive(Debug, Clone, Copy)]
+pub struct PreservationSurface {
+    /// The target scope this surface describes.
+    pub scope: Option<TargetScope>,
+    /// All covered target-relative configuration roots.
+    pub roots: &'static [&'static str],
+    /// Credential and runtime paths never copied or restored.
+    pub excluded: &'static [&'static str],
+}
 
 impl Harness {
     /// Whether one relative path falls inside a namespace this harness claims.
@@ -522,6 +537,28 @@ impl Harness {
         let mut names = vec![self.control_directory];
         names.extend_from_slice(self.never_touch);
         names
+    }
+
+    /// Complete native coverage is independent of portable installation routes.
+    #[must_use]
+    pub fn preservation_surface(
+        &self,
+        scope: Option<TargetScope>,
+    ) -> (Vec<&'static str>, Vec<&'static str>) {
+        let mut roots = self.owned_projection(scope).to_vec();
+        let mut excluded = self.never_captured();
+        if let Some(surface) = self
+            .preservation_surfaces
+            .iter()
+            .find(|surface| surface.scope == scope)
+        {
+            roots.extend_from_slice(surface.roots);
+            excluded = vec![self.control_directory];
+            excluded.extend_from_slice(surface.excluded);
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        (roots, excluded)
     }
 
     /// A digest of this build's own manifest.
@@ -921,6 +958,7 @@ mod tests {
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         shadowing_names: &[],
         custody_namespaces: &[],
+        preservation_surfaces: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],

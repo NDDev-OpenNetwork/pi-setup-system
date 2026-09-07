@@ -101,6 +101,10 @@ const fn plan_usage(command: Command) -> Usage {
                 "where a program lives; required by every software_* operation",
             ),
             ("--backup-ref", "which slot a restore returns to"),
+            (
+                "--capture-mode",
+                "complete_native captures the entire declared native surface",
+            ),
             ("--permission-profile", "a profile this build declares"),
             (
                 "--software-version",
@@ -319,6 +323,8 @@ pub struct PlanRequest {
     pub expires_at: String,
     /// The backup this operation reads or writes.
     pub backup_ref: Option<String>,
+    /// Explicit complete preservation; absent retains recorded-file backup behavior.
+    pub capture_mode: Option<String>,
     /// The permission profile to apply.
     pub permission_profile: Option<String>,
     /// The bundle, when the operation carries one.
@@ -509,6 +515,7 @@ where
                     operation_id: flags.take_required("--operation-id")?,
                     expires_at: flags.take_required("--expires-at")?,
                     backup_ref: flags.take_optional("--backup-ref"),
+                    capture_mode: flags.take_optional("--capture-mode"),
                     permission_profile: flags.take_optional("--permission-profile"),
                     bundle: flags.take_bundle()?,
                     prefix: flags.take_prefix()?,
