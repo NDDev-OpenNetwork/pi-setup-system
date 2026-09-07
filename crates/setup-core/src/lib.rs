@@ -25,6 +25,7 @@ pub mod digest;
 pub mod error;
 pub mod journal;
 pub mod lock;
+pub mod native_snapshot;
 pub mod software;
 pub mod stamp;
 pub mod target;

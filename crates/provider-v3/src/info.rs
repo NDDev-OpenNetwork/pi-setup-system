@@ -408,6 +408,7 @@ impl ProviderInfo {
             plan_request_fields: vec![
                 TargetScope::REQUEST_FIELD.to_owned(),
                 EndState::REQUEST_FIELD.to_owned(),
+                "capture_mode".to_owned(),
             ],
             // Declared 2026-09-02 in the same order as the two above: kit 0.2.9
             // names the member (`provider-info.schema.json`), ai-stp-cli

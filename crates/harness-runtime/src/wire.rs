@@ -23,10 +23,11 @@ use std::time::SystemTime;
 
 use provider_v3::argv::{Bundle as ArgvBundle, Invocation, PlanRequest};
 use provider_v3::bundle::{Bundle, Claim, FILES_PREFIX};
-use provider_v3::plan::{EndState, PlanArtifact, PlanInputs};
+use provider_v3::plan::{EndState, NativeCapture, PlanArtifact, PlanInputs};
 use provider_v3::{Error, Operation, Result, WireReason};
 use setup_core::backup::{BackupRef, Pool, SLOT_SCHEMA, SlotRecord};
 use setup_core::journal::{JOURNAL_SCHEMA, Journal, Phase};
+use setup_core::native_snapshot::{NativeBase, NativeSnapshot};
 use setup_core::stamp::{DriftState, ProviderState, STATE_SCHEMA, StateReading};
 use setup_core::target::Target;
 use setup_core::{digest, lock};
@@ -327,7 +328,66 @@ fn status(
     let owned = owned_here(harness, &resolved, scope)?;
     let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     let journal = Journal::read(&control).ok().flatten();
-    status_of(harness, &resolved, &pool, &identity, journal)
+    status_of(harness, &resolved, &pool, &identity, journal, scope)
+}
+
+fn backup_status(
+    pool: &Pool,
+    resolved: &Target,
+    harness: &Harness,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<serde_json::Value> {
+    let held = pool.held()?;
+    let records = pool.list()?;
+    // One current-state observation serves every retained snapshot comparison.
+    let current = if records
+        .iter()
+        .any(|record| record.native_snapshot.is_some())
+    {
+        inspect_native_surface(harness, resolved, scope)
+            .ok()
+            .map(|(_, snapshot)| snapshot)
+    } else {
+        None
+    };
+    let mut entries = Vec::new();
+    for record in records {
+        let holder = held
+            .iter()
+            .find(|(reference, _)| *reference == record.backup_ref);
+        let mut entry = serde_json::json!({
+            "backup_ref": record.backup_ref.as_str(),
+            "operation": record.operation,
+            "setup_id": record.setup_id,
+            "held": holder.is_some(),
+            "hold_reason": holder.map(|(_, reason)| reason.clone()),
+        });
+        if let Some(snapshot) = &record.native_snapshot {
+            let verification = if pool.payload_of(&record.backup_ref).is_ok() {
+                "verified"
+            } else {
+                "unavailable"
+            };
+            let target_state = current.as_ref().map_or("unavailable", |current| {
+                if current == snapshot {
+                    "matches"
+                } else {
+                    "differs"
+                }
+            });
+            entry["native_snapshot"] = serde_json::json!({
+                "digest": snapshot.digest()?,
+                "base_root": snapshot.base_root,
+                "operation_id": record.operation_id,
+                "roots": snapshot.roots,
+                "excluded": snapshot.excluded,
+                "verification": verification,
+                "target_state": target_state,
+            });
+        }
+        entries.push(entry);
+    }
+    Ok(entries.into())
 }
 
 /// Which scope `status` measures a target under.
@@ -369,6 +429,7 @@ fn status_of(
     pool: &Pool,
     identity: &str,
     journal: Option<Journal>,
+    scope: Option<provider_v3::TargetScope>,
 ) -> Result<serde_json::Value> {
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
     // `managed` carries our state; `unmanaged` holds content that is not ours;
@@ -475,38 +536,7 @@ fn status_of(
                 None => serde_json::Value::Null,
             },
         ),
-        ("backups", {
-            // A hold is the difference between a reference a plan can rely
-            // on and one retention may take out from under it. The pool has
-            // known which slots are held since 0.0.6; `status` did not say,
-            // so a consumer could only find out by watching a baseline
-            // disappear after fifty captures -- which is the failure the
-            // hold exists to prevent, discovered the same way.
-            //
-            // Read here rather than in the map below because `held` walks
-            // the pool once; asking per slot would be one walk per slot.
-            let held = pool.held()?;
-            pool.list()?
-                .iter()
-                .map(|record| {
-                    let holder = held
-                        .iter()
-                        .find(|(reference, _)| *reference == record.backup_ref);
-                    serde_json::json!({
-                        "backup_ref": record.backup_ref.as_str(),
-                        "operation": record.operation,
-                        "setup_id": record.setup_id,
-                        "held": holder.is_some(),
-                        // The reason, not only the fact. A caller deciding
-                        // whether it may release one needs to know whose
-                        // baseline it would be taking, which is exactly what
-                        // the refusal on `hold` already says.
-                        "hold_reason": holder.map(|(_, reason)| reason.clone()),
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into()
-        }),
+        ("backups", backup_status(pool, resolved, harness, scope)?),
     ] {
         answer.insert(key.to_owned(), value);
     }
@@ -768,13 +798,26 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     refuse_another_scopes_record(harness, &resolved, request.target_scope)?;
 
     let owned = owned_here(harness, &resolved, request.target_scope)?;
-    let identity_paths = snapshot_if_unmanaged_backup(
+    let native_capture = plan_native_capture(
         harness,
         &resolved,
         request.target_scope,
-        &owned,
         request.operation,
+        request.capture_mode.as_deref(),
+        request.backup_ref.as_deref(),
+        &pool,
     )?;
+    let identity_paths = if native_capture.is_some() {
+        owned.clone()
+    } else {
+        snapshot_if_unmanaged_backup(
+            harness,
+            &resolved,
+            request.target_scope,
+            &owned,
+            request.operation,
+        )?
+    };
     let identity =
         resolved.identity_of_owned(&as_paths(&identity_paths), &harness.not_our_identity())?;
     // The profile at *this* target. `projection_profile()` answers with the
@@ -854,9 +897,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
                 ],
                 Some(record.backup_ref.as_str().to_owned()),
                 Some(restore_target_identity(
-                    harness,
-                    &payload,
-                    request.target_scope,
+                    harness, &payload, &record, &resolved,
                 )?),
             )
         }
@@ -896,6 +937,16 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         }
     };
 
+    let mut effects = effects;
+    if let Some(native) = &native_capture {
+        effects.push(format!(
+            "preserve complete native configuration under {}",
+            native.roots.join(", ")
+        ));
+        if native.restore_digest.is_some() {
+            effects.push("replace the complete captured surface, including later user additions and shared native files".to_owned());
+        }
+    }
     PlanArtifact::new(PlanInputs {
         provider_id: harness.provider_id,
         provider_version: harness.version,
@@ -910,6 +961,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         bundle: request.bundle.as_ref().map(|bundle| bundle.binding.clone()),
         backup_ref,
         restore_target_digest,
+        native_capture,
         permission_profile: request.permission_profile.clone(),
         expires_at: &request.expires_at,
         software_artifacts,
@@ -1235,14 +1287,124 @@ fn check_survivors(planned: &[EndState], ready: &Bundle) -> Result<()> {
 fn restore_target_identity(
     harness: &Harness,
     payload: &Path,
-    _scope: Option<provider_v3::TargetScope>,
+    record: &SlotRecord,
+    target: &Target,
 ) -> Result<String> {
-    let owned = files_in_payload(payload)?;
+    let complete = record.native_snapshot.as_ref();
+    let owned = if complete.is_some() {
+        record.previous_written_paths.clone().unwrap_or_default()
+    } else {
+        files_in_payload(payload)?
+    };
+    let identity_root = if complete.is_some_and(|snapshot| snapshot.base_root == NativeBase::Parent)
+    {
+        payload.join(target.root().file_name().ok_or_else(|| {
+            Error::refuse(
+                WireReason::UnsupportedNativeSurface,
+                "the native target has no leaf directory",
+            )
+        })?)
+    } else {
+        payload.to_path_buf()
+    };
     Ok(setup_core::digest::of_owned(
-        payload,
+        &identity_root,
         &as_paths(&owned),
         &harness.not_our_identity(),
     )?)
+}
+
+/// A closed cover; the parent is used only for Claude's documented global companion.
+fn inspect_native_surface(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> Result<(std::path::PathBuf, NativeSnapshot)> {
+    let (roots, excluded) = harness.preservation_surface(scope);
+    if harness.harness_id == "claude-code"
+        && scope.is_none()
+        && target
+            .root()
+            .file_name()
+            .is_some_and(|name| name == ".claude")
+    {
+        let root = target.root().parent().ok_or_else(|| {
+            Error::refuse(
+                WireReason::UnsupportedNativeSurface,
+                "the Claude target has no companion directory",
+            )
+        })?;
+        let mut roots: Vec<String> = roots.iter().map(|path| format!(".claude/{path}")).collect();
+        roots.push(".claude.json".to_owned());
+        let excluded: Vec<String> = excluded
+            .iter()
+            .map(|path| format!(".claude/{path}"))
+            .collect();
+        let mut snapshot = NativeSnapshot::inspect(root, &as_paths(&roots), &as_paths(&excluded))?;
+        snapshot.base_root = NativeBase::Parent;
+        Ok((root.to_path_buf(), snapshot))
+    } else {
+        Ok((
+            target.root().to_path_buf(),
+            NativeSnapshot::inspect(target.root(), &roots, &excluded)?,
+        ))
+    }
+}
+
+/// Bind explicit complete preservation or restoration of a complete snapshot.
+pub(crate) fn plan_native_capture(
+    harness: &Harness,
+    target: &Target,
+    scope: Option<provider_v3::TargetScope>,
+    operation: Operation,
+    capture_mode: Option<&str>,
+    backup_ref: Option<&str>,
+    pool: &Pool,
+) -> Result<Option<NativeCapture>> {
+    if capture_mode.is_some()
+        && (capture_mode != Some("complete_native")
+            || !matches!(
+                operation,
+                Operation::Backup
+                    | Operation::Install
+                    | Operation::Replace
+                    | Operation::Remove
+                    | Operation::Reset
+            ))
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "capture-mode complete_native is supported only for native configuration mutations",
+        ));
+    }
+    let restore = if operation == Operation::Restore {
+        let record = chosen_backup(pool, backup_ref)?;
+        pool.payload_of(&record.backup_ref)?;
+        record.native_snapshot
+    } else {
+        None
+    };
+    if capture_mode.is_none() && restore.is_none() {
+        return Ok(None);
+    }
+    let (_, current) = inspect_native_surface(harness, target, scope)?;
+    if let Some(saved) = &restore
+        && (saved.base_root != current.base_root
+            || saved.roots != current.roots
+            || saved.excluded != current.excluded)
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedNativeSurface,
+            "the saved native surface differs from this provider's declared coverage",
+        ));
+    }
+    Ok(Some(NativeCapture {
+        base_root: current.base_root,
+        current_digest: current.digest()?,
+        restore_digest: restore.map(|snapshot| snapshot.digest()).transpose()?,
+        roots: current.roots,
+        excluded: current.excluded,
+    }))
 }
 
 /// Every regular payload file, relative to the payload root.
@@ -1615,19 +1777,52 @@ pub(crate) fn perform(
 
     // Re-check after the lock: everything observed before it could have moved.
     let owned = owned_here(harness, &resolved, mutation.target_scope)?;
-    let identity_paths = snapshot_if_unmanaged_backup(
-        harness,
-        &resolved,
-        mutation.target_scope,
-        &owned,
-        mutation.operation,
-    )?;
+    let identity_paths = if mutation.provenance.get("native_capture").is_some() {
+        owned.clone()
+    } else {
+        snapshot_if_unmanaged_backup(
+            harness,
+            &resolved,
+            mutation.target_scope,
+            &owned,
+            mutation.operation,
+        )?
+    };
     let identity =
         resolved.identity_of_owned(&as_paths(&identity_paths), &harness.not_our_identity())?;
     if identity != mutation.expected_target_digest {
         return Err(Error::refuse(
             WireReason::Stale,
             "the target changed after the lock was taken; no effect was made",
+        ));
+    }
+    let native_capture: Option<NativeCapture> = mutation
+        .provenance
+        .get("native_capture")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|_| Error::refuse(WireReason::Stale, "invalid native capture binding"))?;
+    let restoring = match &mutation.effect {
+        Effect::Restore { backup_ref } => backup_ref.as_deref(),
+        _ => None,
+    };
+    let native_expected = plan_native_capture(
+        harness,
+        &resolved,
+        mutation.target_scope,
+        mutation.operation,
+        if native_capture.is_some() && mutation.operation != Operation::Restore {
+            Some("complete_native")
+        } else {
+            None
+        },
+        restoring,
+        &pool,
+    )?;
+    if native_capture != native_expected {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "complete native state changed after planning; no effect was made",
         ));
     }
     setup_core::journal::require_clean_for_planning(
@@ -1655,17 +1850,49 @@ pub(crate) fn perform(
     )?;
     refuse_uncapturable(&resolved, &capture)?;
     refuse_an_unrecorded_removal(harness, &resolved, mutation)?;
-    let captured = pool.capture(resolved.root(), &as_paths(&capture), |backup_ref| {
-        SlotRecord {
-            schema_version: SLOT_SCHEMA,
-            backup_ref,
-            operation: operation_name.clone(),
-            operation_id: operation_id.clone(),
-            target_identity_digest: identity.clone(),
-            setup_id: previous_setup.clone(),
-            setup_definition_digest: previous_definition.clone(),
+    let previous_provider_state = match ProviderState::read(resolved.root(), harness.state_file)? {
+        StateReading::Current(state) => Some(state),
+        _ => None,
+    };
+    let record_capture = |backup_ref| SlotRecord {
+        schema_version: SLOT_SCHEMA,
+        backup_ref,
+        operation: operation_name.clone(),
+        operation_id: operation_id.clone(),
+        target_identity_digest: identity.clone(),
+        setup_id: previous_setup.clone(),
+        setup_definition_digest: previous_definition.clone(),
+        native_snapshot: None,
+        previous_written_paths: Some(previous_written.clone()),
+        previous_provider_state: previous_provider_state.clone(),
+    };
+    let selected_hold = if native_capture.is_some() {
+        restoring
+            .map(|reference| {
+                let reference = BackupRef::parse(reference)?;
+                let added = pool.hold(
+                    &reference,
+                    &format!("restore operation {}", mutation.operation_id),
+                )?;
+                Ok::<_, Error>((reference, added))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let captured = if let Some(binding) = &native_capture {
+        let (source_root, snapshot) =
+            inspect_native_surface(harness, &resolved, mutation.target_scope)?;
+        if snapshot.digest()? != binding.current_digest {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                "native state changed before capture; no target effect was made",
+            ));
         }
-    })?;
+        pool.capture_native(&source_root, &snapshot, record_capture)?
+    } else {
+        pool.capture(resolved.root(), &as_paths(&capture), record_capture)?
+    };
 
     let journal = Journal {
         schema_version: JOURNAL_SCHEMA,
@@ -1692,7 +1919,12 @@ pub(crate) fn perform(
         // means "the files this provider has written at this target", not "the
         // files this operation wrote", and an operation that writes none leaves
         // it as it found it.
-        Effect::Backup => Ok(previous_written.clone()),
+        Effect::Backup => {
+            if let Some(state) = &previous_provider_state {
+                copy_applied_identity(&mut applied, state);
+            }
+            Ok(previous_written.clone())
+        }
         Effect::Restore { backup_ref } => {
             let record = chosen_backup(&pool, backup_ref.as_deref())?;
             let payload = pool.payload_of(&record.backup_ref)?;
@@ -1703,7 +1935,17 @@ pub(crate) fn perform(
             applied
                 .setup_definition_digest
                 .clone_from(&record.setup_definition_digest);
-            replace_managed_from(harness, &resolved, &payload, mutation.target_scope, false)
+            if let Some(state) = &record.previous_provider_state {
+                copy_applied_identity(&mut applied, state);
+            }
+            if let Some(snapshot) = &record.native_snapshot {
+                let (source_root, _) =
+                    inspect_native_surface(harness, &resolved, mutation.target_scope)?;
+                snapshot.restore(&payload, &source_root)?;
+                Ok(record.previous_written_paths.clone().unwrap_or_default())
+            } else {
+                replace_managed_from(harness, &resolved, &payload, mutation.target_scope, false)
+            }
         }
         // Removal puts nothing on the target and leaves nothing of ours there,
         // so an empty list is the true answer rather than a missing one --
@@ -1755,6 +1997,9 @@ pub(crate) fn perform(
     )?;
     journal.promote_to_committed(&control)?;
     Journal::clear(&control)?;
+    if let Some((reference, true)) = selected_hold {
+        pool.release(&reference)?;
+    }
 
     Ok(serde_json::json!({
         "state": "verified",
@@ -1882,10 +2127,12 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let _guard = setup_core::lock::TargetLock::acquire(&control)?;
 
     let Some(journal) = Journal::read(&control)? else {
+        let quarantined = pool.quarantine_partial()?;
         return Ok(serde_json::json!({
             "state": "verified",
-            "recovered": false,
-            "detail": "no journal is published; there is nothing to resolve",
+            "recovered": quarantined != 0,
+            "detail": if quarantined == 0 { "no journal is published; there is nothing to resolve" }
+                else { "incomplete captures were retained in the backup archive; the target was not changed" },
         }));
     };
 
@@ -1910,13 +2157,53 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             };
             let backup_ref = BackupRef::parse(reference)?;
             let payload = pool.payload_of(&backup_ref)?;
-            replace_managed_from(harness, &resolved, &payload, scope, false)?;
+            let record = chosen_backup(&pool, Some(reference))?;
+            if let Some(snapshot) = &record.native_snapshot {
+                let (source_root, current) = inspect_native_surface(harness, &resolved, scope)?;
+                if current.base_root != snapshot.base_root
+                    || current.roots != snapshot.roots
+                    || current.excluded != snapshot.excluded
+                {
+                    return Err(Error::refuse(
+                        WireReason::RecoveryRequired,
+                        "native recovery surface differs from this provider",
+                    ));
+                }
+                if let Some(state) = &record.previous_provider_state
+                    && (state.canonical_target != resolved.root().to_string_lossy()
+                        || state.provider_id != harness.provider_id
+                        || state.harness_id != harness.harness_id)
+                {
+                    return Err(Error::refuse(
+                        WireReason::RecoveryRequired,
+                        "saved provider metadata belongs to another target",
+                    ));
+                }
+                snapshot.restore(&payload, &source_root)?;
+                if let Some(state) = &record.previous_provider_state {
+                    state.write(resolved.root(), harness.state_file)?;
+                } else if record.previous_written_paths.is_some() {
+                    let state_path = resolved.root().join(harness.state_file);
+                    if state_path.exists() {
+                        fs::remove_file(&state_path).map_err(|error| {
+                            Error::refuse(
+                                WireReason::RecoveryRequired,
+                                format!("cannot restore absent provider metadata: {error}"),
+                            )
+                        })?;
+                    }
+                }
+            } else {
+                replace_managed_from(harness, &resolved, &payload, scope, false)?;
+            }
+            let owned = owned_here(harness, &resolved, scope)?;
             Journal::clear(&control)?;
             Ok(serde_json::json!({
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Prepared.as_str(),
                 "restored_from": reference,
+                "target_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
                 "target_identity_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
             }))
         }
@@ -1927,6 +2214,7 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Committed.as_str(),
+                "target_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
                 "target_identity_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
             }))
         }
@@ -2719,6 +3007,22 @@ fn refuse_uncapturable(resolved: &Target, owned: &[String]) -> Result<()> {
     ))
 }
 
+/// Preserve setup identity independently of the new operation provenance.
+fn copy_applied_identity(applied: &mut Applied, state: &ProviderState) {
+    applied.setup_id.clone_from(&state.setup_stable_id);
+    applied.setup_version.clone_from(&state.setup_version);
+    applied
+        .setup_version_passport_digest
+        .clone_from(&state.setup_version_passport_digest);
+    applied
+        .setup_definition_digest
+        .clone_from(&state.setup_definition_digest);
+    applied.component_refs.clone_from(&state.component_refs);
+    applied.bundle_format.clone_from(&state.bundle_format);
+    applied.bundle_digest.clone_from(&state.bundle_digest);
+    applied.artifact_digest.clone_from(&state.artifact_digest);
+}
+
 /// Record what this operation leaves behind, as the contract asks it to.
 ///
 /// Takes the whole [`Mutation`] rather than the two fields it needs from it.
@@ -2982,6 +3286,7 @@ pub(crate) mod tests_support {
         native_namespaces: &["AGENTS.md", "settings.json", "skills"],
         shadowing_names: &[],
         custody_namespaces: &[],
+        preservation_surfaces: &[],
         never_touch: &[".credentials.json", "sessions"],
         foreign_homes: &[],
         permission_profiles: &["default"],
@@ -5031,6 +5336,83 @@ mod tests {
     }
 
     #[test]
+    fn complete_native_return_preserves_user_additions_and_restores_empty_directories() {
+        let target = seeded("complete-return");
+        // A prior provider operation must not narrow a later complete capture.
+        plan_then_apply(&target, "backup", &[]);
+        fs::create_dir_all(target.join("skills/empty")).unwrap();
+        fs::write(target.join("skills/user.py"), b"print('user')\n").unwrap();
+        let baseline =
+            NativeSnapshot::inspect(&target, TEST.native_namespaces, &TEST.never_captured())
+                .unwrap();
+        let saved = plan_then_apply(&target, "backup", &["--capture-mode", "complete_native"]);
+        let reference = saved["backup_ref"].as_str().unwrap();
+        fs::write(target.join("skills/new.sh"), b"echo new\n").unwrap();
+        fs::write(target.join("AGENTS.md"), b"new instructions").unwrap();
+        fs::remove_dir(target.join("skills/empty")).unwrap();
+        let edited =
+            NativeSnapshot::inspect(&target, TEST.native_namespaces, &TEST.never_captured())
+                .unwrap();
+        let restored = plan_then_apply(&target, "restore", &["--backup-ref", reference]);
+        assert_eq!(restored["state"], "verified");
+        baseline.verify(&target).unwrap();
+        assert!(!target.join("skills/new.sh").exists());
+        assert_eq!(fs::read(target.join("unrelated.txt")).unwrap(), b"keep me");
+        let edited_ref = restored["backup_ref"].as_str().unwrap();
+        plan_then_apply(&target, "restore", &["--backup-ref", edited_ref]);
+        edited.verify(&target).unwrap();
+    }
+
+    #[test]
+    fn complete_native_capture_rejects_changes_outside_the_written_inventory() {
+        let target = seeded("complete-stale");
+        plan_then_apply(&target, "backup", &[]);
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--capture-mode",
+                "complete_native",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01NATIVE",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        let path = target.parent().unwrap().join("native-plan.json");
+        fs::write(
+            &path,
+            setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+        )
+        .unwrap();
+        fs::write(target.join("skills/new.py"), b"user addition").unwrap();
+        let error = refuse(args(
+            "apply-operation",
+            &target,
+            &[
+                "--plan",
+                &path.to_string_lossy(),
+                "--plan-digest",
+                planned["plan_digest"].as_str().unwrap(),
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::Stale));
+        assert_eq!(
+            run(args("status", &target, &[]))["backups"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_backup_never_copies_product_owned_credentials() {
         let target = seeded("no-secrets");
         plan_then_apply(&target, "backup", &[]);
@@ -5369,12 +5751,98 @@ mod tests {
     }
 
     #[test]
+    fn complete_native_recovery_rewinds_a_state_written_before_journal_commit() {
+        for managed in [false, true] {
+            let target = seeded(if managed {
+                "recover-native-managed"
+            } else {
+                "recover-native-unmanaged"
+            });
+            if managed {
+                plan_then_apply(&target, "backup", &[]);
+                let StateReading::Current(mut state) =
+                    ProviderState::read(&target, TEST.state_file).unwrap()
+                else {
+                    panic!("state missing");
+                };
+                state.setup_version = Some("1.7".to_owned());
+                state.component_refs = vec!["component_original@1.0".to_owned()];
+                state.write(&target, TEST.state_file).unwrap();
+            }
+            let state_path = target.join(TEST.state_file);
+            let original_state = fs::read(&state_path).ok();
+            let original = fs::read(target.join("AGENTS.md")).unwrap();
+            let saved = plan_then_apply(&target, "backup", &["--capture-mode", "complete_native"]);
+            let StateReading::Current(mut state) =
+                ProviderState::read(&target, TEST.state_file).unwrap()
+            else {
+                panic!("state missing");
+            };
+            if managed {
+                assert_eq!(state.setup_version.as_deref(), Some("1.7"));
+                assert_eq!(state.component_refs, vec!["component_original@1.0"]);
+            }
+            state.setup_version = Some("9.9".to_owned());
+            state.written_paths = vec!["skills/unrecorded".to_owned()];
+            state.write(&target, TEST.state_file).unwrap();
+            fs::write(target.join("AGENTS.md"), b"half-written").unwrap();
+            fs::write(target.join("skills/unrecorded"), b"partial new file").unwrap();
+            Journal {
+                schema_version: JOURNAL_SCHEMA,
+                phase: Phase::Prepared,
+                operation_id: state.operation_id,
+                operation: "backup".to_owned(),
+                plan_digest: saved["plan_digest"].as_str().unwrap().to_owned(),
+                target_precondition_digest: saved["expected_target_digest"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                backup_ref: Some(saved["backup_ref"].as_str().unwrap().to_owned()),
+                target_scope: None,
+            }
+            .publish_prepared(&target.join(TEST.control_directory))
+            .unwrap();
+            let recovered = run(args("recover-operation", &target, &[]));
+            assert_eq!(recovered["state"], "verified");
+            assert_eq!(recovered["target_digest"], saved["expected_target_digest"]);
+            assert_eq!(fs::read(&state_path).ok(), original_state);
+            assert_eq!(fs::read(target.join("AGENTS.md")).unwrap(), original);
+            assert!(!target.join("skills/unrecorded").exists());
+        }
+    }
+
+    #[test]
     fn recovery_with_no_journal_says_so_rather_than_inventing_work() {
         let target = seeded("recover-clean");
         assert_eq!(
             run(args("recover-operation", &target, &[]))["recovered"],
             false
         );
+    }
+
+    #[test]
+    fn recovery_retains_unpublished_captures_and_unblocks_future_plans() {
+        let target = seeded("recover-unpublished");
+        let (_, control, pool) = open(&TEST, &target).unwrap();
+        let partial = control
+            .join(setup_core::backup::POOL_DIRECTORY_NAME)
+            .join("slot-000000000001");
+        fs::create_dir_all(partial.join("payload")).unwrap();
+        fs::write(partial.join("payload/AGENTS.md"), b"interrupted copy").unwrap();
+        let original = fs::read(target.join("AGENTS.md")).unwrap();
+        assert_eq!(
+            run(args("recover-operation", &target, &[]))["recovered"],
+            true
+        );
+        assert!(pool.partial_slots().unwrap().is_empty());
+        assert_eq!(fs::read(target.join("AGENTS.md")).unwrap(), original);
+        assert_eq!(
+            fs::read(control.join("backups/incomplete/slot-000000000001-0/payload/AGENTS.md"))
+                .unwrap(),
+            b"interrupted copy"
+        );
+        plan_then_apply(&target, "backup", &[]);
+        assert_eq!(pool.list().unwrap().len(), 1);
     }
 
     #[test]

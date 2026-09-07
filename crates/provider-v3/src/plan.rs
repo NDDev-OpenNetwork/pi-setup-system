@@ -154,6 +154,22 @@ impl EndState {
 }
 
 /// The provider's immutable description of one effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeCapture {
+    /// Explicit base of the complete cover, never an arbitrary ancestor.
+    #[serde(default)]
+    pub base_root: setup_core::native_snapshot::NativeBase,
+    /// Complete native namespace coverage, including shared configuration.
+    pub roots: Vec<String>,
+    /// Product-owned paths outside the effect.
+    pub excluded: Vec<String>,
+    /// Complete current-state precondition, including permission metadata.
+    pub current_digest: String,
+    /// Complete restored-state identity when returning to a preserved setup.
+    pub restore_digest: Option<String>,
+}
+
+/// The provider's immutable description of one effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanArtifact {
     /// Always [`PLAN_FORMAT`].
@@ -184,6 +200,9 @@ pub struct PlanArtifact {
     pub backup_ref: Option<String>,
     /// The target identity a restore will produce. Restore only.
     pub restore_target_digest: Option<String>,
+    /// Complete native preservation, explicitly requested or inherited from a snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_capture: Option<NativeCapture>,
     /// The permission profile to apply, when one was requested.
     pub permission_profile: Option<String>,
     /// The scope the consumer resolved this target to be, when it said.
@@ -268,6 +287,8 @@ pub struct PlanInputs<'a> {
     pub backup_ref: Option<String>,
     /// The identity a restore will produce. Required for restore, refused otherwise.
     pub restore_target_digest: Option<String>,
+    /// Complete native preservation binding when requested.
+    pub native_capture: Option<NativeCapture>,
     /// The permission profile, when one was requested.
     pub permission_profile: Option<String>,
     /// The scope the consumer resolved this target to be, when it said.
@@ -389,6 +410,7 @@ impl PlanArtifact {
             bundle: inputs.bundle,
             backup_ref: inputs.backup_ref,
             restore_target_digest: inputs.restore_target_digest,
+            native_capture: inputs.native_capture,
             permission_profile: inputs.permission_profile,
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),
@@ -542,6 +564,7 @@ mod tests {
             bundle: Some(binding()),
             backup_ref: Some("slot-000000000001".to_owned()),
             restore_target_digest: None,
+            native_capture: None,
             permission_profile: Some("default".to_owned()),
             expires_at: "2026-08-23T15:00:00Z",
             effects: vec!["write settings.json".to_owned()],
