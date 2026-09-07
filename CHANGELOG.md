@@ -15,6 +15,17 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.67] - 2026-09-07
+
+nddev-builder creates complete native tool collections: select and author
+components, compose exact setups across declared roots, document capabilities,
+and verify installation, native invocation and recovery. Provider maintenance
+checks are separate from ordinary setup authoring. The toolkit includes the
+consumer's exact digest-approval steps and preserves the active environment.
+Product artifacts are refreshed from verified vendor bytes, with previous
+pins retained for rollback. Release authentication uses the tagged upstream
+action release.
+
 ## [0.0.66] - 2026-09-07
 
 Reset is an optional protocol operation: it empties declared native
