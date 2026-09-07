@@ -529,7 +529,11 @@ def the_product_reads_our_setup(
     directory above where the product looks. Each installed, verified and
     restored cleanly, and changed nothing about the product.
 
-    `postures` is the stronger form: the probe must say something *different*
+    `autonomy` checks every standard variant against the common autonomous
+    policy, then requires a clean target to produce a different answer. The
+    standard variants no longer differ in approval or sandbox policy.
+
+    `postures` is the older form: the probe must say something *different*
     with `full-auto` installed than with `baseline`, which no constant can do.
     `reads` only asks the product to name our file at our target.
 
@@ -552,19 +556,51 @@ def the_product_reads_our_setup(
             at = found + len(fragment)
         return True
 
-    def ask(setup: str) -> str:
-        run_text([binary, "select", setup, "--target", str(target)])
+    def ask(setup: str | None, destination: Path = target) -> str:
+        if setup is not None:
+            run_text([binary, "select", setup, "--target", str(destination)])
         started = subprocess.run(
-            [binary, "launch", "--target", str(target), "--prefix", str(prefix),
+            [binary, "launch", "--target", str(destination), "--prefix", str(prefix),
              "--json", "--", *probe],
             capture_output=True,
             text=True,
             timeout=180,
-            env=contained(target.parent),
+            env=contained(destination.parent),
         )
+        if kind == "autonomy":
+            try:
+                report = json.loads(started.stdout)
+            except ValueError as error:
+                raise Failed("the autonomy probe did not return its machine report") from error
+            if not isinstance(report, dict) or not report or "error" in report:
+                raise Failed("the autonomy probe returned no usable configuration report")
+            # Doctor can exit 1 because this credential-free run has no login.
+            # Its configuration check must still have succeeded in both the
+            # installed case and the empty-target control.
+            if "checks" in report and (
+                report["checks"].get("config.load", {}).get("status") != "ok"
+            ):
+                raise Failed("the autonomy probe could not load the product configuration")
+            return started.stdout
         return started.stdout + started.stderr
 
     print("reads ", end="", flush=True)
+    if kind == "autonomy":
+        for setup in ("minimal", "baseline", "full-auto", "nddev-builder"):
+            said = ask(setup)
+            if not says(said, baseline):
+                raise Failed(
+                    f"with {setup!r} installed the product did not report the "
+                    f"autonomous policy {baseline!r}; it said:\n{said[:600]}"
+                )
+        with tempfile.TemporaryDirectory(prefix="empty-control-", dir=target.parent) as room:
+            empty = Path(room) / "target"
+            empty.mkdir()
+            control = ask(None, empty)
+            if says(control, baseline):
+                raise Failed("the empty-target control also reports our autonomous policy")
+        print("-> all four variants resolve the autonomous policy; the empty target does not")
+        return
     said = ask("baseline")
     if kind != "postures":
         # `reads` names a file, and a file name is not a string comparison on
@@ -997,7 +1033,7 @@ def main() -> int:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--harness", required=True)
     parser.add_argument("--probe", default="", help="argv that makes the product report its resolved configuration")
-    parser.add_argument("--probe-kind", default="", choices=["", "postures", "reads"])
+    parser.add_argument("--probe-kind", default="", choices=["", "postures", "reads", "autonomy"])
     parser.add_argument("--probe-baseline", default="", help="what the probe must say with `baseline` installed")
     parser.add_argument("--probe-full-auto", default="", help="what it must say with `full-auto` installed, when the kind is `postures`")
     parser.add_argument("--probe-absent", default="", help="the measured reason this product reports nothing without credentials")
