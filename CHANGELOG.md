@@ -15,6 +15,17 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.69] - 2026-09-08
+
+Native lifecycle evidence runs every provider command in the same isolated
+HOME/XDG environment. Antigravity is launched against its provider-reported
+documented home, including update, rollback and inactive-version removal.
+The measurement no longer describes its supported launch as undeclared.
+
+Grok Build vendor artifacts are refreshed to 1.0.24 from verified upstream
+platform bytes. Previous artifact pins remain available for rollback.
+The Pi Coding Agent provider retains the existing protocol and preservation contract.
+
 ## [0.0.68] - 2026-09-07
 
 Complete native setup preservation captures user additions, installed plugin
