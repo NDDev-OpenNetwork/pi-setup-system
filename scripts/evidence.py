@@ -105,7 +105,7 @@ class NothingToProve(Exception):
 
 def run_text(argv: list[str]) -> str:
     """Run one provider command that answers a person, and return what it said."""
-    done = subprocess.run(argv, capture_output=True, text=True)
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=180)
     if done.returncode != 0:
         raise Failed(f"{argv[1]} exited {done.returncode}: {done.stderr.strip()}")
     return done.stdout
@@ -113,7 +113,7 @@ def run_text(argv: list[str]) -> str:
 
 def run_json(argv: list[str]) -> dict:
     """Run one provider command that answers a machine, and parse its envelope."""
-    done = subprocess.run(argv, capture_output=True, text=True)
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=180)
     try:
         answer = json.loads(done.stdout)
     except json.JSONDecodeError:
@@ -819,10 +819,24 @@ def software_lifecycle(
     # needs Python 3.10, which is a second thing to be right about on three
     # runner images. `ignore_errors` on the removal has always been there.
     scratch = tempfile.mkdtemp(prefix="evidence-")
+    home_keys = ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
+    previous_environment = {key: os.environ.get(key) for key in home_keys}
     try:
         room = Path(scratch)
+        # Every provider subprocess must agree on the isolated documented home,
+        # including plan/apply and the launch inside rollback/remove checks.
+        isolated = contained(room)
+        os.environ.update({key: isolated[key] for key in home_keys})
         target, prefix = room / "target", room / "prefix"
-        target.mkdir()
+        if harness == "antigravity":
+            description = run_text([binary])
+            homes = [line.split(":", 1)[1].strip().split()[0]
+                     for line in description.splitlines()
+                     if "configuration home" in line.lower()]
+            if len(homes) != 1 or not homes[0].startswith("~/"):
+                raise Failed("provider did not report one documented user configuration home")
+            target = Path(isolated["HOME"]) / homes[0][2:]
+        target.mkdir(parents=True)
         prefix.mkdir()
 
         print("plan  ", end="", flush=True)
@@ -880,7 +894,6 @@ def software_lifecycle(
 
         launches = "launch" in info["supported_commands"]
         if not launches:
-            # Antigravity, and the refusal is the declaration keeping its word.
             print("launch -> not declared, so this build does not start a product")
             cross_two_releases(binary, target, prefix, room, info)
             remove_the_program(binary, target, prefix, info)
@@ -1025,6 +1038,11 @@ def software_lifecycle(
         cross_two_releases(binary, target, prefix, room, info)
         remove_the_program(binary, target, prefix, info)
     finally:
+        for key, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         shutil.rmtree(scratch, ignore_errors=True)
 
 
