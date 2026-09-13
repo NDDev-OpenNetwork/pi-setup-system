@@ -56,7 +56,7 @@ jobs:
     name: actionlint
     permissions:
       contents: read
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@e90a2c7c6c25cd1fb9ac1c68adbc7535f8b17e1e
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/actionlint.yml@a624689c897c5f4733cf475159e77bba3a2b98c7
 
   pr-hygiene:
     name: pr-hygiene
