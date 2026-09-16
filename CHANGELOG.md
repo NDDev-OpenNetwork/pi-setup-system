@@ -15,6 +15,16 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.72] - 2026-09-16
+
+nddev-builder guidance is refreshed against each harness's current native
+extension model. Software artifacts are refreshed from verified vendor bytes:
+Claude Code 2.1.273, Grok Build 1.0.34, OpenCode 1.18.31 and Antigravity CLI
+1.2.4. Codex remains 0.154.0, Cursor 2026.09.10-fd3934a and Pi 0.85.1.
+Public reusable workflows pin ci-workflows 0.1.17
+(b4421b8660a7b6462095a9f492ea012b2a609abe). Previous artifact pins remain
+available for rollback.
+
 ## [0.0.71] - 2026-09-13
 
 nddev-builder guidance is refreshed against each harness's current native
