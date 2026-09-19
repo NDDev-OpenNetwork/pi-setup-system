@@ -37,6 +37,7 @@ pub mod catalog;
 pub mod expiry;
 pub mod facts;
 pub mod human;
+pub(crate) mod instruction_region;
 pub mod probe;
 pub(crate) mod software;
 pub mod surfaces;

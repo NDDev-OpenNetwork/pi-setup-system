@@ -234,7 +234,20 @@ pub struct Harness {
     /// [`Delivery::Manager`], which is a different statement -- the product is
     /// installable, but not by fetching bytes whose digest was fixed in advance
     /// -- and the refusal says which.
+    /// How the product's own software is installed, when this build can do it.
+    ///
+    /// `None` means the software lifecycle is not offered at all. So does a
+    /// [`Delivery::Manager`], which is a different statement -- the product is
+    /// installable, but not by fetching bytes whose digest was fixed in advance
+    /// -- and the refusal says which.
     pub software: Option<Software>,
+    /// Target-relative path of the user-global instruction attachment.
+    ///
+    /// `None` when the product has no catalogued global instruction surface
+    /// (Antigravity). Present, this build implements `patch_instruction_region`
+    /// against that path. The bytes travel on `--instruction-section`; they are
+    /// not a setup payload.
+    pub instruction_region: Option<&'static str>,
 }
 
 /// A second set of ownings, for a target that is not the product's own home.
@@ -751,21 +764,44 @@ impl Harness {
     /// manager this provider does not run.
     #[must_use]
     pub fn operations(&self) -> &'static [Operation] {
-        match (self.can_launch(), self.software) {
+        match (
+            self.can_launch(),
+            self.software,
+            self.instruction_region.is_some(),
+        ) {
             (
                 true,
                 Some(Software {
                     delivery: Delivery::Artifacts(_),
                     ..
                 }),
+                true,
             ) => Operation::ALL,
+            (
+                true,
+                Some(Software {
+                    delivery: Delivery::Artifacts(_),
+                    ..
+                }),
+                false,
+            ) => Operation::ALL_WITHOUT_INSTRUCTION,
             (
                 false,
                 Some(Software {
                     delivery: Delivery::Artifacts(_),
                     ..
                 }),
+                true,
+            ) => Operation::CORE_AND_SOFTWARE_AND_INSTRUCTION,
+            (
+                false,
+                Some(Software {
+                    delivery: Delivery::Artifacts(_),
+                    ..
+                }),
+                false,
             ) => Operation::CORE_AND_SOFTWARE,
+            (_, _, true) => Operation::CORE_AND_INSTRUCTION,
             _ => Operation::CORE,
         }
     }
@@ -968,6 +1004,7 @@ mod tests {
         max_files: 4096,
         max_bytes: 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,
+        instruction_region: None,
     };
 
     #[test]
@@ -1009,12 +1046,25 @@ mod tests {
             Operation::SoftwareInstall,
             Operation::SoftwareUpdate,
             Operation::SoftwareRemove,
+            Operation::PatchInstructionRegion,
         ] {
             assert!(
                 !info.declares(optional),
                 "{optional} is declared but not performed"
             );
         }
+    }
+
+    #[test]
+    fn an_instruction_surface_without_software_still_declares_the_patch() {
+        let named = Harness {
+            instruction_region: Some("AGENTS.md"),
+            ..SAMPLE
+        };
+        let info = named.provider_info().unwrap();
+        assert!(info.declares(Operation::PatchInstructionRegion));
+        assert!(!info.declares(Operation::SoftwareInstall));
+        assert!(!info.declares(Operation::Launch));
     }
 
     #[test]

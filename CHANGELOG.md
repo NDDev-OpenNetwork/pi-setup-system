@@ -15,6 +15,20 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.73] - 2026-09-19
+
+nddev-builder guidance is refreshed against each harness's current native
+extension model. Software artifacts are refreshed from verified vendor bytes:
+Claude Code 2.1.278, Codex 0.155.1, Grok Build 1.0.38, Cursor
+2026.09.18-9a7762b and Antigravity CLI 1.2.7. OpenCode remains 1.18.31 and
+Pi 0.85.1. Public reusable workflows pin ci-workflows 0.1.20
+(26749820fad5bde1f1726636af5b04d329ed2fe5). Previous artifact pins remain
+available for rollback.
+
+Providers gain the optional patch_instruction_region operation, which replaces
+the managed instruction region in place while preserving unmanaged native
+state. Setup content, postures and ownership are unchanged.
+
 ## [0.0.72] - 2026-09-16
 
 nddev-builder guidance is refreshed against each harness's current native

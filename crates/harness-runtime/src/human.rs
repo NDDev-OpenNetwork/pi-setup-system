@@ -1154,6 +1154,8 @@ fn mutate(
         // The human surface removes whole and carries no bundle, so no path
         // has a second sentence.
         end_state: Vec::new(),
+        instruction_path: None,
+        instruction_text: None,
         effects: effect_lines(harness, &effect, applied.setup_id.as_deref()),
     })?;
     let plan_digest = artifact.digest()?;
@@ -1250,6 +1252,9 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
                 setup_id.unwrap_or(setup.manifest.id.as_str())
             ));
             lines
+        }
+        Effect::PatchInstruction { path, .. } => {
+            vec![capture, format!("patch instruction region at {path}")]
         }
     }
 }
