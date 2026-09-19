@@ -256,6 +256,12 @@ pub struct PlanArtifact {
     /// verifying. Every other operation has one sentence per path already.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub end_state: Vec<EndState>,
+    /// Target-relative path of a `patch_instruction_region` write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_path: Option<String>,
+    /// Full file text after splicing. Apply writes these bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_text: Option<String>,
     /// What applying it will do, in order. Never empty.
     pub effects: Vec<String>,
 }
@@ -305,6 +311,10 @@ pub struct PlanInputs<'a> {
     /// Per-path end states, for a `remove` that carries a bundle. Empty
     /// otherwise, and refused on any other operation.
     pub end_state: Vec<EndState>,
+    /// Target-relative attachment path, when this is a region patch.
+    pub instruction_path: Option<String>,
+    /// Full file text after splicing, when this is a region patch.
+    pub instruction_text: Option<String>,
     /// What applying it will do. Never empty.
     pub effects: Vec<String>,
 }
@@ -418,6 +428,8 @@ impl PlanArtifact {
             software_version: inputs.software_version.map(str::to_owned),
             software_artifacts: inputs.software_artifacts,
             end_state: inputs.end_state,
+            instruction_path: inputs.instruction_path,
+            instruction_text: inputs.instruction_text,
             effects: inputs.effects,
         })
     }
@@ -567,6 +579,8 @@ mod tests {
             native_capture: None,
             permission_profile: Some("default".to_owned()),
             expires_at: "2026-08-23T15:00:00Z",
+            instruction_path: None,
+            instruction_text: None,
             effects: vec!["write settings.json".to_owned()],
         }
     }

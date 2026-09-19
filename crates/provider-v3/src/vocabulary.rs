@@ -135,6 +135,12 @@ pub enum Operation {
     SoftwareRemove,
     /// Start the product. Optional.
     Launch,
+    /// Patch a marked user-global instruction region. Optional.
+    ///
+    /// The consumer sends the marked bytes on `--instruction-section`. This is
+    /// not a setup install: whole-setup apply must not treat the region as
+    /// payload it is free to empty.
+    PatchInstructionRegion,
 }
 
 impl Operation {
@@ -150,6 +156,7 @@ impl Operation {
         Self::SoftwareUpdate,
         Self::SoftwareRemove,
         Self::Launch,
+        Self::PatchInstructionRegion,
     ];
 
     /// The operations every provider must support.
@@ -172,6 +179,44 @@ impl Operation {
         Self::SoftwareInstall,
         Self::SoftwareUpdate,
         Self::SoftwareRemove,
+    ];
+
+    /// [`CORE`] plus the instruction-region patch, without software or launch.
+    pub const CORE_AND_INSTRUCTION: &'static [Self] = &[
+        Self::Backup,
+        Self::Install,
+        Self::Remove,
+        Self::Replace,
+        Self::Restore,
+        Self::PatchInstructionRegion,
+    ];
+
+    /// [`CORE_AND_SOFTWARE`] plus the instruction-region patch, without launch.
+    pub const CORE_AND_SOFTWARE_AND_INSTRUCTION: &'static [Self] = &[
+        Self::Backup,
+        Self::Install,
+        Self::Remove,
+        Self::Replace,
+        Self::Restore,
+        Self::Reset,
+        Self::SoftwareInstall,
+        Self::SoftwareUpdate,
+        Self::SoftwareRemove,
+        Self::PatchInstructionRegion,
+    ];
+
+    /// [`ALL`] without the instruction-region patch.
+    pub const ALL_WITHOUT_INSTRUCTION: &'static [Self] = &[
+        Self::Install,
+        Self::Replace,
+        Self::Backup,
+        Self::Restore,
+        Self::Remove,
+        Self::Reset,
+        Self::SoftwareInstall,
+        Self::SoftwareUpdate,
+        Self::SoftwareRemove,
+        Self::Launch,
     ];
 
     /// The optional operations that install the product itself.
@@ -198,6 +243,7 @@ impl Operation {
             Self::SoftwareUpdate => "software_update",
             Self::SoftwareRemove => "software_remove",
             Self::Launch => "launch",
+            Self::PatchInstructionRegion => "patch_instruction_region",
         }
     }
 

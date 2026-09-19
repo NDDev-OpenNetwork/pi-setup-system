@@ -654,6 +654,8 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
         }
     }
 
+    honour_instruction_section(harness, request)?;
+
     // The same rule for a bundle, and this one was worse than silently
     // dropped: only `install` and `replace` read one, but the plan **bound**
     // the five names into its artifact for every operation, so a remove plan
@@ -720,6 +722,80 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn honour_instruction_section(harness: &Harness, request: &PlanRequest) -> Result<()> {
+    if request.instruction_section.is_some()
+        && request.operation != Operation::PatchInstructionRegion
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} takes no instruction section; patch_instruction_region is the \
+                 operation that reads --instruction-section",
+                request.operation
+            ),
+        ));
+    }
+    if request.operation != Operation::PatchInstructionRegion {
+        return Ok(());
+    }
+    if harness.instruction_region.is_none() {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} does not declare a user-global instruction surface",
+                harness.provider_id
+            ),
+        ));
+    }
+    if request
+        .instruction_section
+        .as_deref()
+        .is_none_or(str::is_empty)
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "patch_instruction_region needs --instruction-section with marked bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn plan_instruction_patch(
+    harness: &Harness,
+    target: &Target,
+    request: &PlanRequest,
+) -> Result<(Vec<String>, String, String)> {
+    let Some(relative) = harness.instruction_region else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} does not declare a user-global instruction surface",
+                harness.provider_id
+            ),
+        ));
+    };
+    let Some(section) = request.instruction_section.as_deref() else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "patch_instruction_region needs --instruction-section with marked bytes",
+        ));
+    };
+    if crate::instruction_region::extract(section).is_none() {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "instruction_section must contain :::begin-ai-stp and :::end-ai-stp",
+        ));
+    }
+    let existing = crate::instruction_region::read_utf8(&target.root().join(relative));
+    let (updated, wrote) = crate::instruction_region::patch(&existing, section);
+    let effects = if wrote {
+        vec![format!("patch instruction region at {relative}")]
+    } else {
+        vec![format!("instruction region at {relative} already matches")]
+    };
+    Ok((effects, relative.to_owned(), updated))
 }
 
 /// Produce a plan without touching the target.
@@ -854,6 +930,15 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             {
                 existing_under_projection(harness, &resolved, request.target_scope)?
             }
+            Operation::PatchInstructionRegion => {
+                let mut capture = owned.clone();
+                if let Some(path) = harness.instruction_region
+                    && !capture.iter().any(|held| held == path)
+                {
+                    capture.push(path.to_owned());
+                }
+                capture
+            }
             _ => owned.clone(),
         };
         refuse_uncapturable(&resolved, &capture)?;
@@ -863,6 +948,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     let mut software_prefix_held: Option<String> = None;
     let mut software_version_held: Option<String> = None;
     let mut end_state = Vec::new();
+    let mut instruction_path = None;
+    let mut instruction_text = None;
     let (effects, backup_ref, restore_target_digest) = match request.operation {
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove => {
             let (planned, effects, version) = software::plan(
@@ -929,6 +1016,12 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             (taken_before_reset(harness), None, None)
         }
         Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
+        Operation::PatchInstructionRegion => {
+            let (lines, path, text) = plan_instruction_patch(harness, &resolved, request)?;
+            instruction_path = Some(path);
+            instruction_text = Some(text);
+            (lines, None, None)
+        }
         other @ Operation::Launch => {
             return Err(Error::refuse(
                 WireReason::UnsupportedOperation,
@@ -968,6 +1061,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         software_prefix: software_prefix_held.as_deref(),
         software_version: software_version_held.as_deref(),
         end_state,
+        instruction_path,
+        instruction_text,
         effects,
     })?
     .into_response()
@@ -1521,6 +1616,13 @@ pub(crate) enum Effect<'a> {
         /// Each declared file's bytes and mode, by target-relative path.
         files: &'a BTreeMap<String, (Vec<u8>, u32)>,
     },
+    /// Splice a marked instruction region into one owned-or-neighbour file.
+    PatchInstruction {
+        /// Target-relative path.
+        path: String,
+        /// Full file text after splicing.
+        text: String,
+    },
 }
 
 /// One authorized mutation, whatever surface asked for it.
@@ -1733,6 +1835,11 @@ fn apply(
             Effect::MaterializeBundle {
                 files: &ready.files,
             }
+        }
+        Operation::PatchInstructionRegion => {
+            let path = string_field(&artifact, "instruction_path")?;
+            let text = string_field(&artifact, "instruction_text")?;
+            Effect::PatchInstruction { path, text }
         }
         other => {
             return Err(Error::refuse(
@@ -1974,6 +2081,22 @@ pub(crate) fn perform(
         }
         Effect::MaterializeBundle { files } => {
             write_bundle_files(harness, &resolved, files, mutation.target_scope)
+        }
+        Effect::PatchInstruction { path, text } => {
+            let destination = resolved.root().join(path);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    Error::from(
+                        setup_core::Error::new(
+                            setup_core::ReasonCode::StateUnavailable,
+                            format!("cannot create {}", parent.display()),
+                        )
+                        .with_source(error),
+                    )
+                })?;
+            }
+            lock::atomic_write(&destination, text.as_bytes()).map_err(Error::from)?;
+            Ok(previous_written.clone())
         }
         // Keeping a predecessor's stamp aside writes nothing to the target, so
         // the inventory is what it was. Same reason as `Backup` above.
@@ -2754,6 +2877,21 @@ fn write_host_file(
     } else {
         bytes.to_vec()
     };
+    let outgoing = if crate::instruction_region::is_attachment(relative, harness.instruction_region)
+    {
+        fs::read_to_string(&destination)
+            .ok()
+            .map(|existing| {
+                crate::instruction_region::preserve_in_replacement(
+                    &existing,
+                    &String::from_utf8_lossy(&outgoing),
+                )
+                .into_bytes()
+            })
+            .unwrap_or(outgoing)
+    } else {
+        outgoing
+    };
     if merge_json && let Some(keys) = json_top_keys(bytes) {
         remember_written_fields(harness, target, relative, keys)?;
     }
@@ -2793,6 +2931,13 @@ fn withdraw_written(
     }
     if preserve_json_keys {
         forget_written_fields(harness, target, relative);
+    }
+    if crate::instruction_region::is_attachment(relative, harness.instruction_region)
+        && let Ok(existing) = fs::read_to_string(&destination)
+        && let Some(region) = crate::instruction_region::keep_region_on_withdraw(&existing)
+    {
+        lock::atomic_write(&destination, region.as_bytes()).map_err(Error::from)?;
+        return Ok(());
     }
     remove_keeping(&destination, target.root(), harness.never_touch)
 }
@@ -3317,6 +3462,7 @@ pub(crate) mod tests_support {
         max_files: 4096,
         max_bytes: 64 * 1024 * 1024,
         kit_identity: r#"{"aggregate_digest":"sha256:aa","protocol_version":3}"#,
+        instruction_region: Some("AGENTS.md"),
     };
 }
 
@@ -8154,6 +8300,7 @@ mod tests {
         assert!(info.declares(Operation::SoftwareInstall));
         assert!(info.declares(Operation::SoftwareUpdate));
         assert!(info.declares(Operation::SoftwareRemove));
+        assert!(info.declares(Operation::PatchInstructionRegion));
     }
 
     #[test]
@@ -8166,6 +8313,10 @@ mod tests {
         assert!(!info.declares(Operation::SoftwareInstall));
         assert!(!info.declares(Operation::SoftwareUpdate));
         assert!(!info.declares(Operation::SoftwareRemove));
+        assert!(
+            info.declares(Operation::PatchInstructionRegion),
+            "the instruction attachment is not a software lifecycle"
+        );
 
         let error = software::plan(
             &bare,
@@ -8175,6 +8326,103 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+    }
+
+    const INSTRUCTION_SECTION: &str = ":::begin-ai-stp\nhello from ai-stp\n:::end-ai-stp\n";
+
+    #[test]
+    fn patch_instruction_region_splices_markers_and_survives_a_recorded_withdraw() {
+        let target = seeded("patch-instruction-region");
+        let applied = plan_then_apply(
+            &target,
+            "patch_instruction_region",
+            &["--instruction-section", INSTRUCTION_SECTION],
+        );
+        assert_eq!(applied["state"], "verified", "{applied}");
+        let after_patch = fs::read_to_string(target.join("AGENTS.md")).unwrap();
+        assert!(
+            after_patch.starts_with("# first\n"),
+            "user bytes outside the markers were dropped: {after_patch:?}"
+        );
+        assert_eq!(
+            crate::instruction_region::extract(&after_patch),
+            Some(INSTRUCTION_SECTION)
+        );
+        assert!(
+            !recorded_written(&target).contains(&"AGENTS.md".to_owned()),
+            "the attachment was recorded as a setup receipt: {:?}",
+            recorded_written(&target)
+        );
+
+        install_global(&target, "with-agents", &[("AGENTS.md", "# setup\n", 0o644)]);
+        let after_install = fs::read_to_string(target.join("AGENTS.md")).unwrap();
+        assert!(
+            after_install.contains("# setup"),
+            "the setup did not land: {after_install:?}"
+        );
+        assert_eq!(
+            crate::instruction_region::extract(&after_install),
+            Some(INSTRUCTION_SECTION),
+            "install emptied the attachment: {after_install:?}"
+        );
+        assert!(
+            recorded_written(&target).contains(&"AGENTS.md".to_owned()),
+            "install did not record the setup file: {:?}",
+            recorded_written(&target)
+        );
+
+        let removed = plan_then_apply(&target, "remove", &[]);
+        assert_eq!(removed["state"], "verified", "{removed}");
+        let after_remove = fs::read_to_string(target.join("AGENTS.md")).unwrap();
+        assert_eq!(
+            crate::instruction_region::extract(&after_remove),
+            Some(INSTRUCTION_SECTION),
+            "withdraw deleted the attachment: {after_remove:?}"
+        );
+        assert!(
+            !after_remove.contains("# setup"),
+            "withdraw left setup bytes beside the region: {after_remove:?}"
+        );
+    }
+
+    #[test]
+    fn a_harness_without_an_instruction_surface_refuses_the_patch() {
+        let mut mute = TEST;
+        mute.instruction_region = None;
+        let target = seeded("no-instruction-surface");
+        let error = refuse_for(
+            &mute,
+            args(
+                "plan-operation",
+                &target,
+                &[
+                    "--operation",
+                    "patch_instruction_region",
+                    "--provider-release-digest",
+                    RELEASE,
+                    "--operation-id",
+                    "operation_01TEST",
+                    "--expires-at",
+                    far_future(),
+                    "--instruction-section",
+                    INSTRUCTION_SECTION,
+                ],
+            ),
+        );
+        assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+        assert!(
+            error
+                .detail()
+                .contains("does not declare a user-global instruction surface"),
+            "{}",
+            error.detail()
+        );
+        assert!(
+            !mute
+                .provider_info()
+                .unwrap()
+                .declares(Operation::PatchInstructionRegion)
+        );
     }
     /// `status` says which slots retention may not take, and whose they are.
     ///

@@ -118,6 +118,10 @@ const fn plan_usage(command: Command) -> Usage {
                 "--target-scope",
                 "which scope this target is; accepted and not yet acted on",
             ),
+            (
+                "--instruction-section",
+                "marked user-global instruction bytes for patch_instruction_region",
+            ),
         ],
         note: "Produce a plan. Always pure: reads the target and the local disk, opens no socket.",
     }
@@ -360,7 +364,13 @@ pub struct PlanRequest {
     /// declarable since `0.0.7` and operable never, because no request field
     /// carried a scope; this is the field, arriving one release ahead of the
     /// behaviour on purpose.
+    /// Which scope the consumer resolved this target to be.
     pub target_scope: Option<TargetScope>,
+    /// Marked instruction bytes for `patch_instruction_region`.
+    ///
+    /// Absent on every other operation. The consumer sends this only after a
+    /// provider declares both the operation and `instruction_section`.
+    pub instruction_section: Option<String>,
 }
 
 /// Read `--target-scope`, refusing a value this build does not know.
@@ -521,6 +531,7 @@ where
                     prefix: flags.take_prefix()?,
                     software_version: flags.take_optional("--software-version"),
                     target_scope: take_target_scope(&mut flags)?,
+                    instruction_section: flags.take_optional("--instruction-section"),
                 },
             }
         }
@@ -565,6 +576,15 @@ struct Flags {
 /// two different things and only one of them would happen.
 const REPEATABLE: &[&str] = &["--software-artifact"];
 
+/// True when `token` is another flag, not a value that happens to start with
+/// dashes. Cursor's `alwaysApply` payload begins with YAML `---`; treating
+/// every `--` prefix as a missing value refused that first write.
+fn looks_like_flag(token: &str) -> bool {
+    token
+        .strip_prefix("--")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphabetic()))
+}
+
 impl Flags {
     /// Split a bare `--` off the end, keeping what follows verbatim.
     ///
@@ -601,7 +621,7 @@ impl Flags {
             let Some(value) = tokens.get(index + 1) else {
                 return Err(local(format!("{token} has no value")));
             };
-            if value.starts_with("--") {
+            if looks_like_flag(value) {
                 return Err(local(format!("{token} has no value")));
             }
             let seen = values.entry(token.clone()).or_default();
@@ -1019,6 +1039,57 @@ mod tests {
         );
         let error = parse(tokens).unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::UnsupportedOperation));
+    }
+
+    #[test]
+    fn patch_instruction_region_parses_the_marked_section() {
+        let tokens = with_target(
+            "plan-operation",
+            &[
+                "--operation",
+                "patch_instruction_region",
+                "--provider-release-digest",
+                DIGEST,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                "2026-08-23T15:00:00Z",
+                "--instruction-section",
+                ":::begin-ai-stp\nhello\n:::end-ai-stp\n",
+            ],
+        );
+        let Invocation::PlanOperation { request, .. } = parse(tokens).unwrap() else {
+            panic!("expected a plan invocation");
+        };
+        assert_eq!(request.operation, Operation::PatchInstructionRegion);
+        assert_eq!(
+            request.instruction_section.as_deref(),
+            Some(":::begin-ai-stp\nhello\n:::end-ai-stp\n")
+        );
+    }
+
+    #[test]
+    fn patch_instruction_region_parses_yaml_frontmatter_before_markers() {
+        let section = "---\nalwaysApply: true\n---\n\n:::begin-ai-stp\nhello\n:::end-ai-stp\n";
+        let tokens = with_target(
+            "plan-operation",
+            &[
+                "--operation",
+                "patch_instruction_region",
+                "--provider-release-digest",
+                DIGEST,
+                "--instruction-section",
+                section,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                "2026-08-23T15:00:00Z",
+            ],
+        );
+        let Invocation::PlanOperation { request, .. } = parse(tokens).unwrap() else {
+            panic!("expected a plan invocation");
+        };
+        assert_eq!(request.instruction_section.as_deref(), Some(section));
     }
 
     /// A consumer that sends a scope must not be refused by a build that cannot
