@@ -1370,14 +1370,14 @@ fn count_files(root: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// Keys the pinned Antigravity CLI (1.1.22) was measured to recognise in
-/// `antigravity-cli/settings.json`. A setup may not grow a key that search of
-/// those bytes did not find — including `artifactReviewPolicy`, which vendor
-/// pages name for a different displayed CLI than this pin.
+/// Keys measured in Antigravity CLI settings. The historical 1.1.22 artifact
+/// registry is retained; native 1.2.10 additionally reads `allowNonWorkspaceAccess`.
+/// See the baseline setting compatibility evidence before adding another key.
 pub const ANTIGRAVITY_MEASURED_SETTING_KEYS: &[&str] = &[
     "toolPermission",
     "enableTerminalSandbox",
     "allowAgentAccessNonWorkspaceFiles",
+    "allowNonWorkspaceAccess",
     "allowCascadeAccessGitignoreFiles",
     "autoContinueOnMaxGeneratorInvocations",
     "permissions",
@@ -2180,6 +2180,13 @@ mod tests {
             let value: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
             let object = value.as_object().unwrap();
+            if variant_dir.file_name().unwrap() != "minimal" {
+                assert_eq!(
+                    object.get("allowNonWorkspaceAccess"),
+                    Some(&serde_json::Value::Bool(true)),
+                    "{path:?} does not enable the setting read by Antigravity CLI 1.2.10"
+                );
+            }
             for key in object.keys() {
                 assert!(
                     ANTIGRAVITY_MEASURED_SETTING_KEYS.contains(&key.as_str()),
