@@ -15,6 +15,15 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.74] - 2026-09-24
+
+Antigravity non-minimal setups now carry allowNonWorkspaceAccess alongside
+its historical setting key. A fresh Antigravity CLI 1.2.10 session on Linux
+read the new key as enabled; the old key alone read disabled. The native builder
+runtime settings are derived from full-auto so regeneration preserves the fix.
+The provider protocol, software artifact pins and other harness postures are
+unchanged. Prior releases remain available for rollback.
+
 ## [0.0.73] - 2026-09-19
 
 nddev-builder guidance is refreshed against each harness's current native
