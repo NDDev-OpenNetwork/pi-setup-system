@@ -6,12 +6,26 @@
 //! region as payload they are free to empty: [`preserve_in_replacement`] and
 //! [`keep_region_on_withdraw`] are the two hooks.
 
-use std::path::Path;
+use std::{io, path::Path};
 
 /// Visible begin marker. HTML comments are refused — Claude strips them.
 pub const BEGIN: &str = ":::begin-ai-stp";
 /// Visible end marker. Inclusive of the following newline when present.
 pub const END: &str = ":::end-ai-stp";
+
+/// Refuse ambiguous ownership markers before a caller plans or writes bytes.
+#[must_use]
+pub fn markers_well_formed(existing: &str) -> bool {
+    match (existing.find(BEGIN), existing.find(END)) {
+        (None, None) => true,
+        (Some(begin), Some(end)) => {
+            begin < end
+                && !existing[begin + BEGIN.len()..].contains(BEGIN)
+                && !existing[end + END.len()..].contains(END)
+        }
+        _ => false,
+    }
+}
 
 /// The marked region, including both markers, or `None` when either is missing
 /// or they are out of order.
@@ -136,9 +150,12 @@ pub fn is_attachment(relative: &str, named: Option<&str>) -> bool {
     named.is_some_and(|path| path == relative)
 }
 
-/// UTF-8 text of a file, or empty when it is missing.
-pub fn read_utf8(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+/// UTF-8 text of a file, or empty only when it is missing.
+pub fn read_utf8(path: &Path) -> io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +163,16 @@ mod tests {
     use super::*;
 
     const SECTION: &str = ":::begin-ai-stp\nhello\n:::end-ai-stp\n";
+
+    #[test]
+    fn partial_reversed_or_duplicate_markers_are_ambiguous() {
+        assert!(markers_well_formed("no attachment"));
+        assert!(markers_well_formed(SECTION));
+        assert!(!markers_well_formed(":::begin-ai-stp\n"));
+        assert!(!markers_well_formed(":::end-ai-stp\n"));
+        assert!(!markers_well_formed(":::end-ai-stp\n:::begin-ai-stp\n"));
+        assert!(!markers_well_formed(&format!("{SECTION}{SECTION}")));
+    }
 
     #[test]
     fn empty_file_receives_the_section() {
