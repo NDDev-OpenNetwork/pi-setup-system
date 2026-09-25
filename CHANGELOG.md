@@ -15,6 +15,17 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.75] - 2026-09-25
+
+All seven setup systems refresh their software pins from current vendor
+artifacts, with bytes and SHA256 checked for six published platforms each:
+Claude Code 2.1.282, Codex 0.157.0, Grok Build 1.0.41, Pi 0.87.1,
+OpenCode 1.18.32, Cursor 2026.09.23-86fc751, and Antigravity CLI 1.2.11.
+The immediately preceding pins remain available for rollback. Pi's standalone
+0.87.1 binary reports 0.0.0 for --version; this observed vendor placeholder is
+bound to its exact Linux x86_64 artifact digest and is not the release identity.
+Provider protocol, setup content, postures and ownership are unchanged.
+
 ## [0.0.74] - 2026-09-24
 
 Antigravity non-minimal setups now carry allowNonWorkspaceAccess alongside
