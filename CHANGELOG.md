@@ -15,6 +15,16 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.76] - 2026-09-25
+
+The shared instruction attachment now refuses unreadable or invalid
+UTF-8 instruction files and partial, reversed or duplicate ownership markers.
+Setup replacement and withdrawal also refuse ambiguous instruction bytes
+instead of dropping user content; an invalid UTF-8 setup instruction payload
+is not silently converted. The seven providers keep their 0.0.75 software
+pins and setup content. Control-attachment lifecycle and fresh-session native
+qualification remain separate open work.
+
 ## [0.0.75] - 2026-09-25
 
 All seven setup systems refresh their software pins from current vendor

@@ -782,13 +782,15 @@ fn plan_instruction_patch(
             "patch_instruction_region needs --instruction-section with marked bytes",
         ));
     };
-    if crate::instruction_region::extract(section).is_none() {
+    if !crate::instruction_region::markers_well_formed(section)
+        || crate::instruction_region::extract(section).is_none()
+    {
         return Err(Error::refuse(
             WireReason::UnsupportedOperation,
-            "instruction_section must contain :::begin-ai-stp and :::end-ai-stp",
+            "instruction_section needs exactly one ordered :::begin-ai-stp and :::end-ai-stp pair",
         ));
     }
-    let existing = crate::instruction_region::read_utf8(&target.root().join(relative));
+    let existing = read_instruction_text(&target.root().join(relative))?;
     let (updated, wrote) = crate::instruction_region::patch(&existing, section);
     let effects = if wrote {
         vec![format!("patch instruction region at {relative}")]
@@ -2879,16 +2881,26 @@ fn write_host_file(
     };
     let outgoing = if crate::instruction_region::is_attachment(relative, harness.instruction_region)
     {
-        fs::read_to_string(&destination)
-            .ok()
-            .map(|existing| {
-                crate::instruction_region::preserve_in_replacement(
-                    &existing,
-                    &String::from_utf8_lossy(&outgoing),
-                )
-                .into_bytes()
-            })
-            .unwrap_or(outgoing)
+        let existing = read_instruction_text(&destination)?;
+        let incoming = std::str::from_utf8(&outgoing).map_err(|error| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "instruction surface {} is not UTF-8: {error}",
+                    destination.display()
+                ),
+            )
+        })?;
+        if !crate::instruction_region::markers_well_formed(incoming) {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "instruction surface {} has ambiguous markers",
+                    destination.display()
+                ),
+            ));
+        }
+        crate::instruction_region::preserve_in_replacement(&existing, incoming).into_bytes()
     } else {
         outgoing
     };
@@ -2932,14 +2944,36 @@ fn withdraw_written(
     if preserve_json_keys {
         forget_written_fields(harness, target, relative);
     }
-    if crate::instruction_region::is_attachment(relative, harness.instruction_region)
-        && let Ok(existing) = fs::read_to_string(&destination)
-        && let Some(region) = crate::instruction_region::keep_region_on_withdraw(&existing)
-    {
-        lock::atomic_write(&destination, region.as_bytes()).map_err(Error::from)?;
-        return Ok(());
+    if crate::instruction_region::is_attachment(relative, harness.instruction_region) {
+        let existing = read_instruction_text(&destination)?;
+        if let Some(region) = crate::instruction_region::keep_region_on_withdraw(&existing) {
+            lock::atomic_write(&destination, region.as_bytes()).map_err(Error::from)?;
+            return Ok(());
+        }
     }
     remove_keeping(&destination, target.root(), harness.never_touch)
+}
+
+fn read_instruction_text(path: &Path) -> Result<String> {
+    let existing = crate::instruction_region::read_utf8(path).map_err(|error| {
+        Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "cannot read instruction surface {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if !crate::instruction_region::markers_well_formed(&existing) {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "instruction surface {} has ambiguous markers",
+                path.display()
+            ),
+        ));
+    }
+    Ok(existing)
 }
 
 fn strip_json_keys(path: &Path, keys: &[String]) -> Result<bool> {
@@ -8383,6 +8417,55 @@ mod tests {
             !after_remove.contains("# setup"),
             "withdraw left setup bytes beside the region: {after_remove:?}"
         );
+    }
+
+    #[test]
+    fn instruction_patch_refuses_invalid_encoding_and_ambiguous_markers() {
+        let target = seeded("invalid-instruction-region");
+        let path = target.join("AGENTS.md");
+        for bytes in [
+            vec![0xff, 0xfe, b'X'],
+            b"keep\n:::begin-ai-stp\n".to_vec(),
+            b":::end-ai-stp\n:::begin-ai-stp\n".to_vec(),
+            format!("{INSTRUCTION_SECTION}{INSTRUCTION_SECTION}").into_bytes(),
+        ] {
+            fs::write(&path, &bytes).unwrap();
+            let error = refuse(args(
+                "plan-operation",
+                &target,
+                &[
+                    "--operation",
+                    "patch_instruction_region",
+                    "--provider-release-digest",
+                    RELEASE,
+                    "--operation-id",
+                    "operation_01TEST",
+                    "--expires-at",
+                    far_future(),
+                    "--instruction-section",
+                    INSTRUCTION_SECTION,
+                ],
+            ));
+            assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn setup_writes_and_withdrawal_refuse_ambiguous_instruction_bytes() {
+        let target = seeded("ambiguous-setup-instruction");
+        let path = target.join("AGENTS.md");
+        let bytes = b"user content\n:::begin-ai-stp\n";
+        fs::write(&path, bytes).unwrap();
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let write_error =
+            write_host_file(&TEST, &resolved, "AGENTS.md", b"new setup\n", false).unwrap_err();
+        assert_eq!(write_error.reason(), Some(WireReason::ProviderUnavailable));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let remove_error = withdraw_written(&TEST, &resolved, "AGENTS.md", false).unwrap_err();
+        assert_eq!(remove_error.reason(), Some(WireReason::ProviderUnavailable));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
