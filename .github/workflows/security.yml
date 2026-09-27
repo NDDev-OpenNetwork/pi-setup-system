@@ -66,7 +66,7 @@ jobs:
       actions: read # the SARIF upload reads this run to attach its results
       contents: read
       security-events: write # zizmor publishes its findings to code scanning
-    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/zizmor-sarif.yml@26749820fad5bde1f1726636af5b04d329ed2fe5 # 0.1.20
+    uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/zizmor-sarif.yml@9f100310e1cdda6e387353671b3a57e6f5897098 # 0.1.21
 
   secret-scan:
     name: secret-scan
