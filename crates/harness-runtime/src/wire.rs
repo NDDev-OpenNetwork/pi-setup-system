@@ -766,7 +766,7 @@ fn plan_instruction_patch(
     harness: &Harness,
     target: &Target,
     request: &PlanRequest,
-) -> Result<(Vec<String>, String, String)> {
+) -> Result<(Vec<String>, String, String, bool, String)> {
     let Some(relative) = harness.instruction_region else {
         return Err(Error::refuse(
             WireReason::UnsupportedOperation,
@@ -790,14 +790,17 @@ fn plan_instruction_patch(
             "instruction_section needs exactly one ordered :::begin-ai-stp and :::end-ai-stp pair",
         ));
     }
-    let existing = read_instruction_text(&target.root().join(relative))?;
+    let surface = target.root().join(relative);
+    let present = surface.exists();
+    let existing = read_instruction_text(&surface)?;
+    let observed = setup_core::digest::of_bytes(existing.as_bytes());
     let (updated, wrote) = crate::instruction_region::patch(&existing, section);
     let effects = if wrote {
         vec![format!("patch instruction region at {relative}")]
     } else {
         vec![format!("instruction region at {relative} already matches")]
     };
-    Ok((effects, relative.to_owned(), updated))
+    Ok((effects, relative.to_owned(), updated, present, observed))
 }
 
 /// Produce a plan without touching the target.
@@ -952,6 +955,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     let mut end_state = Vec::new();
     let mut instruction_path = None;
     let mut instruction_text = None;
+    let mut instruction_present = None;
+    let mut instruction_observed = None;
     let (effects, backup_ref, restore_target_digest) = match request.operation {
         Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove => {
             let (planned, effects, version) = software::plan(
@@ -1019,9 +1024,12 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         }
         Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
         Operation::PatchInstructionRegion => {
-            let (lines, path, text) = plan_instruction_patch(harness, &resolved, request)?;
+            let (lines, path, text, present, observed) =
+                plan_instruction_patch(harness, &resolved, request)?;
             instruction_path = Some(path);
             instruction_text = Some(text);
+            instruction_present = Some(present);
+            instruction_observed = Some(observed);
             (lines, None, None)
         }
         other @ Operation::Launch => {
@@ -1065,6 +1073,8 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         end_state,
         instruction_path,
         instruction_text,
+        instruction_observed_digest: instruction_observed,
+        instruction_observed_present: instruction_present,
         effects,
     })?
     .into_response()
@@ -1624,6 +1634,10 @@ pub(crate) enum Effect<'a> {
         path: String,
         /// Full file text after splicing.
         text: String,
+        /// Digest of the surface as the plan read it, when recorded.
+        observed_digest: Option<String>,
+        /// Whether the surface existed when the plan read it, when recorded.
+        observed_present: Option<bool>,
     },
 }
 
@@ -1841,7 +1855,21 @@ fn apply(
         Operation::PatchInstructionRegion => {
             let path = string_field(&artifact, "instruction_path")?;
             let text = string_field(&artifact, "instruction_text")?;
-            Effect::PatchInstruction { path, text }
+            // Optional members: a plan recorded before they existed still
+            // applies, just without the staleness re-check they feed.
+            let observed_digest = artifact
+                .get("instruction_observed_digest")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let observed_present = artifact
+                .get("instruction_observed_present")
+                .and_then(serde_json::Value::as_bool);
+            Effect::PatchInstruction {
+                path,
+                text,
+                observed_digest,
+                observed_present,
+            }
         }
         other => {
             return Err(Error::refuse(
@@ -2084,8 +2112,36 @@ pub(crate) fn perform(
         Effect::MaterializeBundle { files } => {
             write_bundle_files(harness, &resolved, files, mutation.target_scope)
         }
-        Effect::PatchInstruction { path, text } => {
+        Effect::PatchInstruction {
+            path,
+            text,
+            observed_digest,
+            observed_present,
+        } => {
             let destination = resolved.root().join(path);
+            // The region lives outside the owned set, so the plan's
+            // expected_target_digest never covered it. Re-check what the plan
+            // observed before writing plan-time bytes over a surface a user
+            // may have edited since.
+            if let (Some(expected), Some(present)) = (observed_digest, observed_present) {
+                let now_present = destination.exists();
+                let now = crate::instruction_region::read_utf8(&destination).map_err(|error| {
+                    Error::refuse(
+                        WireReason::ProviderUnavailable,
+                        format!(
+                            "cannot re-read instruction surface {}: {error}",
+                            destination.display()
+                        ),
+                    )
+                })?;
+                let now_digest = setup_core::digest::of_bytes(now.as_bytes());
+                if *present != now_present || *expected != now_digest {
+                    return Err(Error::refuse(
+                        WireReason::Stale,
+                        "the instruction surface changed after the plan; no effect was made",
+                    ));
+                }
+            }
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
                     Error::from(
@@ -8448,6 +8504,61 @@ mod tests {
             ));
             assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
             assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn instruction_patch_apply_refuses_a_surface_edited_since_the_plan() {
+        let arguments = [
+            "--operation",
+            "patch_instruction_region",
+            "--provider-release-digest",
+            RELEASE,
+            "--operation-id",
+            "operation_01TEST",
+            "--expires-at",
+            far_future(),
+            "--instruction-section",
+            INSTRUCTION_SECTION,
+        ];
+        for (name, deleted) in [("patch-edited", false), ("patch-deleted", true)] {
+            let target = seeded(name);
+            let path = target.join("AGENTS.md");
+            let plan_path = target.join("..").join(format!("plan-{name}.json"));
+            let planned = run(args("plan-operation", &target, &arguments));
+            assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+            fs::write(
+                &plan_path,
+                setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+            )
+            .unwrap();
+
+            let tamper = if deleted {
+                fs::remove_file(&path).unwrap();
+                String::new()
+            } else {
+                let edited = "# first\n# edited by a person\n";
+                fs::write(&path, edited).unwrap();
+                edited.to_owned()
+            };
+            let error = refuse(args(
+                "apply-operation",
+                &target,
+                &[
+                    "--plan",
+                    &plan_path.to_string_lossy(),
+                    "--plan-digest",
+                    planned["plan_digest"].as_str().unwrap(),
+                    "--provider-release-digest",
+                    RELEASE,
+                ],
+            ));
+            assert_eq!(error.reason(), Some(WireReason::Stale), "{error}");
+            assert_eq!(
+                fs::read_to_string(&path).unwrap_or_default(),
+                tamper,
+                "a refused apply still wrote the surface"
+            );
         }
     }
 

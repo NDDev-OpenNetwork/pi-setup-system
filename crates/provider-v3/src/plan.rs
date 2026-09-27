@@ -262,6 +262,18 @@ pub struct PlanArtifact {
     /// Full file text after splicing. Apply writes these bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_text: Option<String>,
+    /// Digest of the instruction surface the plan spliced into, when this is a
+    /// region patch. Apply re-reads the file and refuses `stale` on any drift —
+    /// the region lives outside the owned set, so `expected_target_digest`
+    /// never covers it and a concurrent edit would otherwise be overwritten
+    /// silently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_observed_digest: Option<String>,
+    /// Whether the instruction surface existed when the plan read it. A file
+    /// appearing or disappearing between plan and apply is drift even when the
+    /// content digest would match (absent and empty share one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_observed_present: Option<bool>,
     /// What applying it will do, in order. Never empty.
     pub effects: Vec<String>,
 }
@@ -315,6 +327,12 @@ pub struct PlanInputs<'a> {
     pub instruction_path: Option<String>,
     /// Full file text after splicing, when this is a region patch.
     pub instruction_text: Option<String>,
+    /// Digest of the instruction surface as the plan read it, when this is a
+    /// region patch. The apply-time staleness check this feeds is described on
+    /// the artifact member of the same name.
+    pub instruction_observed_digest: Option<String>,
+    /// Whether the instruction surface existed at plan time.
+    pub instruction_observed_present: Option<bool>,
     /// What applying it will do. Never empty.
     pub effects: Vec<String>,
 }
@@ -404,7 +422,11 @@ impl PlanArtifact {
             }
         }
 
-        Ok(Self {
+        Ok(Self::assemble(inputs))
+    }
+
+    fn assemble(inputs: PlanInputs<'_>) -> Self {
+        Self {
             format: PLAN_FORMAT.to_owned(),
             protocol_version: PROTOCOL_VERSION,
             provider_id: inputs.provider_id.to_owned(),
@@ -430,8 +452,10 @@ impl PlanArtifact {
             end_state: inputs.end_state,
             instruction_path: inputs.instruction_path,
             instruction_text: inputs.instruction_text,
+            instruction_observed_digest: inputs.instruction_observed_digest,
+            instruction_observed_present: inputs.instruction_observed_present,
             effects: inputs.effects,
-        })
+        }
     }
 
     /// The digest that binds this exact artifact inside the plan domain.
@@ -581,6 +605,8 @@ mod tests {
             expires_at: "2026-08-23T15:00:00Z",
             instruction_path: None,
             instruction_text: None,
+            instruction_observed_digest: None,
+            instruction_observed_present: None,
             effects: vec!["write settings.json".to_owned()],
         }
     }
