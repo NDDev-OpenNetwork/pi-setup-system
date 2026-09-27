@@ -803,6 +803,45 @@ fn plan_instruction_patch(
     Ok((effects, relative.to_owned(), updated, present, observed))
 }
 
+/// Plan the removal of the owned marked section. The returned text is the
+/// full file content after removal — empty when the file held nothing else,
+/// in which case apply deletes the file rather than leaving a zero-byte shell.
+/// A surface without the region detaches to itself: nothing of ours is there
+/// to take away, and a repeated detach stays a no-op.
+fn plan_instruction_detach(
+    harness: &Harness,
+    target: &Target,
+) -> Result<(Vec<String>, String, String, bool, String)> {
+    let Some(relative) = harness.instruction_region else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} does not declare a user-global instruction surface",
+                harness.provider_id
+            ),
+        ));
+    };
+    let surface = target.root().join(relative);
+    let present = surface.exists();
+    let existing = read_instruction_text(&surface)?;
+    let observed = setup_core::digest::of_bytes(existing.as_bytes());
+    let remainder = crate::instruction_region::remove_region(&existing);
+    let effects = if remainder.is_some() {
+        vec![format!("detach instruction region at {relative}")]
+    } else {
+        vec![format!(
+            "instruction region at {relative} is already detached"
+        )]
+    };
+    Ok((
+        effects,
+        relative.to_owned(),
+        remainder.unwrap_or(existing),
+        present,
+        observed,
+    ))
+}
+
 /// Produce a plan without touching the target.
 /// What a mutation **takes away** before it writes, in the words the result
 /// line already uses.
@@ -935,7 +974,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             {
                 existing_under_projection(harness, &resolved, request.target_scope)?
             }
-            Operation::PatchInstructionRegion => {
+            Operation::PatchInstructionRegion | Operation::DetachInstructionRegion => {
                 let mut capture = owned.clone();
                 if let Some(path) = harness.instruction_region
                     && !capture.iter().any(|held| held == path)
@@ -1028,6 +1067,15 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
                 plan_instruction_patch(harness, &resolved, request)?;
             instruction_path = Some(path);
             instruction_text = Some(text);
+            instruction_present = Some(present);
+            instruction_observed = Some(observed);
+            (lines, None, None)
+        }
+        Operation::DetachInstructionRegion => {
+            let (lines, path, remainder, present, observed) =
+                plan_instruction_detach(harness, &resolved)?;
+            instruction_path = Some(path);
+            instruction_text = Some(remainder);
             instruction_present = Some(present);
             instruction_observed = Some(observed);
             (lines, None, None)
@@ -1639,6 +1687,22 @@ pub(crate) enum Effect<'a> {
         /// Whether the surface existed when the plan read it, when recorded.
         observed_present: Option<bool>,
     },
+    /// Remove the owned marked section from the instruction surface.
+    ///
+    /// `remainder` is the full file text without the owned bytes; empty means
+    /// the file held only the attachment, so apply deletes it. When the
+    /// remainder equals what apply re-reads — a surface that never carried the
+    /// region, or a detach already done — the effect writes nothing.
+    DetachInstruction {
+        /// Target-relative path.
+        path: String,
+        /// Full file text after removing the owned section.
+        remainder: String,
+        /// Digest of the surface as the plan read it, when recorded.
+        observed_digest: Option<String>,
+        /// Whether the surface existed when the plan read it, when recorded.
+        observed_present: Option<bool>,
+    },
 }
 
 /// One authorized mutation, whatever surface asked for it.
@@ -1867,6 +1931,23 @@ fn apply(
             Effect::PatchInstruction {
                 path,
                 text,
+                observed_digest,
+                observed_present,
+            }
+        }
+        Operation::DetachInstructionRegion => {
+            let path = string_field(&artifact, "instruction_path")?;
+            let remainder = string_field(&artifact, "instruction_text")?;
+            let observed_digest = artifact
+                .get("instruction_observed_digest")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let observed_present = artifact
+                .get("instruction_observed_present")
+                .and_then(serde_json::Value::as_bool);
+            Effect::DetachInstruction {
+                path,
+                remainder,
                 observed_digest,
                 observed_present,
             }
@@ -2155,6 +2236,63 @@ pub(crate) fn perform(
             }
             lock::atomic_write(&destination, text.as_bytes()).map_err(Error::from)?;
             Ok(previous_written.clone())
+        }
+        Effect::DetachInstruction {
+            path,
+            remainder,
+            observed_digest,
+            observed_present,
+        } => {
+            let destination = resolved.root().join(path);
+            // Same re-check as PatchInstruction: the surface sits outside the
+            // owned set, so expected_target_digest never covered it.
+            let now_present = destination.exists();
+            let now = crate::instruction_region::read_utf8(&destination).map_err(|error| {
+                Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    format!(
+                        "cannot re-read instruction surface {}: {error}",
+                        destination.display()
+                    ),
+                )
+            })?;
+            if let (Some(expected), Some(present)) = (observed_digest, observed_present) {
+                let now_digest = setup_core::digest::of_bytes(now.as_bytes());
+                if *present != now_present || *expected != now_digest {
+                    return Err(Error::refuse(
+                        WireReason::Stale,
+                        "the instruction surface changed after the plan; no effect was made",
+                    ));
+                }
+            }
+            if *remainder == now {
+                // Never attached, or already detached: nothing of ours there.
+                Ok(previous_written.clone())
+            } else if !now_present {
+                // The plan observed a surface that is gone. Without recorded
+                // fields this is the only staleness signal left; refuse rather
+                // than resurrect bytes under a file the user removed.
+                Err(Error::refuse(
+                    WireReason::Stale,
+                    "the instruction surface changed after the plan; no effect was made",
+                ))
+            } else {
+                if remainder.is_empty() {
+                    // The file held only the attachment; take the file with it.
+                    fs::remove_file(&destination).map_err(|error| {
+                        Error::from(
+                            setup_core::Error::new(
+                                setup_core::ReasonCode::StateUnavailable,
+                                format!("cannot remove {}", destination.display()),
+                            )
+                            .with_source(error),
+                        )
+                    })?;
+                } else {
+                    lock::atomic_write(&destination, remainder.as_bytes()).map_err(Error::from)?;
+                }
+                Ok(previous_written.clone())
+            }
         }
         // Keeping a predecessor's stamp aside writes nothing to the target, so
         // the inventory is what it was. Same reason as `Backup` above.
@@ -8391,6 +8529,11 @@ mod tests {
         assert!(info.declares(Operation::SoftwareUpdate));
         assert!(info.declares(Operation::SoftwareRemove));
         assert!(info.declares(Operation::PatchInstructionRegion));
+        // Implemented, but withheld until a released consumer accepts the name.
+        assert!(
+            !info.declares(Operation::DetachInstructionRegion),
+            "declaring before a reader ships makes older consumers refuse the whole answer"
+        );
     }
 
     #[test]
@@ -8527,6 +8670,156 @@ mod tests {
             let plan_path = target.join("..").join(format!("plan-{name}.json"));
             let planned = run(args("plan-operation", &target, &arguments));
             assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+            fs::write(
+                &plan_path,
+                setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),
+            )
+            .unwrap();
+
+            let tamper = if deleted {
+                fs::remove_file(&path).unwrap();
+                String::new()
+            } else {
+                let edited = "# first\n# edited by a person\n";
+                fs::write(&path, edited).unwrap();
+                edited.to_owned()
+            };
+            let error = refuse(args(
+                "apply-operation",
+                &target,
+                &[
+                    "--plan",
+                    &plan_path.to_string_lossy(),
+                    "--plan-digest",
+                    planned["plan_digest"].as_str().unwrap(),
+                    "--provider-release-digest",
+                    RELEASE,
+                ],
+            ));
+            assert_eq!(error.reason(), Some(WireReason::Stale), "{error}");
+            assert_eq!(
+                fs::read_to_string(&path).unwrap_or_default(),
+                tamper,
+                "a refused apply still wrote the surface"
+            );
+        }
+    }
+
+    #[test]
+    fn detach_instruction_region_removes_only_the_owned_section() {
+        let target = seeded("detach-instruction-region");
+        plan_then_apply(
+            &target,
+            "patch_instruction_region",
+            &["--instruction-section", INSTRUCTION_SECTION],
+        );
+        let attached = fs::read_to_string(target.join("AGENTS.md")).unwrap();
+        assert!(attached.starts_with("# first\n"), "{attached:?}");
+
+        let detached = plan_then_apply(&target, "detach_instruction_region", &[]);
+        assert_eq!(detached["state"], "verified", "{detached}");
+        let after = fs::read_to_string(target.join("AGENTS.md")).unwrap();
+        assert_eq!(
+            after, "# first\n",
+            "user bytes outside the markers changed: {after:?}"
+        );
+        assert_eq!(crate::instruction_region::extract(&after), None);
+        assert!(
+            !recorded_written(&target).contains(&"AGENTS.md".to_owned()),
+            "the attachment was recorded as a setup receipt: {:?}",
+            recorded_written(&target)
+        );
+    }
+
+    #[test]
+    fn detach_instruction_region_deletes_a_file_holding_only_the_attachment() {
+        let target = seeded("detach-only-attachment");
+        let path = target.join("AGENTS.md");
+        fs::remove_file(&path).unwrap();
+        plan_then_apply(
+            &target,
+            "patch_instruction_region",
+            &["--instruction-section", INSTRUCTION_SECTION],
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            INSTRUCTION_SECTION,
+            "patch should have written a file holding only the attachment"
+        );
+
+        let detached = plan_then_apply(&target, "detach_instruction_region", &[]);
+        assert_eq!(detached["state"], "verified", "{detached}");
+        assert!(
+            !path.exists(),
+            "a file that held only the attachment outlived its detach"
+        );
+    }
+
+    #[test]
+    fn detach_instruction_region_is_a_no_op_without_an_attachment() {
+        let target = seeded("detach-no-attachment");
+        let detached = plan_then_apply(&target, "detach_instruction_region", &[]);
+        assert_eq!(detached["state"], "verified", "{detached}");
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "# first\n",
+            "a no-op detach still changed the file"
+        );
+    }
+
+    #[test]
+    fn detach_instruction_region_refuses_ambiguous_markers_and_a_section_flag() {
+        let target = seeded("detach-ambiguous");
+        let path = target.join("AGENTS.md");
+        fs::write(&path, b":::end-ai-stp\n:::begin-ai-stp\n").unwrap();
+        let arguments = [
+            "--operation",
+            "detach_instruction_region",
+            "--provider-release-digest",
+            RELEASE,
+            "--operation-id",
+            "operation_01TEST",
+            "--expires-at",
+            far_future(),
+        ];
+        let error = refuse(args("plan-operation", &target, &arguments));
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+
+        fs::write(&path, "# first\n").unwrap();
+        let mut section = arguments.to_vec();
+        section.extend(["--instruction-section", INSTRUCTION_SECTION]);
+        let error = refuse(args("plan-operation", &target, &section));
+        assert_eq!(
+            error.reason(),
+            Some(WireReason::UnsupportedOperation),
+            "detach must not accept --instruction-section: {error}"
+        );
+    }
+
+    #[test]
+    fn detach_instruction_region_apply_refuses_a_surface_edited_since_the_plan() {
+        for (name, deleted) in [("detach-edited", false), ("detach-deleted", true)] {
+            let target = seeded(name);
+            let path = target.join("AGENTS.md");
+            plan_then_apply(
+                &target,
+                "patch_instruction_region",
+                &["--instruction-section", INSTRUCTION_SECTION],
+            );
+
+            let arguments = [
+                "--operation",
+                "detach_instruction_region",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+            ];
+            let planned = run(args("plan-operation", &target, &arguments));
+            assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+            let plan_path = target.join("..").join(format!("plan-{name}.json"));
             fs::write(
                 &plan_path,
                 setup_core::canonical::to_canonical_bytes(&planned["plan"]).unwrap(),

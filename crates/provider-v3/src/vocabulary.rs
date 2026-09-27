@@ -141,6 +141,12 @@ pub enum Operation {
     /// not a setup install: whole-setup apply must not treat the region as
     /// payload it is free to empty.
     PatchInstructionRegion,
+    /// Remove only the marked instruction section, keeping every byte outside
+    /// the markers. Optional; takes no `--instruction-section`. Implemented in
+    /// the kernel but withheld from `provider-info` until a released consumer
+    /// accepts the name — declaring it first would refuse every older reader
+    /// the whole `provider-info` answer.
+    DetachInstructionRegion,
 }
 
 impl Operation {
@@ -244,13 +250,32 @@ impl Operation {
             Self::SoftwareRemove => "software_remove",
             Self::Launch => "launch",
             Self::PatchInstructionRegion => "patch_instruction_region",
+            Self::DetachInstructionRegion => "detach_instruction_region",
         }
     }
+
+    /// Operations this kernel can perform, whether or not they may be declared
+    /// to the consumer yet. [`ALL`] is the declarable set; the difference is
+    /// exactly the members awaiting a released consumer that accepts the name.
+    pub const IMPLEMENTED: &'static [Self] = &[
+        Self::Install,
+        Self::Replace,
+        Self::Backup,
+        Self::Restore,
+        Self::Remove,
+        Self::Reset,
+        Self::SoftwareInstall,
+        Self::SoftwareUpdate,
+        Self::SoftwareRemove,
+        Self::Launch,
+        Self::PatchInstructionRegion,
+        Self::DetachInstructionRegion,
+    ];
 
     /// Parse a wire spelling.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        Self::ALL
+        Self::IMPLEMENTED
             .iter()
             .copied()
             .find(|operation| operation.as_str() == text)

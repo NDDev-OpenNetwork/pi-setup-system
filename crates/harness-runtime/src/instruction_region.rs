@@ -87,6 +87,22 @@ pub fn patch(existing: &str, section: &str) -> (String, bool) {
     (splice(existing, desired), true)
 }
 
+/// Remove the attachment — the owned prefix and the marked region — keeping
+/// every other byte. `None` when `existing` carries no marked region, so a
+/// repeated detach is a no-op rather than an error. Ambiguous markers never
+/// reach here: `validate` refuses them while the plan is built.
+#[must_use]
+pub fn remove_region(existing: &str) -> Option<String> {
+    let region = extract(existing)?;
+    let begin = existing.find(BEGIN)?;
+    let owned = owned_prefix(existing);
+    Some(format!(
+        "{}{}",
+        &existing[owned.len()..begin],
+        &existing[begin + region.len()..]
+    ))
+}
+
 /// Keep an existing attachment when a setup writes the same path.
 #[must_use]
 pub fn preserve_in_replacement(existing: &str, incoming: &str) -> String {
@@ -229,6 +245,26 @@ mod tests {
         let existing = splice("setup-bytes\n", SECTION);
         assert_eq!(keep_region_on_withdraw(&existing).as_deref(), Some(SECTION));
         assert_eq!(keep_region_on_withdraw("just setup"), None);
+    }
+
+    #[test]
+    fn remove_region_keeps_every_byte_outside_the_attachment() {
+        let existing = splice("keep-me\n", SECTION);
+        assert_eq!(remove_region(&existing).as_deref(), Some("keep-me\n"));
+        assert_eq!(remove_region("keep-me\n"), None);
+        assert_eq!(remove_region(""), None);
+        // A file holding only the attachment detaches to nothing.
+        assert_eq!(remove_region(SECTION).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn remove_region_takes_the_owned_frontmatter_with_the_region() {
+        let section = "---\nalwaysApply: true\n---\n\n:::begin-ai-stp\nhello\n:::end-ai-stp\n";
+        let (first, _) = patch("", section);
+        assert_eq!(remove_region(&first).as_deref(), Some(""));
+        // A body between the fence and the markers is not ours.
+        let with_body = format!("---\nalwaysApply: true\n---\n\nsetup-body\n{SECTION}");
+        assert_eq!(remove_region(&with_body).as_deref(), Some("setup-body\n"));
     }
 
     #[test]

@@ -256,14 +256,16 @@ pub struct PlanArtifact {
     /// verifying. Every other operation has one sentence per path already.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub end_state: Vec<EndState>,
-    /// Target-relative path of a `patch_instruction_region` write.
+    /// Target-relative path of an instruction-region write or detach.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_path: Option<String>,
-    /// Full file text after splicing. Apply writes these bytes.
+    /// Full file text after splicing or after removing the owned section.
+    /// Apply writes these bytes — or deletes the file when a detach leaves it
+    /// empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_text: Option<String>,
-    /// Digest of the instruction surface the plan spliced into, when this is a
-    /// region patch. Apply re-reads the file and refuses `stale` on any drift —
+    /// Digest of the instruction surface the plan spliced into or detached
+    /// from. Apply re-reads the file and refuses `stale` on any drift —
     /// the region lives outside the owned set, so `expected_target_digest`
     /// never covers it and a concurrent edit would otherwise be overwritten
     /// silently.

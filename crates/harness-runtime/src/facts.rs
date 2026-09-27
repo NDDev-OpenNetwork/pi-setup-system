@@ -1047,6 +1047,10 @@ mod tests {
             Operation::SoftwareUpdate,
             Operation::SoftwareRemove,
             Operation::PatchInstructionRegion,
+            // Performed by the kernel but withheld everywhere until a released
+            // consumer accepts the name — declaring it earlier would make
+            // every older reader refuse the whole provider-info answer.
+            Operation::DetachInstructionRegion,
         ] {
             assert!(
                 !info.declares(optional),
