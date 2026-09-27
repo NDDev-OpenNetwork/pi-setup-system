@@ -1156,6 +1156,8 @@ fn mutate(
         end_state: Vec::new(),
         instruction_path: None,
         instruction_text: None,
+        instruction_observed_digest: None,
+        instruction_observed_present: None,
         effects: effect_lines(harness, &effect, applied.setup_id.as_deref()),
     })?;
     let plan_digest = artifact.digest()?;
