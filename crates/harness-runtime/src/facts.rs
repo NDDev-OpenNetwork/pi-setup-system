@@ -1047,9 +1047,8 @@ mod tests {
             Operation::SoftwareUpdate,
             Operation::SoftwareRemove,
             Operation::PatchInstructionRegion,
-            // Performed by the kernel but withheld everywhere until a released
-            // consumer accepts the name — declaring it earlier would make
-            // every older reader refuse the whole provider-info answer.
+            // A surface this build does not carry: SAMPLE declares no
+            // instruction region, so neither region operation is declared.
             Operation::DetachInstructionRegion,
         ] {
             assert!(
@@ -1060,13 +1059,14 @@ mod tests {
     }
 
     #[test]
-    fn an_instruction_surface_without_software_still_declares_the_patch() {
+    fn an_instruction_surface_without_software_still_declares_the_region_lifecycle() {
         let named = Harness {
             instruction_region: Some("AGENTS.md"),
             ..SAMPLE
         };
         let info = named.provider_info().unwrap();
         assert!(info.declares(Operation::PatchInstructionRegion));
+        assert!(info.declares(Operation::DetachInstructionRegion));
         assert!(!info.declares(Operation::SoftwareInstall));
         assert!(!info.declares(Operation::Launch));
     }

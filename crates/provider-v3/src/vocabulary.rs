@@ -142,10 +142,9 @@ pub enum Operation {
     /// payload it is free to empty.
     PatchInstructionRegion,
     /// Remove only the marked instruction section, keeping every byte outside
-    /// the markers. Optional; takes no `--instruction-section`. Implemented in
-    /// the kernel but withheld from `provider-info` until a released consumer
-    /// accepts the name — declaring it first would refuse every older reader
-    /// the whole `provider-info` answer.
+    /// the markers. Optional; takes no `--instruction-section`. Declared only
+    /// once a released consumer accepts the name — an older reader refuses the
+    /// whole `provider-info` answer on an unknown operation.
     DetachInstructionRegion,
 }
 
@@ -163,6 +162,7 @@ impl Operation {
         Self::SoftwareRemove,
         Self::Launch,
         Self::PatchInstructionRegion,
+        Self::DetachInstructionRegion,
     ];
 
     /// The operations every provider must support.
@@ -187,7 +187,8 @@ impl Operation {
         Self::SoftwareRemove,
     ];
 
-    /// [`CORE`] plus the instruction-region patch, without software or launch.
+    /// [`CORE`] plus the instruction-region lifecycle, without software or
+    /// launch.
     pub const CORE_AND_INSTRUCTION: &'static [Self] = &[
         Self::Backup,
         Self::Install,
@@ -195,9 +196,11 @@ impl Operation {
         Self::Replace,
         Self::Restore,
         Self::PatchInstructionRegion,
+        Self::DetachInstructionRegion,
     ];
 
-    /// [`CORE_AND_SOFTWARE`] plus the instruction-region patch, without launch.
+    /// [`CORE_AND_SOFTWARE`] plus the instruction-region lifecycle, without
+    /// launch.
     pub const CORE_AND_SOFTWARE_AND_INSTRUCTION: &'static [Self] = &[
         Self::Backup,
         Self::Install,
@@ -209,6 +212,7 @@ impl Operation {
         Self::SoftwareUpdate,
         Self::SoftwareRemove,
         Self::PatchInstructionRegion,
+        Self::DetachInstructionRegion,
     ];
 
     /// [`ALL`] without the instruction-region patch.
@@ -256,7 +260,10 @@ impl Operation {
 
     /// Operations this kernel can perform, whether or not they may be declared
     /// to the consumer yet. [`ALL`] is the declarable set; the difference is
-    /// exactly the members awaiting a released consumer that accepts the name.
+    /// exactly the members awaiting a released consumer that accepts the name,
+    /// and today that difference is empty. A new operation whose name an older
+    /// reader cannot parse joins this list first and [`ALL`] only when the
+    /// consumer shipping the name is released.
     pub const IMPLEMENTED: &'static [Self] = &[
         Self::Install,
         Self::Replace,

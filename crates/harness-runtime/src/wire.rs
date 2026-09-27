@@ -537,10 +537,38 @@ fn status_of(
             },
         ),
         ("backups", backup_status(pool, resolved, harness, scope)?),
+        (
+            "instruction_region",
+            instruction_attachment_status(harness, resolved),
+        ),
     ] {
         answer.insert(key.to_owned(), value);
     }
     Ok(serde_json::Value::Object(answer))
+}
+
+/// The managed instruction attachment as `status` reports it, or `null` for a
+/// harness that declares no user-global instruction surface. Reads nothing
+/// else: an unreadable file, and one whose markers are ambiguous, both report
+/// `section_present: false` — there is no well-formed owned section either
+/// way, and `present` is what keeps those two apart for the caller.
+fn instruction_attachment_status(harness: &Harness, resolved: &Target) -> serde_json::Value {
+    let Some(relative) = harness.instruction_region else {
+        return serde_json::Value::Null;
+    };
+    let surface = resolved.root().join(relative);
+    let existing = crate::instruction_region::read_utf8(&surface).unwrap_or_else(|_| String::new());
+    let section = if crate::instruction_region::markers_well_formed(&existing) {
+        crate::instruction_region::extract(&existing)
+    } else {
+        None
+    };
+    serde_json::json!({
+        "path": relative,
+        "present": surface.exists(),
+        "section_present": section.is_some(),
+        "section_sha256": section.map(|held| setup_core::digest::of_bytes(held.as_bytes())),
+    })
 }
 
 /// Everything a clean managed target's own state says about how it got here.
@@ -4707,6 +4735,62 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_the_instruction_attachment_or_its_absence() {
+        const BARE: Harness = Harness {
+            instruction_region: None,
+            ..TEST
+        };
+        let target = seeded("status-attachment");
+        let bare = dispatch(&BARE, argv::parse(args("status", &target, &[])).unwrap()).unwrap();
+        assert!(
+            bare["instruction_region"].is_null(),
+            "a harness without the surface must answer null, not a state: {bare}"
+        );
+
+        // File absent: nothing to report beyond that.
+        fs::remove_file(target.join("AGENTS.md")).unwrap();
+        let missing = run(args("status", &target, &[]));
+        assert_eq!(missing["instruction_region"]["path"], "AGENTS.md");
+        assert_eq!(missing["instruction_region"]["present"], false);
+        assert_eq!(missing["instruction_region"]["section_present"], false);
+        assert!(missing["instruction_region"]["section_sha256"].is_null());
+
+        // File present, section absent.
+        let target = seeded("status-attachment-file");
+        let plain = run(args("status", &target, &[]));
+        assert_eq!(plain["instruction_region"]["present"], true);
+        assert_eq!(plain["instruction_region"]["section_present"], false);
+        assert!(plain["instruction_region"]["section_sha256"].is_null());
+
+        // Section present: the digest is the region's own, never target_digest.
+        plan_then_apply(
+            &target,
+            "patch_instruction_region",
+            &["--instruction-section", INSTRUCTION_SECTION],
+        );
+        let attached = run(args("status", &target, &[]));
+        assert_eq!(attached["instruction_region"]["section_present"], true);
+        let digest = attached["instruction_region"]["section_sha256"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            digest,
+            setup_core::digest::of_bytes(INSTRUCTION_SECTION.as_bytes()),
+            "section_sha256 must be the region digest: {attached}"
+        );
+
+        // Ambiguous markers read as "no well-formed section", not a crash.
+        fs::write(
+            target.join("AGENTS.md"),
+            b":::end-ai-stp\n:::begin-ai-stp\n",
+        )
+        .unwrap();
+        let ambiguous = run(args("status", &target, &[]));
+        assert_eq!(ambiguous["instruction_region"]["present"], true);
+        assert_eq!(ambiguous["instruction_region"]["section_present"], false);
+    }
+
+    #[test]
     fn replacement_spares_a_never_touch_path_inside_a_namespace_it_empties() {
         const SPARES: Harness = Harness {
             never_touch: &["skills/their-record.json"],
@@ -8529,10 +8613,9 @@ mod tests {
         assert!(info.declares(Operation::SoftwareUpdate));
         assert!(info.declares(Operation::SoftwareRemove));
         assert!(info.declares(Operation::PatchInstructionRegion));
-        // Implemented, but withheld until a released consumer accepts the name.
         assert!(
-            !info.declares(Operation::DetachInstructionRegion),
-            "declaring before a reader ships makes older consumers refuse the whole answer"
+            info.declares(Operation::DetachInstructionRegion),
+            "the detach went out with the consumer release that accepts the name"
         );
     }
 
