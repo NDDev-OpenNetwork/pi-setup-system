@@ -15,6 +15,24 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.78] - 2026-09-27
+
+Pi Coding Agent now declares `detach_instruction_region`, the second half of
+the instruction-region lifecycle: it removes only the marked
+`:::begin-ai-stp`/`:::end-ai-stp` section, keeps every byte outside the
+markers — including YAML frontmatter the product owns — deletes a file that
+held only the attachment, no-ops when none is attached, and refuses
+ambiguous markers or a plan whose surface changed since it was made. The
+consumer shipped the reader first (provider-kit 0.2.14 in ai-stp-cli
+0.0.32); this release is the writer.
+
+`status` gains the optional `instruction_region` member: `null` where the
+product declares no instruction surface, else the surface path, file
+presence, section presence and the marked section's own digest — kept out
+of `target_digest` and read as "no well-formed section" rather than an
+error when markers are ambiguous. Provider protocol version, postures and
+ownership are unchanged.
+
 ## [0.0.77] - 2026-09-27
 
 All seven setup systems refresh their software pins from current vendor
