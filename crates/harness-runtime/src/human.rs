@@ -1258,6 +1258,9 @@ fn effect_lines(harness: &Harness, effect: &Effect<'_>, setup_id: Option<&str>) 
         Effect::PatchInstruction { path, .. } => {
             vec![capture, format!("patch instruction region at {path}")]
         }
+        Effect::DetachInstruction { path, .. } => {
+            vec![capture, format!("detach instruction region at {path}")]
+        }
     }
 }
 
