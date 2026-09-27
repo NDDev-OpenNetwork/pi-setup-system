@@ -167,8 +167,8 @@ Configuration home as the product documents it: `~/.pi/agent`.
 | Path | Component kinds routed here | Decided by |
 | --- | --- | --- |
 | `AGENTS.md` | `instruction` | [source](https://pi.dev/docs/latest/sdk) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs |
-| `APPEND_SYSTEM.md` | -- | [source](https://github.com/earendil-works/pi/releases/tag/v0.84.4) |
-| `SYSTEM.md` | -- | [source](https://github.com/earendil-works/pi/releases/tag/v0.84.4) |
+| `APPEND_SYSTEM.md` | -- | [source](https://pi.dev/docs/latest/configuration) |
+| `SYSTEM.md` | -- | [source](https://pi.dev/docs/latest/configuration) |
 | `extensions` | `plugin` | [source](https://pi.dev/docs/latest/extensions) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs |
 | `prompts` | `command` | [source](https://pi.dev/docs/latest/prompt-templates) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs |
 | `settings.json` | `setting` | [source](https://pi.dev/docs/latest/settings) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs; named on screen by `pi config` against the 0.84.3 package |
@@ -242,6 +242,8 @@ So there is no MCP surface at any scope, and the capability arrives through `ext
 **`agents`** -- No sub-agents, from the same sentence as the MCP row above: *"It intentionally does not include built-in MCP, **sub-agents**, permission popups…"* The `agent` kind is therefore not declared for this harness, and nothing under this home is read as one. (the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage)
 
 **`hooks.json`** -- Hooks here are an **extension API concept, not a configuration surface**. `extensions.md`, under the pinned bundle's own `package/docs/`, documents `session_start`, a `spawnHook` around tool execution and session-scoped teardown hooks -- all of them functions inside an extension module. There is no `hooks.json` and no `hooks` key in `settings.json`, so a hook reaches this product through `extensions/`, which is owned and routes `plugin`. (the product's own shipped documentation, extensions.md under the pinned bundle's package/docs/)
+
+**`sessions`** -- The product's own session store under the agent home (`PI_CODING_AGENT_SESSION_DIR` relocates it). Session history is runtime state, the same class as claude's `session-runtime-state` and grok's `sessions` -- a replace would drop or resurrect conversations, and no component kind routes it. ([source](https://pi.dev/docs/latest) -- (session persistence); measured 2026-09-27)
 
 ## Response
 

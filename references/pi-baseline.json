@@ -49,7 +49,7 @@
     "native_workspace_argument_supported": false,
     "native_workspace_argument": null,
     "official_cli_grammar": {
-      "package": "@earendil-works/pi-coding-agent@0.84.1",
+      "package": "@earendil-works/pi-coding-agent@0.87.1",
       "parser": "dist/cli/args.js",
       "documentation": "https://pi.dev/docs/latest/usage",
       "workspace_project_cwd_flags": []
@@ -85,7 +85,7 @@
     },
     "metadata_argv": [
       "view",
-      "@earendil-works/pi-coding-agent@0.84.1",
+      "@earendil-works/pi-coding-agent@0.87.1",
       "dist",
       "--json"
     ],
@@ -95,13 +95,13 @@
       "--ignore-scripts",
       "--pack-destination",
       "<stage>/tarballs",
-      "@earendil-works/pi-coding-agent@0.84.1"
+      "@earendil-works/pi-coding-agent@0.87.1"
     ],
     "byte_verification": {
-      "metadata_integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
-      "metadata_shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
-      "tarball_integrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
-      "tarball_shasum": "e098cada629fdeeb9df6e77c6d480d43e1b2c553",
+      "metadata_integrity": "sha512-m8ArJUtVcQMSe1lLE/Ei7vX/JV7O39sWmWBsXV2NOU70F0qCp8GubA24pT3LnwTmM6LL2xV80/h6sQg85n69ew==",
+      "metadata_shasum": "5708b9310325177d5c1b487b5c99627ffa733324",
+      "tarball_integrity": "sha512-m8ArJUtVcQMSe1lLE/Ei7vX/JV7O39sWmWBsXV2NOU70F0qCp8GubA24pT3LnwTmM6LL2xV80/h6sQg85n69ew==",
+      "tarball_shasum": "5708b9310325177d5c1b487b5c99627ffa733324",
       "verified_before_extract": true
     },
     "local_extraction": {
@@ -118,7 +118,8 @@
       "--prefix",
       "<stage>/install",
       "<verified-tarball>"
-    ]
+    ],
+    "re_measured": "0.87.1 on 2026-09-27: `npm view @earendil-works/pi-coding-agent@0.87.1 dist --json` returned the integrity and shasum recorded here; the previous block measured 0.84.1 and its argv pins had drifted three pin moves behind the package block."
   },
   "configuration": {
     "global_settings": "~/.pi/agent/settings.json",
@@ -130,7 +131,36 @@
     "offline_environment_override": "PI_OFFLINE",
     "skip_version_check_environment_override": "PI_SKIP_VERSION_CHECK",
     "telemetry_environment_override": "PI_TELEMETRY",
-    "documentation": "https://pi.dev/docs/latest/settings"
+    "documentation": "https://pi.dev/docs/latest/settings",
+    "measured_env_vars": {
+      "measured_at": "2026-09-27",
+      "measured_against": "0.85.1",
+      "note": "Literal `process.env.PI_*` reads in the installed 0.85.1 linux/x86_64 binary (the local install trails the 0.87.1 pin by two releases; re-measure on the pin when it lands). `PI_CODING_AGENT` is *written* by the binary (`= \"true\"`) to mark an in-pi process, not read; `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are read through a config helper rather than `process.env` directly and so are absent from this literal list.",
+      "read": [
+        "PI_CLEAR_ON_SHRINK",
+        "PI_EXPERIMENTAL",
+        "PI_HARDWARE_CURSOR",
+        "PI_HYPERLINKS",
+        "PI_IMAGE_PROTOCOL",
+        "PI_INSTALLER_API_BASE",
+        "PI_MANAGED_INSTALL_ROOT",
+        "PI_OFFLINE",
+        "PI_PACKAGE_DIR",
+        "PI_SHARE_VIEWER_URL",
+        "PI_SKIP_VERSION_CHECK",
+        "PI_TELEMETRY",
+        "PI_TIMING",
+        "PI_TRUE_COLOR",
+        "PI_TUI_DEBUG",
+        "PI_TUI_DEBUG_REDRAW",
+        "PI_TUI_WRITE_LOG"
+      ],
+      "written": [
+        "PI_CODING_AGENT",
+        "PI_OFFLINE",
+        "PI_SKIP_VERSION_CHECK"
+      ]
+    }
   },
   "native_capability_surfaces": {
     "settings": "https://pi.dev/docs/latest/settings",
@@ -190,7 +220,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-09-25T11:47:47+00:00",
+  "verified_at": "2026-09-27T07:41:48+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
@@ -209,17 +239,17 @@
         "path": "APPEND_SYSTEM.md",
         "kinds": [],
         "shape": "file",
-        "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
+        "source": "https://pi.dev/docs/latest/configuration",
         "evidence": "bytes",
-        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
+        "note": "Named by the product's own shipped documentation (originally read out of the 0.84.4 artifact on 2026-08-31; re-verified against the live configuration page on 2026-09-27, which still gives `<agent-dir>/SYSTEM.md` and `<agent-dir>/APPEND_SYSTEM.md`): `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
         "path": "SYSTEM.md",
         "kinds": [],
         "shape": "file",
-        "source": "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
+        "source": "https://pi.dev/docs/latest/configuration",
         "evidence": "bytes",
-        "note": "Named by the product's own shipped documentation at the current pin: `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
+        "note": "Named by the product's own shipped documentation (originally read out of the 0.84.4 artifact on 2026-08-31; re-verified against the live configuration page on 2026-09-27, which still gives `<agent-dir>/SYSTEM.md` and `<agent-dir>/APPEND_SYSTEM.md`): `docs/usage.md` gives *\"`~/.pi/agent/SYSTEM.md` globally\"* beside `.pi/SYSTEM.md` for a project, and *\"Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location\"*. `docs/security.md` lists the project pair among the resources project trust gates. Read 2026-08-31 out of the 0.84.4 artifact, whose digest was checked against this baseline's artifact table first; the file is byte-identical in the standalone distribution this provider installs and in the npm package.\n\n**Neither was owned nor declined until now -- absent from the record entirely**, which is the one state a surface must not be in: a declined row is a decision and an owned row is a promise, and nothing is neither.\n\nOwned as **custody**. No component kind can reach it: `instruction` already routes to `AGENTS.md` and the protocol has one destination per kind. Before `custody_namespaces` that would have made ownership purely destructive -- every posture ships nothing here, so selecting one emptied a person's system prompt. Now a backup captures it, the identity hashes it, `remove` returns the target to unmanaged, and no posture switch touches it."
       },
       {
         "path": "extensions",
@@ -363,6 +393,11 @@
         "path": "hooks.json",
         "reason": "Hooks here are an **extension API concept, not a configuration surface**. `extensions.md`, under the pinned bundle's own `package/docs/`, documents `session_start`, a `spawnHook` around tool execution and session-scoped teardown hooks -- all of them functions inside an extension module. There is no `hooks.json` and no `hooks` key in `settings.json`, so a hook reaches this product through `extensions/`, which is owned and routes `plugin`.",
         "source": "the product's own shipped documentation, extensions.md under the pinned bundle's package/docs/"
+      },
+      {
+        "path": "sessions",
+        "source": "https://pi.dev/docs/latest (session persistence); measured 2026-09-27",
+        "reason": "The product's own session store under the agent home (`PI_CODING_AGENT_SESSION_DIR` relocates it). Session history is runtime state, the same class as claude's `session-runtime-state` and grok's `sessions` -- a replace would drop or resurrect conversations, and no component kind routes it."
       }
     ],
     "config_home_env": "PI_CODING_AGENT_DIR",
@@ -443,9 +478,9 @@
     },
     "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. The product answers `0.84.4` from the exposed command.\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
     "version": "0.87.1",
-    "verified_at": "2026-09-25T11:47:47+00:00"
+    "verified_at": "2026-09-27T07:41:48+00:00"
   },
-  "setup_catalogue_digest": "sha256:de5f86bef10a8b99b6049fe6d72069fbff4a9391fa29575690d66091a9e1a66d",
+  "setup_catalogue_digest": "sha256:7b718c4dd067d51b96a641b19f8b5a66ca0a6bd77194fd83dbb90767b9805ba4",
   "previous_software_artifacts": {
     "command": "pi",
     "shape": "gzip-tar",
