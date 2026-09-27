@@ -3,7 +3,7 @@
   "id": "nddev-builder",
   "description": "Build complete native tool collections: select and author components, compose exact setups, document capabilities, and verify installation and recovery with ai-stp.",
   "sources": [
-    "https://github.com/earendil-works/pi/releases/tag/v0.84.4",
+    "https://pi.dev/docs/latest/configuration",
     "https://pi.dev/docs/latest/extensions",
     "https://pi.dev/docs/latest/prompt-templates",
     "https://pi.dev/docs/latest/sdk",

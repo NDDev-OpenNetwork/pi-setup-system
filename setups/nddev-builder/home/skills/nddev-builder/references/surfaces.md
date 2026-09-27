@@ -22,8 +22,8 @@ JSON. The vendor documents no comment support and publishes no schema; searched 
 | path | kinds | shape | decided by | exercised by |
 |---|---|---|---|---|
 | `AGENTS.md` | instruction | file | <https://pi.dev/docs/latest/sdk> | read its bytes |
-| `APPEND_SYSTEM.md` | *(routes no kind)* | file | <https://github.com/earendil-works/pi/releases/tag/v0.84.4> | read its bytes |
-| `SYSTEM.md` | *(routes no kind)* | file | <https://github.com/earendil-works/pi/releases/tag/v0.84.4> | read its bytes |
+| `APPEND_SYSTEM.md` | *(routes no kind)* | file | <https://pi.dev/docs/latest/configuration> | read its bytes |
+| `SYSTEM.md` | *(routes no kind)* | file | <https://pi.dev/docs/latest/configuration> | read its bytes |
 | `extensions` | plugin | directory | <https://pi.dev/docs/latest/extensions> | read its bytes |
 | `prompts` | command | directory | <https://pi.dev/docs/latest/prompt-templates> | read its bytes |
 | `settings.json` | setting | file | <https://pi.dev/docs/latest/settings> | **ran it** |
@@ -59,7 +59,7 @@ whole, which would take or revert a neighbour's work.
 
 ## Considered and not owned
 
-16 rows. Each records what was searched, so the next reader does not repeat the search:
+17 rows. Each records what was searched, so the next reader does not repeat the search:
 
 - **`.pi-setup-system`** — This provider's own control directory: the target lock, the backup slots and their payloads. Kept out of the declaration for the same reason as the state file, and recorded here because the declined list is where a reader looks before opening a file to find out what it is.
 - **`AGENTS.override.md`** — Pi loads this instead of AGENTS.md or CLAUDE.md from the same directory, so a home holding one ignores the instruction file this provider installs. Not owned, for the reason an override exists at all: it is how a person overrides, and owning it would let `remove` take that away.
@@ -77,3 +77,4 @@ whole, which would take or revert a neighbour's work.
 - **`mcp_config.json`** — **The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…"*
 - **`agents`** — No sub-agents, from the same sentence as the MCP row above: *"It intentionally does not include built-in MCP, **sub-agents**, permission popups…"* The `agent` kind is therefore not declared for this harness, and nothing under this home is read as one.
 - **`hooks.json`** — Hooks here are an **extension API concept, not a configuration surface**. `extensions.md`, under the pinned bundle's own `package/docs/`, documents `session_start`, a `spawnHook` around tool execution and session-scoped teardown hooks -- all of them functions inside an extension module. There is no `hooks.json` and no `hooks` key in `settings.json`, so a hook reaches this product through `extensions/`, which is owned and routes `plugin`.
+- **`sessions`** — The product's own session store under the agent home (`PI_CODING_AGENT_SESSION_DIR` relocates it). Session history is runtime state, the same class as claude's `session-runtime-state` and grok's `sessions` -- a replace would drop or resurrect conversations, and no component kind routes it.

@@ -15,6 +15,34 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.77] - 2026-09-27
+
+All seven setup systems refresh their software pins from current vendor
+artifacts, with bytes and SHA256 checked for six published platforms each:
+Claude Code 2.1.283, Codex 0.157.1, Grok Build 1.0.42, Pi 0.87.1,
+OpenCode 1.18.32, Cursor 2026.09.26-024025f, and Antigravity CLI 1.2.12.
+Grok's published line now lands under the `alpha` dist-tag; the pin follows
+the current build and records the tag it was fetched under. The immediately
+preceding pins remain available for rollback.
+
+A ten-auditor review of every harness against its installed binary or vendor
+documentation corrected the records the pins alone do not cover. Codex
+records the 0.157.1 feature registry (150 specs, 47 stable, four stable-off
+including secret_auth_storage, which stays off: it is a Windows-only
+credential backend by vendor design), its project-scope surfaces, and the
+full reasoning-effort enum. Grok moves default_auto_mode to config root and
+places memory-v2, auth.json.lock, trusted_folders.toml and trusted-plugins
+under never_touch. Claude records output-styles, routines and themes as
+custody surfaces, the full plugin manifest key set, and current
+session-runtime members. Cursor declines permissions.json, fixes a dangling
+baseline reference, documents that ${env:NAME} is real mcp.json
+interpolation, and no longer doubles hook and MCP paths in generated
+references. OpenCode records remote .well-known configuration, themes, and
+v2 coexistence. Pi re-measures its manager installation at 0.87.1 and
+declines sessions. Every minimal posture's prose now says the autonomous
+approval and sandbox posture ships in config rather than claiming product
+defaults. Provider protocol, postures and ownership are unchanged.
+
 ## [0.0.76] - 2026-09-25
 
 The shared instruction attachment now refuses unreadable or invalid
