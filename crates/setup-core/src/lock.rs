@@ -210,6 +210,20 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_source(source)
     })?;
 
+    // The rename swaps in a fresh inode, so a file restricted to 0o600 would be
+    // widened to `File::create`'s default 0o644 without anyone being told.
+    // Carry the destination's mode onto the staging file first.
+    if let Ok(metadata) = fs::metadata(path) {
+        fs::set_permissions(&temporary, metadata.permissions()).map_err(|source| {
+            let _ = fs::remove_file(&temporary);
+            Error::new(
+                ReasonCode::StateUnavailable,
+                format!("cannot preserve the mode of {}", path.display()),
+            )
+            .with_source(source)
+        })?;
+    }
+
     fs::rename(&temporary, path).map_err(|source| {
         let _ = fs::remove_file(&temporary);
         Error::new(
@@ -241,6 +255,112 @@ fn sync_directory(path: &Path) {
 fn sync_directory(_path: &Path) {
     // Windows has no directory handle to flush in the POSIX sense; the rename
     // is ordered by the file system itself.
+}
+
+/// True for the temporary name [`atomic_write`] stages beside a file:
+/// `.<name>.staging`. Anywhere the name turns up it is this kernel's
+/// in-flight write, interrupted before the rename — bookkeeping, not
+/// content, the way the journal is bookkeeping.
+#[must_use]
+pub fn is_staging_name(name: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".staging"))
+        .is_some_and(|middle| !middle.is_empty())
+}
+
+/// Refuse to write `path`, which lives under `root`, when any component of
+/// the way down is a symbolic link.
+///
+/// `fs::create_dir_all` and `fs::copy` both follow links they meet, so a
+/// directory swapped for a link between one operation and the next carries
+/// the write out of the tree it was aimed at. [`atomic_write`]'s rename
+/// makes the *final* component safe by replacing whatever sits there; this
+/// checks the components the rename cannot reach.
+///
+/// # Errors
+///
+/// Returns [`ReasonCode::IntegrityMismatch`] when a link is found, and
+/// [`ReasonCode::StateUnavailable`] when `path` is not under `root` or a
+/// component cannot be inspected.
+pub fn refuse_linked_descent(root: &Path, path: &Path) -> Result<()> {
+    let relative = path.strip_prefix(root).map_err(|source| {
+        Error::new(
+            ReasonCode::StateUnavailable,
+            format!("{} is not inside {}", path.display(), root.display()),
+        )
+        .with_source(source)
+    })?;
+    let mut at = root.to_path_buf();
+    for component in relative.components() {
+        at.push(component.as_os_str());
+        match fs::symlink_metadata(&at) {
+            Ok(metadata) if metadata.is_symlink() => {
+                return Err(Error::new(
+                    ReasonCode::IntegrityMismatch,
+                    format!(
+                        "{} is a symbolic link and is not written through",
+                        at.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("cannot read {}", at.display()),
+                )
+                .with_source(source));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove one file and flush the directory that held it.
+///
+/// An unlink without a directory flush is as provisional as a rename without
+/// one: a crash can resurrect the entry. Durable deletes go through here for
+/// the same reason durable writes go through [`atomic_write`].
+///
+/// # Errors
+///
+/// Propagates the `remove_file` failure. The directory flush is
+/// best-effort, as it is for the write side.
+pub fn remove_file(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent);
+    }
+    Ok(())
+}
+
+/// Remove one empty directory and flush the directory that held it. See
+/// [`remove_file`].
+///
+/// # Errors
+///
+/// Propagates the `remove_dir` failure.
+pub fn remove_dir(path: &Path) -> std::io::Result<()> {
+    fs::remove_dir(path)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent);
+    }
+    Ok(())
+}
+
+/// Remove a directory tree and flush the directory that held it. See
+/// [`remove_file`].
+///
+/// # Errors
+///
+/// Propagates the `remove_dir_all` failure.
+pub fn remove_dir_all(path: &Path) -> std::io::Result<()> {
+    fs::remove_dir_all(path)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -322,5 +442,26 @@ mod tests {
         atomic_write(&file, b"second").unwrap();
         assert_eq!(fs::read(&file).unwrap(), b"second");
         assert!(!base.join(".state.json.staging").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_atomic_write_keeps_the_permissions_the_file_had() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = scratch("atomic-mode");
+        let file = base.join("secrets.json");
+        atomic_write(&file, b"first").unwrap();
+        let mut mode = fs::metadata(&file).unwrap().permissions();
+        mode.set_mode(0o600);
+        fs::set_permissions(&file, mode).unwrap();
+
+        atomic_write(&file, b"second").unwrap();
+
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&file).unwrap(), b"second");
     }
 }

@@ -213,6 +213,7 @@ impl ProviderState {
                     )
                     .with_source(source)
                 })?;
+                state.validate()?;
                 Ok(StateReading::Current(Box::new(state)))
             }
             Some(schema) => Ok(StateReading::ForeignSchema {
@@ -223,6 +224,26 @@ impl ProviderState {
                 format!("{} declares no state_schema", path.display()),
             )),
         }
+    }
+
+    /// Verify the path and reference members a deserialized record carries.
+    ///
+    /// Serialization gives the fields their types but not their ranges: every
+    /// member of `written_paths` and `native_ownership` is later joined to a
+    /// target root, and `backup_ref` names a slot directory, so the record is
+    /// refused here when a member could escape the join it is about to feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReasonCode::IntegrityMismatch`] on the first invalid member.
+    pub(crate) fn validate(&self) -> Result<()> {
+        for member in self.written_paths.iter().chain(&self.native_ownership) {
+            crate::native_snapshot::validate_path(member)?;
+        }
+        if let Some(reference) = &self.backup_ref {
+            crate::backup::BackupRef::parse(reference)?;
+        }
+        Ok(())
     }
 
     /// Write the state atomically through its canonical bytes.
@@ -330,6 +351,50 @@ mod tests {
             StateReading::Current(read) => assert_eq!(*read, state),
             other => panic!("expected a current record, got {other:?}"),
         }
+    }
+
+    /// Path members are joined to the target unchecked downstream; a record
+    /// carrying a member that could escape it is refused, not sanitized.
+    #[test]
+    fn a_record_with_an_escaping_path_member_is_refused() {
+        let root = scratch("escaping-member");
+        for hostile in ["../outside", "/etc/passwd", "skills/./x", "a//b", ""] {
+            let mut value = serde_json::to_value(sample()).unwrap();
+            value["written_paths"] = serde_json::json!([hostile]);
+            fs::write(root.join("STATE.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                ProviderState::read(&root, "STATE.json")
+                    .unwrap_err()
+                    .reason(),
+                ReasonCode::IntegrityMismatch,
+                "accepted {hostile:?}"
+            );
+        }
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["native_ownership"] = serde_json::json!(["../outside"]);
+        fs::write(root.join("STATE.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            ProviderState::read(&root, "STATE.json")
+                .unwrap_err()
+                .reason(),
+            ReasonCode::IntegrityMismatch
+        );
+    }
+
+    /// The backup reference a state carries names a pool directory; a value
+    /// this kernel would not mint refuses the record that carries it.
+    #[test]
+    fn a_record_with_an_invalid_backup_reference_is_refused() {
+        let root = scratch("invalid-backup-ref");
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["backup_ref"] = serde_json::json!("slot-../escape");
+        fs::write(root.join("STATE.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            ProviderState::read(&root, "STATE.json")
+                .unwrap_err()
+                .reason(),
+            ReasonCode::IntegrityMismatch
+        );
     }
 
     #[test]

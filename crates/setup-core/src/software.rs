@@ -401,16 +401,14 @@ impl Software {
     /// for this operating system, and `unsupported_architecture` when it
     /// publishes for the system but not this machine.
     pub fn artifact_for(&self, os: &str, arch: &str) -> Result<&'static Artifact> {
-        let Delivery::Artifacts(artifacts) = self.delivery else {
-            return Err(Error::new(
-                ReasonCode::UnsupportedOperation,
-                match self.delivery {
-                    Delivery::Manager { tool, reason } => {
-                        format!("{} is delivered by {tool}: {reason}", self.command)
-                    }
-                    Delivery::Artifacts(_) => unreachable!(),
-                },
-            ));
+        let artifacts = match self.delivery {
+            Delivery::Artifacts(artifacts) => artifacts,
+            Delivery::Manager { tool, reason } => {
+                return Err(Error::new(
+                    ReasonCode::UnsupportedOperation,
+                    format!("{} is delivered by {tool}: {reason}", self.command),
+                ));
+            }
         };
 
         let wanted = format!("{os}/{arch}");
@@ -542,7 +540,7 @@ pub fn install(
     let quarantine = root.join(format!(".replaced-{}", software.version));
     for leftover in [&staging, &quarantine] {
         if leftover.exists() {
-            fs::remove_dir_all(leftover).map_err(|error| {
+            crate::lock::remove_dir_all(leftover).map_err(|error| {
                 Error::new(
                     ReasonCode::StateUnavailable,
                     format!("{} could not be cleared: {error}", leftover.display()),
@@ -580,7 +578,7 @@ pub fn install(
                 // and the installed one untouched. Cleaning up is best-effort:
                 // a leftover `.incoming-*` is cleared by the next attempt and is
                 // never read as an installed version.
-                let _ = fs::remove_dir_all(&staging);
+                let _ = crate::lock::remove_dir_all(&staging);
                 return Err(Error::new(
                     ReasonCode::IntegrityMismatch,
                     format!(
@@ -633,7 +631,7 @@ pub fn install(
     if replaced {
         // Best-effort: the install is complete and correct without it, and a
         // leftover is cleared by the next attempt.
-        let _ = fs::remove_dir_all(&quarantine);
+        let _ = crate::lock::remove_dir_all(&quarantine);
     }
 
     let executable = version_root.join(
@@ -712,7 +710,7 @@ pub fn recover(root: &Path) -> Result<Vec<String>> {
             continue;
         };
         if let Some(version) = name.strip_prefix(".incoming-") {
-            fs::remove_dir_all(&path).map_err(fail(format!(
+            crate::lock::remove_dir_all(&path).map_err(fail(format!(
                 "the staged {version} tree could not be cleared"
             )))?;
             done.push(format!(
@@ -722,7 +720,7 @@ pub fn recover(root: &Path) -> Result<Vec<String>> {
         } else if let Some(version) = name.strip_prefix(".replaced-") {
             let final_path = root.join(version);
             if final_path.exists() {
-                fs::remove_dir_all(&path).map_err(fail(format!(
+                crate::lock::remove_dir_all(&path).map_err(fail(format!(
                     "the replaced {version} tree could not be cleared"
                 )))?;
                 done.push(format!(
@@ -741,7 +739,7 @@ pub fn recover(root: &Path) -> Result<Vec<String>> {
         } else if name.ends_with(".incoming") {
             // A staged marker or manifest. Neither is a tree and neither is the
             // record until it is renamed, so a leftover is only litter.
-            let _ = fs::remove_file(&path);
+            let _ = crate::lock::remove_file(&path);
             done.push(format!("a half-written {name} was cleared"));
         }
     }
@@ -773,7 +771,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     let exposed_version =
         Present::under_named(root, software.command, software.member_here()).exposed;
 
-    fs::remove_dir_all(&version_root).map_err(|error| {
+    crate::lock::remove_dir_all(&version_root).map_err(|error| {
         Error::new(
             ReasonCode::StateUnavailable,
             format!(
@@ -797,7 +795,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
         .join("bin")
         .join(exposed_name(software.command, software.member_here()));
     if exposed.symlink_metadata().is_ok() {
-        fs::remove_file(&exposed).map_err(|error| {
+        crate::lock::remove_file(&exposed).map_err(|error| {
             Error::new(
                 ReasonCode::StateUnavailable,
                 format!("{} could not be removed: {error}", exposed.display()),
@@ -807,7 +805,7 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     }
     // The record goes with the command it described. A marker outliving it
     // would name a version nothing runs.
-    let _ = fs::remove_file(Present::marker(root, software.command));
+    let _ = crate::lock::remove_file(&Present::marker(root, software.command));
     Ok(true)
 }
 
@@ -1154,7 +1152,7 @@ fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Re
         fs::create_dir_all(parent).map_err(fail)?;
     }
     if exposed.symlink_metadata().is_ok() {
-        fs::remove_file(exposed).map_err(fail)?;
+        crate::lock::remove_file(exposed).map_err(fail)?;
     }
 
     #[cfg(unix)]

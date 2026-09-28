@@ -767,7 +767,7 @@ pub(crate) fn prepare_launch_overlay(
     let overlay = target.join(harness.control_directory).join("launch-home");
     let rooted = overlay.join(leaf);
     if rooted.exists() {
-        fs::remove_dir_all(&rooted).map_err(|error| {
+        setup_core::lock::remove_dir_all(&rooted).map_err(|error| {
             Error::refuse(
                 WireReason::ProviderUnavailable,
                 format!("cannot reset {}: {error}", rooted.display()),

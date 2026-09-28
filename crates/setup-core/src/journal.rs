@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::backup::BackupRef;
 use crate::error::{Error, ReasonCode, Result};
 use crate::lock;
 
@@ -132,6 +133,16 @@ impl Journal {
                 ),
             ));
         }
+        // Recovery joins the reference to the pool unchecked; a journal cannot
+        // name a slot this kernel would refuse to mint.
+        if let Some(reference) = &journal.backup_ref
+            && BackupRef::parse(reference).is_err()
+        {
+            return Err(Error::new(
+                ReasonCode::RecoveryRequired,
+                format!("journal backup reference {reference:?} is not valid"),
+            ));
+        }
         Ok(Some(journal))
     }
 
@@ -172,12 +183,16 @@ impl Journal {
 
     /// Remove the journal once the new state is durable.
     ///
+    /// The unlink is flushed like a write is: an unflushed removal can
+    /// resurrect the journal on the next mount and send recovery through a
+    /// second time.
+    ///
     /// # Errors
     ///
     /// Returns [`ReasonCode::StateUnavailable`] if the file cannot be removed.
     pub fn clear(control_directory: &Path) -> Result<()> {
         let path = Self::path(control_directory);
-        match fs::remove_file(&path) {
+        match crate::lock::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(Error::new(
@@ -265,7 +280,7 @@ mod tests {
             operation: "install".to_owned(),
             plan_digest: "sha256:plan".to_owned(),
             target_precondition_digest: "sha256:target".to_owned(),
-            backup_ref: Some("backup_1".to_owned()),
+            backup_ref: Some("slot-000000000001".to_owned()),
             target_scope: None,
         }
     }
@@ -311,6 +326,18 @@ mod tests {
     fn an_unparseable_journal_demands_recovery_rather_than_reading_as_absent() {
         let control = scratch("corrupt");
         fs::write(Journal::path(&control), b"{ not json").unwrap();
+        let error = Journal::read(&control).unwrap_err();
+        assert_eq!(error.reason(), ReasonCode::RecoveryRequired);
+    }
+
+    /// Recovery joins the named reference to the pool unchecked; a journal
+    /// that names an invalid one is corrupt state, not a recoverable pointer.
+    #[test]
+    fn a_journal_naming_an_invalid_backup_reference_demands_recovery() {
+        let control = scratch("bad-ref");
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["backup_ref"] = serde_json::json!("../escape");
+        fs::write(Journal::path(&control), serde_json::to_vec(&value).unwrap()).unwrap();
         let error = Journal::read(&control).unwrap_err();
         assert_eq!(error.reason(), ReasonCode::RecoveryRequired);
     }
