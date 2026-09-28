@@ -15,6 +15,35 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.79] - 2026-09-28
+
+The shared kernel hardens its durable boundary against the failure
+shapes a boundary audit measured: staged writes carry the destination's
+mode before the rename lands, copy and chmod refuse a linked destination
+the way the source is refused, durable removals refuse descent through a
+link and are directory-flushed like every durable write, persisted path
+members are validated at the serde boundary rather than joined unchecked,
+`plan` observes without creating the control directory, and `.staging`
+files are excluded from identity walks and payload capture the way they
+already were from committed writes. Instruction-region handling accepts
+CRLF line endings.
+
+Provider protocol v3 closes the scoped-request holes the same audit named:
+`patch_instruction_region` and `detach_instruction_region` refuse a named
+scope rather than writing the global surface at a scoped root, `status`
+under a scope reports `instruction_region: null`, plan artifacts refuse
+half-stated instruction members, a bare `--` tail is refused instead of
+dropped, `never_touch` membership is now a `disagreements()` check on
+every harness, and the instruction-file shadows the baselines measured
+are declared — codex's and pi's `AGENTS.override.md`, pi's `CLAUDE.md`,
+and grok's `Agents.md`/`AGENT.md` — so `status` can name them without
+`remove` ever taking them. The vendored provider kit moves to 0.2.15,
+whose status schema accepts the `authorization` member the consumer now
+ships. Setup prose, measured reasons and generated references are brought
+back in line with the shipped declarations, and the CI pins re-roll to
+ci-workflows 0.1.29. Provider protocol version, software pins, postures
+and ownership are unchanged.
+
 ## [0.0.78] - 2026-09-27
 
 Pi Coding Agent now declares `detach_instruction_region`, the second half of
