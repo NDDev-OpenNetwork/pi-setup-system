@@ -542,7 +542,7 @@ fn status_of(
         ("backups", backup_status(pool, resolved, harness, scope)?),
         (
             "instruction_region",
-            instruction_attachment_status(harness, resolved),
+            instruction_attachment_status(harness, resolved, scope),
         ),
     ] {
         answer.insert(key.to_owned(), value);
@@ -555,10 +555,22 @@ fn status_of(
 /// else: an unreadable file, and one whose markers are ambiguous, both report
 /// `section_present: false` — there is no well-formed owned section either
 /// way, and `present` is what keeps those two apart for the caller.
-fn instruction_attachment_status(harness: &Harness, resolved: &Target) -> serde_json::Value {
+///
+/// `null` under a scoped measure too, and for a harder reason: the declared
+/// surface is user-global, so joining the name onto the scoped root would
+/// report a file the declaration never named. A `section_present: false`
+/// there would be a statement about a surface that is not a surface.
+fn instruction_attachment_status(
+    harness: &Harness,
+    resolved: &Target,
+    scope: Option<provider_v3::TargetScope>,
+) -> serde_json::Value {
     let Some(relative) = harness.instruction_region else {
         return serde_json::Value::Null;
     };
+    if scope.is_some() {
+        return serde_json::Value::Null;
+    }
     let surface = resolved.root().join(relative);
     let existing = crate::instruction_region::read_utf8(&surface).unwrap_or_else(|_| String::new());
     let section = if crate::instruction_region::markers_well_formed(&existing) {
@@ -686,6 +698,27 @@ fn honourable(harness: &Harness, request: &PlanRequest) -> Result<()> {
     }
 
     honour_instruction_section(harness, request)?;
+
+    // The instruction surface is user-global by declaration. A scoped
+    // request reaching patch or detach would splice marked bytes into
+    // `<scoped-root>/<region>` -- a file no product reads at that root --
+    // or strip an attachment it never made there, and report success for a
+    // statement this provider never made.
+    if let Some(named) = request.target_scope
+        && matches!(
+            request.operation,
+            Operation::PatchInstructionRegion | Operation::DetachInstructionRegion
+        )
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} acts on the user-global instruction surface; --target-scope \
+                 {named} names a scoped target where this provider declares none",
+                request.operation
+            ),
+        ));
+    }
 
     // The same rule for a bundle, and this one was worse than silently
     // dropped: only `install` and `replace` read one, but the plan **bound**
@@ -9200,6 +9233,62 @@ mod tests {
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             "# first\n",
             "a no-op detach still changed the file"
+        );
+    }
+
+    /// The instruction surface is user-global by declaration. A scoped
+    /// request would splice marked bytes into `<scoped-root>/AGENTS.md` -- a
+    /// file no product reads at that root -- and report success for a
+    /// statement this provider never made.
+    #[test]
+    fn instruction_operations_refuse_a_scoped_target() {
+        for operation in ["patch_instruction_region", "detach_instruction_region"] {
+            let target = seeded("instruction-scoped");
+            let mut arguments = vec![
+                "--operation",
+                operation,
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+                "--target-scope",
+                "user_root",
+            ];
+            if operation == "patch_instruction_region" {
+                arguments.extend(["--instruction-section", INSTRUCTION_SECTION]);
+            }
+            let error = refuse(args("plan-operation", &target, &arguments));
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::UnsupportedOperation),
+                "{operation} under a scope must refuse: {error}"
+            );
+        }
+    }
+
+    /// Under a scoped measure the declared surface is not this root's, so the
+    /// attachment field answers `null` -- the same null a harness with no
+    /// surface reports -- rather than `section_present: false` on a file the
+    /// declaration never named.
+    #[test]
+    fn scoped_status_reports_no_instruction_region_statement() {
+        let target = seeded("scoped-instruction-status");
+        plan_then_apply(
+            &target,
+            "patch_instruction_region",
+            &["--instruction-section", INSTRUCTION_SECTION],
+        );
+        let global = run(args("status", &target, &[]));
+        assert_eq!(
+            global["instruction_region"]["section_present"], true,
+            "the attachment is there and the global answer does not see it: {global}"
+        );
+        let scoped = run(args("status", &target, &["--target-scope", "user_root"]));
+        assert!(
+            scoped["instruction_region"].is_null(),
+            "a scoped measure named a surface the declaration did not: {scoped}"
         );
     }
 

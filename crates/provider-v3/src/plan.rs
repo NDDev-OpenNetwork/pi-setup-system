@@ -325,13 +325,15 @@ pub struct PlanInputs<'a> {
     /// Per-path end states, for a `remove` that carries a bundle. Empty
     /// otherwise, and refused on any other operation.
     pub end_state: Vec<EndState>,
-    /// Target-relative attachment path, when this is a region patch.
+    /// Target-relative attachment path, when this is a patch or a detach of
+    /// the instruction region.
     pub instruction_path: Option<String>,
-    /// Full file text after splicing, when this is a region patch.
+    /// Full file text after splicing or after removing the owned section,
+    /// when this is a patch or a detach of the instruction region.
     pub instruction_text: Option<String>,
     /// Digest of the instruction surface as the plan read it, when this is a
-    /// region patch. The apply-time staleness check this feeds is described on
-    /// the artifact member of the same name.
+    /// patch or a detach. The apply-time staleness check this feeds is
+    /// described on the artifact member of the same name.
     pub instruction_observed_digest: Option<String>,
     /// Whether the instruction surface existed at plan time.
     pub instruction_observed_present: Option<bool>,
@@ -400,6 +402,8 @@ impl PlanArtifact {
             ));
         }
 
+        Self::refuse_a_mismatched_instruction_tuple(&inputs)?;
+
         let software = Operation::SOFTWARE.contains(&inputs.operation);
         match (
             software,
@@ -425,6 +429,39 @@ impl PlanArtifact {
         }
 
         Ok(Self::assemble(inputs))
+    }
+
+    /// The instruction tuple is one sentence: path, text and the two observed
+    /// members are what apply splices and re-checks, and they belong only on
+    /// the two operations that act on the declared region. Any other
+    /// operation carrying them is describing an attachment it does not
+    /// perform; an instruction operation missing one would have apply
+    /// re-reading a surface the plan half-described.
+    fn refuse_a_mismatched_instruction_tuple(inputs: &PlanInputs<'_>) -> Result<()> {
+        let instruction_op = matches!(
+            inputs.operation,
+            Operation::PatchInstructionRegion | Operation::DetachInstructionRegion
+        );
+        let held = [
+            inputs.instruction_path.is_some(),
+            inputs.instruction_text.is_some(),
+            inputs.instruction_observed_digest.is_some(),
+            inputs.instruction_observed_present.is_some(),
+        ];
+        let all = held.iter().all(|&some| some);
+        let none = held.iter().all(|&some| !some);
+        if (!instruction_op && !none) || (instruction_op && !all) {
+            return Err(Error::refuse(
+                WireReason::ProviderUnavailable,
+                format!(
+                    "a {} plan {} carry the instruction path, text and both \
+                     observed members",
+                    inputs.operation,
+                    if instruction_op { "must" } else { "must not" }
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn assemble(inputs: PlanInputs<'_>) -> Self {
@@ -610,6 +647,59 @@ mod tests {
             instruction_observed_digest: None,
             instruction_observed_present: None,
             effects: vec!["write settings.json".to_owned()],
+        }
+    }
+
+    /// The instruction tuple is one sentence: it belongs on the two
+    /// operations that act on the declared region, and only as a complete
+    /// set. The rule mirrors `end_state`'s -- a member on the wrong
+    /// operation describes an attachment that operation does not perform.
+    #[test]
+    fn instruction_members_on_anything_but_the_region_operations_are_refused() {
+        for operation in [Operation::Install, Operation::Remove, Operation::Backup] {
+            let mut stated = inputs(operation);
+            stated.instruction_path = Some("AGENTS.md".to_owned());
+            assert!(
+                PlanArtifact::new(stated).is_err(),
+                "{operation} carried an instruction member"
+            );
+        }
+    }
+
+    /// And on the operations that own them the members travel together: a
+    /// partial tuple would have apply re-reading a surface the plan
+    /// half-described.
+    #[test]
+    fn an_instruction_plan_missing_a_member_is_refused() {
+        for operation in [
+            Operation::PatchInstructionRegion,
+            Operation::DetachInstructionRegion,
+        ] {
+            let mut stated = inputs(operation);
+            stated.instruction_path = Some("AGENTS.md".to_owned());
+            stated.instruction_text = Some("text".to_owned());
+            stated.instruction_observed_digest = Some(DIGEST.to_owned());
+            // observed_present withheld: three of four is a half statement.
+            assert!(
+                PlanArtifact::new(stated).is_err(),
+                "{operation} planned with an incomplete instruction tuple"
+            );
+
+            let stated = inputs(operation);
+            assert!(
+                PlanArtifact::new(stated).is_err(),
+                "{operation} planned with no instruction members at all"
+            );
+
+            let mut stated = inputs(operation);
+            stated.instruction_path = Some("AGENTS.md".to_owned());
+            stated.instruction_text = Some("text".to_owned());
+            stated.instruction_observed_digest = Some(DIGEST.to_owned());
+            stated.instruction_observed_present = Some(true);
+            assert!(
+                PlanArtifact::new(stated).is_ok(),
+                "{operation} refused a complete instruction tuple"
+            );
         }
     }
 
