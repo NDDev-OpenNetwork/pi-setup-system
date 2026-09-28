@@ -23,7 +23,7 @@ use std::process::ExitCode;
 
 mod software;
 
-use harness_runtime::{Foreign, Harness, LaunchBinding, PreservationSurface, Scoped};
+use harness_runtime::{Foreign, Harness, LaunchBinding, PreservationSurface, Scoped, Shadow};
 use provider_v3::{ComponentKind, ProjectionKind, TargetScope};
 
 /// Everything specific to Pi Coding Agent, verified against `pi-baseline.json`.
@@ -110,10 +110,30 @@ pub const PI: Harness = Harness {
     // `capture` walks `native_namespaces` and this file is inside none of them
     // -- but a safety list that depends on a namespace never widening is a
     // safety list waiting for one declaration change.
-    // Nothing measured. This product's alternate spellings, if it has
-    // any, have not been asked for -- empty here says nobody looked,
-    // not that the product reads one name.
-    shadowing_names: &[],
+    // Two names the product reads and this provider does not own,
+    // measured for this baseline. `AGENTS.override.md` loads instead of
+    // the instruction file. `CLAUDE.md` is in the same documented read
+    // set -- the product concatenates every context file it finds, so a
+    // present one adds instructions this provider did not write. Neither
+    // is owned: the override is how a person overrides, and a file
+    // somebody else left is not this provider's to remove.
+    shadowing_names: &[
+        Shadow {
+            name: "AGENTS.override.md",
+            over: "AGENTS.md",
+            effect: "loaded instead of the instruction file, so a home \
+                     holding one ignores the AGENTS.md this provider \
+                     installs",
+        },
+        Shadow {
+            name: "CLAUDE.md",
+            over: "AGENTS.md",
+            effect: "in the product's context-file read set beside \
+                     AGENTS.md and every match is concatenated, so a \
+                     present CLAUDE.md adds instructions this provider \
+                     did not write",
+        },
+    ],
     // Owned, and nothing this build can install ever lands here: no
     // component kind routes to them and no setup in this catalogue
     // carries files there. So a posture selecting itself must not empty
@@ -604,5 +624,23 @@ mod tests {
         let problems =
             harness_runtime::catalog::misdirecting(HARNESS.provider_id, &catalog.list().unwrap());
         assert!(problems.is_empty(), "{}", problems.join("\n  "));
+    }
+
+    /// The instruction-file shadows the baseline measured are declared, so
+    /// `status` can report a target running a file this provider never wrote
+    /// instead of answering `managed` beside nothing.
+    #[test]
+    fn the_measured_instruction_shadows_are_declared() {
+        let names: Vec<&str> = PI
+            .shadowing_names
+            .iter()
+            .map(|shadow| shadow.name)
+            .collect();
+        for expected in &["AGENTS.override.md", "CLAUDE.md"] {
+            assert!(
+                names.contains(expected),
+                "{expected} is measured in the baseline and not declared"
+            );
+        }
     }
 }

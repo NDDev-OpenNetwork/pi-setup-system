@@ -116,7 +116,7 @@ const fn plan_usage(command: Command) -> Usage {
             ),
             (
                 "--target-scope",
-                "which scope this target is; accepted and not yet acted on",
+                "which scope this target is; the plan binds the profile it selects",
             ),
             (
                 "--instruction-section",
@@ -346,11 +346,15 @@ pub struct PlanRequest {
     pub software_version: Option<String>,
     /// Which scope the consumer resolved this target to be.
     ///
-    /// **Accepted, and not yet acted on.** This build records it and plans the
-    /// same way for every value, because nothing downstream branches on a scope
-    /// yet. It is parsed regardless, for an ordering reason that is the mirror
-    /// image of the one governing response fields.
+    /// **Acted on, not merely accepted.** The plan binds the projection
+    /// profile this scope selects -- `provider-info` carries one per declared
+    /// scope -- and a request naming a scope this provider publishes no
+    /// profile for is refused before anything is planned against it. The
+    /// owned set, the restore surfaces and the removal classification all
+    /// follow the same scope.
     ///
+    /// It was parsed for one release before it branched, for an ordering
+    /// reason that is the mirror image of the one governing response fields.
     /// A *response* field may be declared only after the consumer accepts it:
     /// the consumer ships, then a provider may say it. A *request* field is the
     /// other way round. A consumer that starts sending `--target-scope` to a
@@ -360,11 +364,9 @@ pub struct PlanRequest {
     /// tolerate the flag in a release *before* any consumer sends it, and only
     /// then branch on it.
     ///
-    /// This is that first release. `scoped_projection_profiles` has been
-    /// declarable since `0.0.7` and operable never, because no request field
-    /// carried a scope; this is the field, arriving one release ahead of the
-    /// behaviour on purpose.
-    /// Which scope the consumer resolved this target to be.
+    /// `scoped_projection_profiles` was declarable since `0.0.7` and operable
+    /// never until this field arrived to carry the scope; the behaviour
+    /// landed the release after the parser did.
     pub target_scope: Option<TargetScope>,
     /// Marked instruction bytes for `patch_instruction_region`.
     ///
@@ -375,12 +377,12 @@ pub struct PlanRequest {
 
 /// Read `--target-scope`, refusing a value this build does not know.
 ///
-/// **Not "accept anything".** Ignoring the value would be honest -- nothing
-/// branches on it yet -- but it would also swallow a typo, and a flag that
-/// cannot fail is not a flag. More importantly it would swallow a *future*
-/// scope: a consumer sending a third scope to this build must be refused rather
-/// than silently served a `global` plan, because a plan made against the wrong
-/// scope is a correct-looking answer to a question nobody asked.
+/// **Not "accept anything".** Ignoring the value would swallow a typo, and a
+/// flag that cannot fail is not a flag. More importantly it would swallow a
+/// *future* scope: a consumer sending a third scope to this build must be
+/// refused rather than silently served a global-scope plan, because a plan
+/// made against the wrong scope is a correct-looking answer to a question
+/// nobody asked.
 ///
 /// So the value is parsed against the closed set the kit publishes, and the
 /// refusal names what this build knows.
@@ -465,9 +467,16 @@ where
 
     // Everything after a bare `--` belongs to the product `launch` starts, so
     // it is taken off before this parser sees it. No other command has anything
-    // to pass on, and one that finds a `--` gets an empty tail and refuses the
-    // leftovers the same way it always would.
+    // to pass on, and dropping one that found a `--` would report success for
+    // a request that was only partly understood -- the same rule the flag
+    // parser keeps.
     let (mine, passthrough) = Flags::split_passthrough(rest);
+    if command != Command::Launch && !passthrough.is_empty() {
+        return Err(local(format!(
+            "{command} takes no arguments after --; only launch forwards them \
+             to the product it starts"
+        )));
+    }
     let mut flags = Flags::parse(&mine)?;
 
     // Every missing argument at once, rather than the first one alphabetically.
@@ -1090,6 +1099,33 @@ mod tests {
             panic!("expected a plan invocation");
         };
         assert_eq!(request.instruction_section.as_deref(), Some(section));
+    }
+
+    /// Everything after a bare `--` belongs to the product `launch` starts.
+    /// No other command has anything to pass on, and dropping one that found
+    /// a `--` would report success for a request that was only partly
+    /// understood.
+    #[test]
+    fn arguments_after_a_bare_dash_dash_are_refused_except_on_launch() {
+        let prefix = std::env::temp_dir().join("prefix");
+        let prefix = prefix.to_string_lossy().into_owned();
+        let launched = parse(with_target(
+            "launch",
+            &["--prefix", &prefix, "--", "serve", "--verbose"],
+        ));
+        assert!(
+            launched.is_ok(),
+            "launch must forward the tail: {launched:?}"
+        );
+
+        for command in ["status", "plan-operation", "recover-operation"] {
+            let tokens = with_target(command, &["--", "serve"]);
+            let error = parse(tokens).unwrap_err();
+            assert!(
+                format!("{error}").contains("takes no arguments after --"),
+                "{command} dropped the passthrough silently: {error}"
+            );
+        }
     }
 
     /// A consumer that sends a scope must not be refused by a build that cannot

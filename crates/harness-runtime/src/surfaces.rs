@@ -175,6 +175,50 @@ fn credentials_are_disclaimed(harness: &Harness, baseline: &Value, found: &mut V
     }
 }
 
+/// Every name the baseline marks `never_touch` is disclaimed and unowned.
+///
+/// The baseline's flat list is where a product's measured record says "this
+/// path is mine" -- credentials, session stores, lock files. A declaration
+/// that owned one would take it on `remove`; a declaration that failed to
+/// disclaim one leaves a namespace-widening change free to swallow it. This
+/// binding used to live in one harness's tests, where the six it did not run
+/// against got nothing from it.
+///
+/// Both directions are checked, and the second needs no baseline at all: a
+/// name both owned and disclaimed takes the meaning out of `never_touch`,
+/// because `remove_keeping` spares what the list names under a replaced
+/// namespace.
+fn never_touch_is_disclaimed(harness: &Harness, baseline: &Value, found: &mut Vec<String>) {
+    let empty = Vec::new();
+    for entry in baseline
+        .get("never_touch")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+    {
+        let Some(name) = entry.as_str() else {
+            found.push(format!("never_touch member {entry} is not a string"));
+            continue;
+        };
+        if harness.native_namespaces.contains(&name) {
+            found.push(format!(
+                "{name:?} is marked never_touch by the baseline but claimed as ours"
+            ));
+        }
+        if !harness.never_touch.contains(&name) {
+            found.push(format!(
+                "{name:?} is marked never_touch by the baseline and {} does not \
+                 disclaim it",
+                harness.provider_id
+            ));
+        }
+    }
+    for name in harness.never_touch {
+        if harness.native_namespaces.contains(name) {
+            found.push(format!("{name:?} is claimed and disclaimed"));
+        }
+    }
+}
+
 /// An owned surface that routes no kind and says nothing about why.
 ///
 /// The mirror of `writes_where_nothing_is_routed`. That one catches a path this
@@ -1258,6 +1302,7 @@ pub fn disagreements(harness: &Harness, baseline: &Value) -> Vec<String> {
     rooted_elsewhere(baseline, &mut found);
     shares_a_name_with_the_protocol(baseline, &mut found);
     credentials_are_disclaimed(harness, baseline, &mut found);
+    never_touch_is_disclaimed(harness, baseline, &mut found);
     policy_is_not_owned(harness, &mut found);
     a_scope_is_distinguishable_from_the_global_target(harness, &mut found);
     owned_paths_fold_together(harness, &mut found);
@@ -1462,6 +1507,30 @@ mod tests {
     #[test]
     fn a_declaration_that_matches_its_baseline_has_nothing_to_say() {
         assert_eq!(disagreements(&TEST, &agreeing()), Vec::<String>::new());
+    }
+
+    /// The baseline's flat `never_touch` list binds the declaration in both
+    /// directions: a marked name must be disclaimed, and it must not be
+    /// owned. Hoisted out of one harness's test file because the six it did
+    /// not run against got nothing from it.
+    #[test]
+    fn a_never_touch_the_baseline_marks_is_disclaimed_here() {
+        let mut baseline = agreeing();
+        baseline["never_touch"] = json!(["person-data.json"]);
+
+        let agreed = disagreements(&TEST, &baseline);
+        assert!(
+            agreed.iter().any(|line| line.contains("person-data.json")),
+            "an undisclaimed never_touch name passed: {agreed:?}"
+        );
+
+        // Claimed as ours is the worse direction: `remove` would take it.
+        baseline["never_touch"] = json!([TEST.native_namespaces[0]]);
+        let owned = disagreements(&TEST, &baseline);
+        assert!(
+            owned.iter().any(|line| line.contains("claimed as ours")),
+            "an owned never_touch name passed: {owned:?}"
+        );
     }
 
     #[test]
