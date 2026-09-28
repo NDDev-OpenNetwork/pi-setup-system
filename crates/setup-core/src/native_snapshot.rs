@@ -67,7 +67,13 @@ fn within(path: &str, root: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-fn validate_path(path: &str) -> Result<()> {
+/// Refuse a relative path that could escape a join.
+///
+/// Every path member a durable record carries is joined to a target root
+/// downstream; this is the contract those members must meet. It is shared by
+/// the snapshot inspectors that write records and the readers that trust them
+/// back, so a member one side accepted is a member the other accepts.
+pub(crate) fn validate_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.contains('\\')
         || path
@@ -79,7 +85,7 @@ fn validate_path(path: &str) -> Result<()> {
     {
         return Err(Error::new(
             ReasonCode::IntegrityMismatch,
-            "invalid native snapshot relative path",
+            format!("invalid relative path in a durable record: {path:?}"),
         ));
     }
     Ok(())
@@ -98,6 +104,18 @@ fn permissions(metadata: &fs::Metadata) -> u32 {
 }
 
 fn set_permissions(path: &Path, mode: u32) -> Result<()> {
+    // `chmod` follows the final component: a link swapped in after the write
+    // landed would take the mode change through it to a file this kernel did
+    // not write. Refuse rather than follow.
+    if fs::symlink_metadata(path)
+        .map_err(|error| io_error(path, error))?
+        .is_symlink()
+    {
+        return Err(Error::new(
+            ReasonCode::IntegrityMismatch,
+            format!("{} is a symbolic link and is not chmodded", path.display()),
+        ));
+    }
     #[cfg(unix)]
     let value = {
         use std::os::unix::fs::PermissionsExt;
@@ -165,6 +183,27 @@ impl NativeSnapshot {
             snapshot.walk(root, &relative)?;
         }
         Ok(snapshot)
+    }
+
+    /// Verify every path member a deserialized record carries.
+    ///
+    /// `inspect` validates the paths it is given; a record read back from disk
+    /// arrives through serde instead and never passed through that gate. The
+    /// members it lists are joined to a target root at restore time, so the
+    /// same check runs here at the read boundary.
+    ///
+    /// # Errors
+    /// Returns [`ReasonCode::IntegrityMismatch`] on the first invalid member.
+    pub(crate) fn validate(&self) -> Result<()> {
+        for member in self
+            .roots
+            .iter()
+            .chain(&self.excluded)
+            .chain(self.entries.keys())
+        {
+            validate_path(member)?;
+        }
+        Ok(())
     }
 
     fn walk(&mut self, root: &Path, relative: &str) -> Result<()> {
@@ -260,12 +299,19 @@ impl NativeSnapshot {
             let from = source.join(relative);
             let to = destination.join(relative);
             if member.digest.is_none() {
+                crate::lock::refuse_linked_descent(destination, &to)?;
                 fs::create_dir_all(&to).map_err(|error| io_error(&to, error))?;
             } else {
                 if let Some(parent) = to.parent() {
+                    crate::lock::refuse_linked_descent(destination, parent)?;
                     fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
                 }
-                fs::copy(&from, &to).map_err(|error| io_error(&to, error))?;
+                // The rename is what makes the destination safe: it replaces
+                // whatever sits at `to`, so a link swapped in ahead of the
+                // copy cannot carry these bytes somewhere else. `fs::copy`
+                // would have followed it.
+                let bytes = fs::read(&from).map_err(|error| io_error(&from, error))?;
+                crate::lock::atomic_write(&to, &bytes)?;
                 set_permissions(&to, member.permissions)?;
             }
         }
@@ -293,7 +339,7 @@ impl NativeSnapshot {
         for (relative, member) in current.entries.iter().rev() {
             let path = target.join(relative);
             if member.digest.is_none() {
-                match fs::remove_dir(&path) {
+                match crate::lock::remove_dir(&path) {
                     Ok(()) => (),
                     Err(error)
                         if error.kind() == std::io::ErrorKind::DirectoryNotEmpty
@@ -301,7 +347,7 @@ impl NativeSnapshot {
                     Err(error) => return Err(io_error(&path, error)),
                 }
             } else {
-                fs::remove_file(&path).map_err(|error| io_error(&path, error))?;
+                crate::lock::remove_file(&path).map_err(|error| io_error(&path, error))?;
             }
         }
         self.copy_to(payload, target)
@@ -350,6 +396,59 @@ mod tests {
         current.verify(&target).unwrap();
         fs::write(target.join("skills/unexpected"), b"extra").unwrap();
         assert!(current.verify(&target).is_err());
+    }
+
+    /// A member swapped for a link between inspect and copy cannot carry the
+    /// payload out of the destination: the write is a rename, which replaces
+    /// the link rather than following it.
+    #[cfg(unix)]
+    #[test]
+    fn copy_to_replaces_a_linked_destination_instead_of_writing_through_it() {
+        let root = scratch("linked-restore");
+        let source = root.join("source");
+        fs::create_dir_all(source.join("skills")).unwrap();
+        fs::write(source.join("skills/tool.sh"), b"echo payload\n").unwrap();
+        let snapshot = NativeSnapshot::inspect(&source, &["skills"], &[]).unwrap();
+        let destination = root.join("destination");
+        fs::create_dir_all(&destination).unwrap();
+        let outside = root.join("outside.sh");
+        fs::write(&outside, b"not ours").unwrap();
+        fs::create_dir_all(destination.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, destination.join("skills/tool.sh")).unwrap();
+
+        snapshot.copy_to(&source, &destination).unwrap();
+        assert_eq!(fs::read(&outside).unwrap(), b"not ours");
+        assert_eq!(
+            fs::read(destination.join("skills/tool.sh")).unwrap(),
+            b"echo payload\n"
+        );
+        assert!(
+            !fs::symlink_metadata(destination.join("skills/tool.sh"))
+                .unwrap()
+                .is_symlink(),
+            "the restored member is still a link"
+        );
+    }
+
+    /// The way down is checked too: a *directory* swapped for a link refuses
+    /// rather than let `create_dir_all` follow it out of the tree.
+    #[cfg(unix)]
+    #[test]
+    fn copy_to_refuses_a_directory_swapped_for_a_link() {
+        let root = scratch("linked-directory");
+        let source = root.join("source");
+        fs::create_dir_all(source.join("skills")).unwrap();
+        fs::write(source.join("skills/tool.sh"), b"echo payload\n").unwrap();
+        let snapshot = NativeSnapshot::inspect(&source, &["skills"], &[]).unwrap();
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("tool.sh"), b"not ours").unwrap();
+        let destination = root.join("destination");
+        fs::create_dir_all(&destination).unwrap();
+        std::os::unix::fs::symlink(&outside, destination.join("skills")).unwrap();
+
+        assert!(snapshot.copy_to(&source, &destination).is_err());
+        assert_eq!(fs::read(outside.join("tool.sh")).unwrap(), b"not ours");
     }
 
     #[test]

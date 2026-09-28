@@ -327,7 +327,7 @@ fn status(
     let scope = scope_to_measure(harness, &resolved, asked)?;
     let owned = owned_here(harness, &resolved, scope)?;
     let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
-    let journal = Journal::read(&control).ok().flatten();
+    let journal = Journal::read(&control)?;
     status_of(harness, &resolved, &pool, &identity, journal, scope)
 }
 
@@ -419,7 +419,10 @@ fn scope_to_measure(
     // unrecorded target is exactly nothing of ours. Two inventories, one
     // comparison; asked, `status` measures the one the plan will. Agreed with
     // the consumer on 2026-09-02, out of their project-scope branch.
-    Ok(asked.or_else(|| scope_recorded_at(harness, resolved)))
+    if asked.is_some() {
+        return Ok(asked);
+    }
+    scope_recorded_at(harness, resolved)
 }
 
 /// The status answer, once the inventory has been measured.
@@ -821,6 +824,9 @@ fn plan_instruction_patch(
     let surface = target.root().join(relative);
     let present = surface.exists();
     let existing = read_instruction_text(&surface)?;
+    // A bare byte digest, not the entry-structured tree fold: the observation
+    // is one file, compared only against itself at apply time, and the two
+    // domains can never meet -- a raw digest on both sides is the honest one.
     let observed = setup_core::digest::of_bytes(existing.as_bytes());
     let (updated, wrote) = crate::instruction_region::patch(&existing, section);
     let effects = if wrote {
@@ -852,6 +858,8 @@ fn plan_instruction_detach(
     let surface = target.root().join(relative);
     let present = surface.exists();
     let existing = read_instruction_text(&surface)?;
+    // Same raw byte digest as the patch plan -- the observation only ever
+    // answers "did these exact bytes change".
     let observed = setup_core::digest::of_bytes(existing.as_bytes());
     let remainder = crate::instruction_region::remove_region(&existing);
     let effects = if remainder.is_some() {
@@ -935,7 +943,11 @@ fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String
 
 #[allow(clippy::too_many_lines)]
 fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde_json::Value> {
-    let (resolved, control, pool) = open(harness, target)?;
+    // A plan is a question. `observe` reads the journal, the pool and the
+    // record exactly as `open` does but creates nothing -- planning a fresh
+    // target used to mint its control directory, so asking whether the
+    // target was empty made it no longer empty.
+    let (resolved, control, pool) = observe(harness, target)?;
     setup_core::journal::require_clean_for_planning(
         &control,
         &control.join("transaction"),
@@ -1262,7 +1274,7 @@ fn refuse_another_scopes_record(
     target: &Target,
     asked: Option<provider_v3::TargetScope>,
 ) -> Result<()> {
-    let Some(recorded) = scope_recorded_at(harness, target) else {
+    let Some(recorded) = scope_recorded_at(harness, target)? else {
         return Ok(());
     };
     if asked == Some(recorded) {
@@ -1706,14 +1718,14 @@ pub(crate) enum Effect<'a> {
     },
     /// Splice a marked instruction region into one owned-or-neighbour file.
     PatchInstruction {
-        /// Target-relative path.
+        /// Target-relative path, checked against the harness declaration.
         path: String,
         /// Full file text after splicing.
         text: String,
-        /// Digest of the surface as the plan read it, when recorded.
-        observed_digest: Option<String>,
-        /// Whether the surface existed when the plan read it, when recorded.
-        observed_present: Option<bool>,
+        /// Digest of the surface as the plan read it.
+        observed_digest: String,
+        /// Whether the surface existed when the plan read it.
+        observed_present: bool,
     },
     /// Remove the owned marked section from the instruction surface.
     ///
@@ -1722,14 +1734,14 @@ pub(crate) enum Effect<'a> {
     /// remainder equals what apply re-reads — a surface that never carried the
     /// region, or a detach already done — the effect writes nothing.
     DetachInstruction {
-        /// Target-relative path.
+        /// Target-relative path, checked against the harness declaration.
         path: String,
         /// Full file text after removing the owned section.
         remainder: String,
-        /// Digest of the surface as the plan read it, when recorded.
-        observed_digest: Option<String>,
-        /// Whether the surface existed when the plan read it, when recorded.
-        observed_present: Option<bool>,
+        /// Digest of the surface as the plan read it.
+        observed_digest: String,
+        /// Whether the surface existed when the plan read it.
+        observed_present: bool,
     },
 }
 
@@ -1945,17 +1957,9 @@ fn apply(
             }
         }
         Operation::PatchInstructionRegion => {
-            let path = string_field(&artifact, "instruction_path")?;
+            let path = declared_instruction_path(harness, &artifact)?;
             let text = string_field(&artifact, "instruction_text")?;
-            // Optional members: a plan recorded before they existed still
-            // applies, just without the staleness re-check they feed.
-            let observed_digest = artifact
-                .get("instruction_observed_digest")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let observed_present = artifact
-                .get("instruction_observed_present")
-                .and_then(serde_json::Value::as_bool);
+            let (observed_digest, observed_present) = instruction_observation(&artifact)?;
             Effect::PatchInstruction {
                 path,
                 text,
@@ -1964,15 +1968,9 @@ fn apply(
             }
         }
         Operation::DetachInstructionRegion => {
-            let path = string_field(&artifact, "instruction_path")?;
+            let path = declared_instruction_path(harness, &artifact)?;
             let remainder = string_field(&artifact, "instruction_text")?;
-            let observed_digest = artifact
-                .get("instruction_observed_digest")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let observed_present = artifact
-                .get("instruction_observed_present")
-                .and_then(serde_json::Value::as_bool);
+            let (observed_digest, observed_present) = instruction_observation(&artifact)?;
             Effect::DetachInstruction {
                 path,
                 remainder,
@@ -2232,24 +2230,22 @@ pub(crate) fn perform(
             // expected_target_digest never covered it. Re-check what the plan
             // observed before writing plan-time bytes over a surface a user
             // may have edited since.
-            if let (Some(expected), Some(present)) = (observed_digest, observed_present) {
-                let now_present = destination.exists();
-                let now = crate::instruction_region::read_utf8(&destination).map_err(|error| {
-                    Error::refuse(
-                        WireReason::ProviderUnavailable,
-                        format!(
-                            "cannot re-read instruction surface {}: {error}",
-                            destination.display()
-                        ),
-                    )
-                })?;
-                let now_digest = setup_core::digest::of_bytes(now.as_bytes());
-                if *present != now_present || *expected != now_digest {
-                    return Err(Error::refuse(
-                        WireReason::Stale,
-                        "the instruction surface changed after the plan; no effect was made",
-                    ));
-                }
+            let now_present = destination.exists();
+            let now = crate::instruction_region::read_utf8(&destination).map_err(|error| {
+                Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    format!(
+                        "cannot re-read instruction surface {}: {error}",
+                        destination.display()
+                    ),
+                )
+            })?;
+            let now_digest = setup_core::digest::of_bytes(now.as_bytes());
+            if *observed_present != now_present || *observed_digest != now_digest {
+                return Err(Error::refuse(
+                    WireReason::Stale,
+                    "the instruction surface changed after the plan; no effect was made",
+                ));
             }
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
@@ -2284,30 +2280,20 @@ pub(crate) fn perform(
                     ),
                 )
             })?;
-            if let (Some(expected), Some(present)) = (observed_digest, observed_present) {
-                let now_digest = setup_core::digest::of_bytes(now.as_bytes());
-                if *present != now_present || *expected != now_digest {
-                    return Err(Error::refuse(
-                        WireReason::Stale,
-                        "the instruction surface changed after the plan; no effect was made",
-                    ));
-                }
+            let now_digest = setup_core::digest::of_bytes(now.as_bytes());
+            if *observed_present != now_present || *observed_digest != now_digest {
+                return Err(Error::refuse(
+                    WireReason::Stale,
+                    "the instruction surface changed after the plan; no effect was made",
+                ));
             }
             if *remainder == now {
                 // Never attached, or already detached: nothing of ours there.
                 Ok(previous_written.clone())
-            } else if !now_present {
-                // The plan observed a surface that is gone. Without recorded
-                // fields this is the only staleness signal left; refuse rather
-                // than resurrect bytes under a file the user removed.
-                Err(Error::refuse(
-                    WireReason::Stale,
-                    "the instruction surface changed after the plan; no effect was made",
-                ))
             } else {
                 if remainder.is_empty() {
                     // The file held only the attachment; take the file with it.
-                    fs::remove_file(&destination).map_err(|error| {
+                    lock::remove_file(&destination).map_err(|error| {
                         Error::from(
                             setup_core::Error::new(
                                 setup_core::ReasonCode::StateUnavailable,
@@ -2505,6 +2491,18 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             let backup_ref = BackupRef::parse(reference)?;
             let payload = pool.payload_of(&backup_ref)?;
             let record = chosen_backup(&pool, Some(reference))?;
+            // Saved metadata belongs to the target that was captured; refuse
+            // it before any byte is restored under the wrong root.
+            if let Some(state) = &record.previous_provider_state
+                && (state.canonical_target != resolved.root().to_string_lossy()
+                    || state.provider_id != harness.provider_id
+                    || state.harness_id != harness.harness_id)
+            {
+                return Err(Error::refuse(
+                    WireReason::RecoveryRequired,
+                    "saved provider metadata belongs to another target",
+                ));
+            }
             if let Some(snapshot) = &record.native_snapshot {
                 let (source_root, current) = inspect_native_surface(harness, &resolved, scope)?;
                 if current.base_root != snapshot.base_root
@@ -2516,32 +2514,29 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
                         "native recovery surface differs from this provider",
                     ));
                 }
-                if let Some(state) = &record.previous_provider_state
-                    && (state.canonical_target != resolved.root().to_string_lossy()
-                        || state.provider_id != harness.provider_id
-                        || state.harness_id != harness.harness_id)
-                {
-                    return Err(Error::refuse(
-                        WireReason::RecoveryRequired,
-                        "saved provider metadata belongs to another target",
-                    ));
-                }
                 snapshot.restore(&payload, &source_root)?;
-                if let Some(state) = &record.previous_provider_state {
-                    state.write(resolved.root(), harness.state_file)?;
-                } else if record.previous_written_paths.is_some() {
-                    let state_path = resolved.root().join(harness.state_file);
-                    if state_path.exists() {
-                        fs::remove_file(&state_path).map_err(|error| {
-                            Error::refuse(
-                                WireReason::RecoveryRequired,
-                                format!("cannot restore absent provider metadata: {error}"),
-                            )
-                        })?;
-                    }
-                }
             } else {
                 replace_managed_from(harness, &resolved, &payload, scope, false)?;
+            }
+            // The record the capture replaced goes back with its payload:
+            // rolling the target back to its pre-operation bytes while leaving
+            // the interrupted operation's state file in place would describe
+            // files the target no longer holds. Both capture kinds carry the
+            // same field, so both branches restore it the same way; a record
+            // that captured no metadata means the pre-operation target had
+            // none readable, and restoring that truth means removing the file.
+            if let Some(state) = &record.previous_provider_state {
+                state.write(resolved.root(), harness.state_file)?;
+            } else if record.previous_written_paths.is_some() {
+                let state_path = resolved.root().join(harness.state_file);
+                if state_path.exists() {
+                    lock::remove_file(&state_path).map_err(|error| {
+                        Error::refuse(
+                            WireReason::RecoveryRequired,
+                            format!("cannot restore absent provider metadata: {error}"),
+                        )
+                    })?;
+                }
             }
             let owned = owned_here(harness, &resolved, scope)?;
             Journal::clear(&control)?;
@@ -2697,6 +2692,12 @@ fn files_under(root: &Path, namespace: &str) -> Result<Vec<String>> {
                 .with_source(error)
             })?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            // An in-flight `atomic_write` companion is bookkeeping, not
+            // content: recording one in `written_paths` would have `remove`
+            // and `status` disagree about a file the operation never landed.
+            if lock::is_staging_name(&name) {
+                continue;
+            }
             let relative = format!("{prefix}/{name}");
             if entry.path().is_dir() {
                 pending.push((entry.path(), relative));
@@ -2802,16 +2803,20 @@ fn as_paths(owned: &[String]) -> Vec<&str> {
 /// *here*, which under a scope is that scope's set and otherwise the global
 /// block. This only has to recognise which.
 ///
-/// An unreadable or absent state answers `None`, which is right rather than
-/// merely safe: a target carrying no state of ours is not a target we operated
-/// under any scope.
-fn scope_recorded_at(harness: &Harness, target: &Target) -> Option<provider_v3::TargetScope> {
-    let StateReading::Current(state) =
-        ProviderState::read(target.root(), harness.state_file).ok()?
+/// An absent state answers `None`, which is right rather than merely safe: a
+/// target carrying no state of ours is not a target we operated under any
+/// scope. An unreadable one propagates instead — a record that exists but
+/// cannot be read says *managed under some scope this build cannot name*,
+/// and guessing global from that is the wrong direction to be wrong in.
+fn scope_recorded_at(
+    harness: &Harness,
+    target: &Target,
+) -> Result<Option<provider_v3::TargetScope>> {
+    let StateReading::Current(state) = ProviderState::read(target.root(), harness.state_file)?
     else {
-        return None;
+        return Ok(None);
     };
-    harness
+    Ok(harness
         .scoped_projections
         .iter()
         .find(|scoped| {
@@ -2821,7 +2826,7 @@ fn scope_recorded_at(harness: &Harness, target: &Target) -> Option<provider_v3::
                     .iter()
                     .all(|name| state.native_ownership.iter().any(|owned| owned == name))
         })
-        .map(|scoped| scoped.target_scope)
+        .map(|scoped| scoped.target_scope))
 }
 
 fn remove_managed(
@@ -2890,7 +2895,7 @@ fn capture_inventory(
         }
         Effect::Materialize { setup } => {
             let mut paths = owned.to_vec();
-            overlay_payload_existing(target.root(), &setup.payload, &mut paths);
+            overlay_payload_existing(target.root(), &setup.payload, &mut paths)?;
             paths.sort();
             Ok(paths)
         }
@@ -2906,8 +2911,18 @@ fn existing_under_projection(
     let mut found = Vec::new();
     for namespace in harness.owned_projection(scope) {
         let path = target.root().join(namespace);
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(Error::from(
+                    setup_core::Error::new(
+                        setup_core::ReasonCode::StateUnavailable,
+                        format!("cannot read {}", path.display()),
+                    )
+                    .with_source(error),
+                ));
+            }
         };
         if meta.file_type().is_symlink() || !meta.is_dir() {
             found.push((*namespace).to_owned());
@@ -2943,6 +2958,9 @@ fn files_under_nofollow(root: &Path, namespace: &str) -> Result<Vec<String>> {
                 )
             })?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            if lock::is_staging_name(&name) {
+                continue;
+            }
             let relative = format!("{prefix}/{name}");
             let meta = fs::symlink_metadata(entry.path()).map_err(|error| {
                 Error::from(
@@ -2983,9 +3001,19 @@ pub(crate) fn snapshot_if_unmanaged_backup(
     }
 }
 
-fn overlay_payload_existing(root: &Path, payload: &Path, paths: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(payload) else {
-        return;
+fn overlay_payload_existing(root: &Path, payload: &Path, paths: &mut Vec<String>) -> Result<()> {
+    let entries = match fs::read_dir(payload) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(Error::from(
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot list {}", payload.display()),
+                )
+                .with_source(error),
+            ));
+        }
     };
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -2995,6 +3023,7 @@ fn overlay_payload_existing(root: &Path, payload: &Path, paths: &mut Vec<String>
             paths.push(name);
         }
     }
+    Ok(())
 }
 
 fn json_object_file(relative: &str) -> bool {
@@ -3048,7 +3077,7 @@ fn remember_written_fields(
             )
         })?;
     }
-    let mut map = read_written_fields(&path);
+    let mut map = read_written_fields(&path)?;
     map.insert(relative.to_owned(), keys);
     let bytes = serde_json::to_vec(&map).map_err(|error| {
         Error::from(
@@ -3062,19 +3091,49 @@ fn remember_written_fields(
     lock::atomic_write(&path, &bytes).map_err(Error::from)
 }
 
-fn read_written_fields(path: &Path) -> BTreeMap<String, Vec<String>> {
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// The recorded top-level keys per written JSON file.
+///
+/// An absent ledger is an empty answer: nothing has been merged yet. An
+/// unreadable or unparseable one is a refusal, because mistaking it for empty
+/// would both drop every key already recorded and let a later removal take a
+/// file whole whose shared keys it was meant to preserve.
+fn read_written_fields(path: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => {
+            return Err(Error::from(
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot read {}", path.display()),
+                )
+                .with_source(error),
+            ));
+        }
+    };
+    serde_json::from_slice(&bytes).map_err(|error| {
+        Error::from(
+            setup_core::Error::new(
+                setup_core::ReasonCode::StateUnavailable,
+                format!("cannot parse {}", path.display()),
+            )
+            .with_source(error),
+        )
+    })
 }
 
 fn forget_written_fields(harness: &Harness, target: &Target, relative: &str) {
     let path = written_fields_path(harness, target);
-    let mut map = read_written_fields(&path);
+    // Forgetting is bookkeeping best-effort: an unreadable ledger keeps its
+    // entries, and a stale entry errs toward preserving the person's keys.
+    let Ok(mut map) = read_written_fields(&path) else {
+        return;
+    };
     if map.remove(relative).is_some() {
         if map.is_empty() {
-            let _ = fs::remove_file(&path);
+            let _ = lock::remove_file(&path);
         } else if let Ok(bytes) = serde_json::to_vec(&map) {
             let _ = lock::atomic_write(&path, &bytes);
         }
@@ -3082,7 +3141,7 @@ fn forget_written_fields(harness: &Harness, target: &Target, relative: &str) {
 }
 
 fn forget_all_written_fields(harness: &Harness, target: &Target) {
-    let _ = fs::remove_file(written_fields_path(harness, target));
+    let _ = lock::remove_file(&written_fields_path(harness, target));
 }
 
 fn write_host_file(
@@ -3094,10 +3153,32 @@ fn write_host_file(
 ) -> Result<()> {
     let destination = target.root().join(relative);
     let outgoing = if merge_json && json_object_file(relative) && destination.exists() {
-        fs::read(&destination)
-            .ok()
-            .and_then(|existing| merge_json_objects(&existing, bytes))
-            .unwrap_or_else(|| bytes.to_vec())
+        let existing = fs::read(&destination).map_err(|error| {
+            Error::from(
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot read {}", destination.display()),
+                )
+                .with_source(error),
+            )
+        })?;
+        match merge_json_objects(&existing, bytes) {
+            Some(merged) => merged,
+            // A file that does not read as JSON cannot have keys preserved out
+            // of it; overwriting it whole would take the person's bytes, so it
+            // refuses rather than guesses. A valid non-object replaces by
+            // contract, the same as a non-object bundle member does.
+            None if serde_json::from_slice::<serde_json::Value>(&existing).is_err() => {
+                return Err(Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    format!(
+                        "{} does not parse as JSON; refused rather than overwriting it whole",
+                        destination.display()
+                    ),
+                ));
+            }
+            None => bytes.to_vec(),
+        }
     } else {
         bytes.to_vec()
     };
@@ -3130,6 +3211,11 @@ fn write_host_file(
         remember_written_fields(harness, target, relative, keys)?;
     }
     if let Some(parent) = destination.parent() {
+        // `create_dir_all` follows links it meets: a namespace directory
+        // swapped for a link since the clear would carry this write out of
+        // the target. The rename in `atomic_write` already makes the file
+        // itself safe; the way down is checked here.
+        lock::refuse_linked_descent(target.root(), parent).map_err(Error::from)?;
         fs::create_dir_all(parent).map_err(|error| {
             Error::from(
                 setup_core::Error::new(
@@ -3152,12 +3238,12 @@ fn withdraw_written(
     let destination = target.root().join(relative);
     if preserve_json_keys && json_object_file(relative) {
         let path = written_fields_path(harness, target);
-        if let Some(keys) = read_written_fields(&path).get(relative).cloned() {
+        if let Some(keys) = read_written_fields(&path)?.get(relative).cloned() {
             if keys.is_empty() {
                 forget_written_fields(harness, target, relative);
                 return remove_keeping(&destination, target.root(), harness.never_touch);
             }
-            if strip_json_keys(&destination, &keys)? {
+            if strip_json_keys(&destination, target.root(), &keys)? {
                 forget_written_fields(harness, target, relative);
                 return Ok(());
             }
@@ -3198,18 +3284,37 @@ fn read_instruction_text(path: &Path) -> Result<String> {
     Ok(existing)
 }
 
-fn strip_json_keys(path: &Path, keys: &[String]) -> Result<bool> {
-    let Ok(bytes) = fs::read(path) else {
-        return Ok(false);
+fn strip_json_keys(path: &Path, root: &Path, keys: &[String]) -> Result<bool> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(Error::from(
+                setup_core::Error::new(
+                    setup_core::ReasonCode::StateUnavailable,
+                    format!("cannot read {}", path.display()),
+                )
+                .with_source(error),
+            ));
+        }
     };
     let Ok(serde_json::Value::Object(mut object)) = serde_json::from_slice(&bytes) else {
-        return Ok(false);
+        // The keys to keep live inside the file, so one that no longer parses
+        // cannot be stripped safely. Falling back to removal would take the
+        // person's keys with it.
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "{} does not parse as a JSON object; refused rather than removing it whole",
+                path.display()
+            ),
+        ));
     };
     for key in keys {
         object.remove(key);
     }
     if object.is_empty() {
-        remove_path(path)?;
+        remove_path(path, root)?;
     } else {
         let encoded = serde_json::to_vec(&serde_json::Value::Object(object)).map_err(|error| {
             Error::from(
@@ -3263,7 +3368,7 @@ fn remove_keeping_files(
 fn remove_keeping(path: &Path, root: &Path, spared: &[&str]) -> Result<()> {
     let keep: Vec<PathBuf> = spared.iter().map(|name| root.join(name)).collect();
     if !keep.iter().any(|held| held.starts_with(path)) {
-        return remove_path(path);
+        return remove_path(path, root);
     }
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -3273,7 +3378,7 @@ fn remove_keeping(path: &Path, root: &Path, spared: &[&str]) -> Result<()> {
         return if keep.iter().any(|held| held == path) {
             Ok(())
         } else {
-            remove_path(path)
+            remove_path(path, root)
         };
     }
     let Ok(entries) = fs::read_dir(path) else {
@@ -3283,18 +3388,29 @@ fn remove_keeping(path: &Path, root: &Path, spared: &[&str]) -> Result<()> {
         remove_keeping(&entry.path(), root, spared)?;
     }
     // Gone when the last thing in it went; kept when something is still held.
-    let _ = fs::remove_dir(path);
+    // An ancestor swapped for a link would carry this unlink outside `root`;
+    // the directory itself is known real by the `is_dir` above.
+    if let Some(parent) = path.parent() {
+        lock::refuse_linked_descent(root, parent).map_err(Error::from)?;
+    }
+    let _ = lock::remove_dir(path);
     Ok(())
 }
 
-fn remove_path(path: &Path) -> Result<()> {
+fn remove_path(path: &Path, root: &Path) -> Result<()> {
+    // Unlinking through an ancestor link deletes somebody else's file. The
+    // final component is exempt on purpose: unlinking a symlink removes the
+    // link, never its target.
+    if let Some(parent) = path.parent() {
+        lock::refuse_linked_descent(root, parent).map_err(Error::from)?;
+    }
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
     };
     let outcome = if metadata.is_dir() {
-        fs::remove_dir_all(path)
+        lock::remove_dir_all(path)
     } else {
-        fs::remove_file(path)
+        lock::remove_file(path)
     };
     outcome.map_err(|error| {
         Error::from(
@@ -3566,6 +3682,57 @@ fn string_field(artifact: &serde_json::Value, name: &str) -> Result<String> {
                 format!("the plan artifact has no {name}"),
             )
         })
+}
+
+/// The instruction path a plan names must be the surface this harness
+/// declares.
+///
+/// The field is joined to the resolved target root at apply time, so a plan
+/// that names anywhere else — a sibling product's file, an absolute path, a
+/// traversal — is a malformed artifact rather than a destination.
+fn declared_instruction_path(harness: &Harness, artifact: &serde_json::Value) -> Result<String> {
+    let path = string_field(artifact, "instruction_path")?;
+    let Some(declared) = harness.instruction_region else {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            format!(
+                "{} does not declare a user-global instruction surface",
+                harness.provider_id
+            ),
+        ));
+    };
+    if path != declared {
+        return Err(Error::refuse(
+            WireReason::ProviderUnavailable,
+            format!(
+                "the plan artifact names instruction path {path:?}, not the \
+                 {declared:?} this provider declares"
+            ),
+        ));
+    }
+    Ok(path)
+}
+
+/// The staleness observation a patch or detach plan must carry.
+///
+/// These operations act outside the owned set, so `expected_target_digest`
+/// never covered the surface and the recorded observation is the only
+/// staleness check there is. A plan without it is a malformed artifact, not a
+/// plan that may skip the re-check — `present: false` with a digest of the
+/// empty read is how a genuinely absent surface is recorded, which keeps an
+/// absent field and an absent file two different statements.
+fn instruction_observation(artifact: &serde_json::Value) -> Result<(String, bool)> {
+    let digest = string_field(artifact, "instruction_observed_digest")?;
+    let present = artifact
+        .get("instruction_observed_present")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                "the plan artifact has no instruction_observed_present",
+            )
+        })?;
+    Ok((digest, present))
 }
 
 fn planned_software_artifacts(
@@ -6269,6 +6436,192 @@ mod tests {
         }
     }
 
+    /// The same rewind the native path performs, through a write-only
+    /// capture: the saved `previous_provider_state` must come back with the
+    /// payload, or recovery reports a target whose record describes files it
+    /// no longer holds.
+    #[test]
+    fn non_native_recovery_rewinds_the_state_written_before_journal_commit() {
+        let target = seeded("recover-written-managed");
+        // A backup then a restore is how an unmanaged target becomes managed
+        // here: the restore materialises the slot's payload and records the
+        // files it wrote, so a later capture has an inventory to hold.
+        plan_then_apply(&target, "backup", &[]);
+        plan_then_apply(&target, "restore", &[]);
+        let StateReading::Current(mut state) =
+            ProviderState::read(&target, TEST.state_file).unwrap()
+        else {
+            panic!("state missing");
+        };
+        state.setup_version = Some("1.7".to_owned());
+        state.component_refs = vec!["component_original@1.0".to_owned()];
+        state.write(&target, TEST.state_file).unwrap();
+        let state_path = target.join(TEST.state_file);
+        let original_state = fs::read(&state_path).unwrap();
+        let original = fs::read(target.join("AGENTS.md")).unwrap();
+
+        let saved = plan_then_apply(&target, "backup", &[]);
+        assert_eq!(saved["state"], "verified", "{saved}");
+
+        // An interruption after the capture, mid-write: the file moved and
+        // the record moved with it.
+        let StateReading::Current(mut drifted) =
+            ProviderState::read(&target, TEST.state_file).unwrap()
+        else {
+            panic!("state missing");
+        };
+        drifted.setup_version = Some("9.9".to_owned());
+        drifted.written_paths = vec!["skills/unrecorded".to_owned()];
+        drifted.write(&target, TEST.state_file).unwrap();
+        fs::write(target.join("AGENTS.md"), b"half-written").unwrap();
+        fs::write(target.join("skills/unrecorded"), b"partial new file").unwrap();
+        Journal {
+            schema_version: JOURNAL_SCHEMA,
+            phase: Phase::Prepared,
+            operation_id: drifted.operation_id,
+            operation: "backup".to_owned(),
+            plan_digest: saved["plan_digest"].as_str().unwrap().to_owned(),
+            target_precondition_digest: saved["expected_target_digest"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            backup_ref: Some(saved["backup_ref"].as_str().unwrap().to_owned()),
+            target_scope: None,
+        }
+        .publish_prepared(&target.join(TEST.control_directory))
+        .unwrap();
+
+        let recovered = run(args("recover-operation", &target, &[]));
+        assert_eq!(recovered["state"], "verified");
+        assert_eq!(
+            fs::read(&state_path).unwrap(),
+            original_state,
+            "the pre-operation provider record did not come back with its payload"
+        );
+        assert_eq!(fs::read(target.join("AGENTS.md")).unwrap(), original);
+        assert!(!target.join("skills/unrecorded").exists());
+    }
+
+    /// The mirror of the rewind above: a capture taken where no provider
+    /// record existed records that absence, and recovery must remove the
+    /// record the operation went on to write rather than leave it describing
+    /// files the restore just rewound.
+    #[test]
+    fn non_native_recovery_removes_a_state_the_pre_operation_target_never_had() {
+        let target = seeded("recover-written-unmanaged");
+        // This capture is the one the interrupted operation names: taken
+        // before any record existed, so its `previous_provider_state` is
+        // absent and the pre-operation truth is *no state file*.
+        let saved = plan_then_apply(&target, "backup", &[]);
+        assert_eq!(saved["state"], "verified", "{saved}");
+        let state_path = target.join(TEST.state_file);
+        assert!(state_path.exists(), "a backup still writes provider state");
+
+        Journal {
+            schema_version: JOURNAL_SCHEMA,
+            phase: Phase::Prepared,
+            operation_id: "op_interrupted".to_owned(),
+            operation: "backup".to_owned(),
+            plan_digest: saved["plan_digest"].as_str().unwrap().to_owned(),
+            target_precondition_digest: saved["expected_target_digest"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            backup_ref: Some(saved["backup_ref"].as_str().unwrap().to_owned()),
+            target_scope: None,
+        }
+        .publish_prepared(&target.join(TEST.control_directory))
+        .unwrap();
+
+        let recovered = run(args("recover-operation", &target, &[]));
+        assert_eq!(recovered["state"], "verified");
+        assert!(
+            !state_path.exists(),
+            "a record the pre-operation target never had survived recovery"
+        );
+    }
+
+    /// A plan is a question. Observing a fresh target must answer it without
+    /// minting the control directory the question was about -- the consumer
+    /// asks whether the target is empty, and asking used to make it not so.
+    #[test]
+    fn planning_a_fresh_target_creates_nothing_in_it() {
+        let base = scratch("plan-reads-only");
+        let target = base.join("target");
+        let planned = run(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "backup",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(planned["state"], "planned", "{planned}");
+        assert_eq!(
+            fs::read_dir(&target).unwrap().count(),
+            0,
+            "asking left a directory behind"
+        );
+    }
+
+    /// `.AGENTS.md.staging` is what an interrupted `atomic_write` leaves
+    /// behind. It is bookkeeping the journal already owns, not content, so
+    /// neither the identity nor the recorded inventory may count it.
+    #[test]
+    fn an_orphaned_staging_companion_does_not_move_the_target_identity() {
+        let target = seeded("staging-invisible");
+        let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        fs::write(target.join(".AGENTS.md.staging"), b"half a write").unwrap();
+        fs::write(target.join("skills").join(".a.md.staging"), b"half a write").unwrap();
+        let after = run(args("status", &target, &[]))["target_identity_digest"].clone();
+        assert_eq!(
+            before, after,
+            "an interrupted write's leftover moved the identity it was measured under"
+        );
+
+        plan_then_apply(&target, "backup", &[]);
+        let StateReading::Current(state) = ProviderState::read(&target, TEST.state_file).unwrap()
+        else {
+            panic!("state missing");
+        };
+        assert!(
+            state
+                .written_paths
+                .iter()
+                .all(|path| !path.contains(".staging")),
+            "the capture recorded an in-flight write: {:?}",
+            state.written_paths
+        );
+    }
+
+    /// Deleting `skills/a.md` where `skills` was swapped for a link would
+    /// unlink through it and take somebody else's file. The clear must
+    /// refuse at the ancestor rather than follow it.
+    #[cfg(unix)]
+    #[test]
+    fn withdraw_refuses_to_delete_through_a_swapped_directory_link() {
+        let target = seeded("linked-withdraw");
+        plan_then_apply(&target, "backup", &[]);
+        plan_then_apply(&target, "restore", &[]);
+
+        let outside = target.join("..").join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("a.md"), b"not ours").unwrap();
+        fs::remove_dir_all(target.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, target.join("skills")).unwrap();
+
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let error = withdraw_written(&TEST, &resolved, "skills/a.md", false).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert_eq!(fs::read(outside.join("a.md")).unwrap(), b"not ours");
+    }
+
     #[test]
     fn recovery_with_no_journal_says_so_rather_than_inventing_work() {
         let target = seeded("recover-clean");
@@ -8936,6 +9289,208 @@ mod tests {
                 "a refused apply still wrote the surface"
             );
         }
+    }
+
+    /// Plan an operation, mutate the artifact, and apply it under the digest
+    /// of the mutated bytes. A refused apply must prove the artifact itself —
+    /// not its signature — is what the kernel checks.
+    fn plan_mutate_apply(
+        target: &Path,
+        operation: &str,
+        name: &str,
+        mutate: impl Fn(&mut serde_json::Value),
+    ) -> provider_v3::Error {
+        let mut arguments = vec![
+            "--operation",
+            operation,
+            "--provider-release-digest",
+            RELEASE,
+            "--operation-id",
+            "operation_01TEST",
+            "--expires-at",
+            far_future(),
+        ];
+        if operation == "patch_instruction_region" {
+            arguments.extend(["--instruction-section", INSTRUCTION_SECTION]);
+        }
+        let planned = run(args("plan-operation", target, &arguments));
+        assert_eq!(planned["state"], "planned", "plan refused: {planned}");
+        let mut artifact = planned["plan"].clone();
+        mutate(&mut artifact);
+        let plan_path = target.join("..").join(format!("plan-{name}.json"));
+        fs::write(
+            &plan_path,
+            setup_core::canonical::to_canonical_bytes(&artifact).unwrap(),
+        )
+        .unwrap();
+        let digest =
+            setup_core::digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &artifact)
+                .unwrap();
+        refuse(args(
+            "apply-operation",
+            target,
+            &[
+                "--plan",
+                &plan_path.to_string_lossy(),
+                "--plan-digest",
+                &digest,
+                "--provider-release-digest",
+                RELEASE,
+            ],
+        ))
+    }
+
+    /// The path a plan names is joined to the target at apply; a plan naming
+    /// anywhere but the declared surface is refused before it touches a byte.
+    #[test]
+    fn apply_refuses_a_plan_that_names_another_instruction_path() {
+        for operation in ["patch_instruction_region", "detach_instruction_region"] {
+            let target = seeded("foreign-instruction-path");
+            let error = plan_mutate_apply(&target, operation, "foreign", |artifact| {
+                artifact["instruction_path"] = serde_json::json!("unrelated.txt");
+            });
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::ProviderUnavailable),
+                "{operation} accepted a foreign instruction path: {error}"
+            );
+            assert_eq!(
+                fs::read_to_string(target.join("unrelated.txt")).unwrap(),
+                "keep me",
+                "{operation} wrote a file outside the declared surface"
+            );
+        }
+    }
+
+    /// The observation fields are the only staleness check on a surface the
+    /// owned digest never covered; a plan that omits them is refused rather
+    /// than applied blind.
+    #[test]
+    fn apply_refuses_a_plan_without_an_instruction_observation() {
+        for operation in ["patch_instruction_region", "detach_instruction_region"] {
+            for dropped in [
+                "instruction_observed_digest",
+                "instruction_observed_present",
+            ] {
+                let target = seeded("unobserved-instruction");
+                let error = plan_mutate_apply(&target, operation, "unobserved", |artifact| {
+                    artifact.as_object_mut().unwrap().remove(dropped);
+                });
+                assert_eq!(
+                    error.reason(),
+                    Some(WireReason::ProviderUnavailable),
+                    "{operation} applied with {dropped} missing: {error}"
+                );
+            }
+        }
+        // A plan that records an absent surface truthfully still applies: the
+        // fields carry the observation, and `present: false` is a reading,
+        // not a refusal.
+        let target = seeded("observed-absent-instruction");
+        fs::remove_file(target.join("AGENTS.md")).unwrap();
+        let detached = plan_then_apply(&target, "detach_instruction_region", &[]);
+        assert_eq!(detached["state"], "verified", "{detached}");
+        assert!(!target.join("AGENTS.md").exists());
+    }
+
+    /// The written-fields ledger decides which host keys a removal preserves;
+    /// a corrupt one read as empty would remove whole files it was meant to
+    /// strip keys from.
+    #[test]
+    fn withdraw_refuses_a_corrupt_written_fields_ledger() {
+        let target = seeded("corrupt-fields-ledger");
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let ledger = written_fields_path(&TEST, &resolved);
+        fs::create_dir_all(ledger.parent().unwrap()).unwrap();
+        fs::write(&ledger, b"{ not json").unwrap();
+        let error = withdraw_written(&TEST, &resolved, "settings.json", true).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+        assert_eq!(
+            fs::read(target.join("settings.json")).unwrap(),
+            b"{\"model\":\"first\"}",
+            "a refused withdraw still touched the host file"
+        );
+    }
+
+    /// A recorded JSON file that no longer parses cannot have its shared keys
+    /// stripped; the alternative was removing it whole, keys and all.
+    #[test]
+    fn withdraw_refuses_a_corrupt_json_host_file_instead_of_removing_it() {
+        let target = seeded("corrupt-json-host");
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let ledger = written_fields_path(&TEST, &resolved);
+        fs::create_dir_all(ledger.parent().unwrap()).unwrap();
+        fs::write(
+            &ledger,
+            serde_json::to_vec(&serde_json::json!({"settings.json": ["model"]})).unwrap(),
+        )
+        .unwrap();
+        fs::write(target.join("settings.json"), b"{ not json").unwrap();
+        let error = withdraw_written(&TEST, &resolved, "settings.json", true).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+        assert_eq!(
+            fs::read(target.join("settings.json")).unwrap(),
+            b"{ not json"
+        );
+    }
+
+    /// The merge path preserves host keys; an unparseable host file cannot be
+    /// merged into, so the write refuses rather than replacing it whole.
+    #[test]
+    fn write_refuses_to_merge_over_a_corrupt_json_host_file() {
+        let target = seeded("corrupt-json-merge");
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        fs::write(target.join("settings.json"), b"{ not json").unwrap();
+        let error = write_host_file(
+            &TEST,
+            &resolved,
+            "settings.json",
+            br#"{"ours": true}"#,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+        assert_eq!(
+            fs::read(target.join("settings.json")).unwrap(),
+            b"{ not json"
+        );
+    }
+
+    /// A journal that cannot be read is evidence of an interrupted mutation,
+    /// not the absence of one; `status` must not report it as quiet.
+    #[test]
+    fn status_refuses_a_corrupt_journal_instead_of_reporting_no_operation() {
+        let target = seeded("corrupt-journal-status");
+        let control = target.join(TEST.control_directory);
+        fs::create_dir_all(&control).unwrap();
+        fs::write(Journal::path(&control), b"{ not json").unwrap();
+        let error = refuse(args("status", &target, &[]));
+        assert_eq!(error.reason(), Some(WireReason::RecoveryRequired));
+    }
+
+    /// The record says which scope a target is managed under; one that cannot
+    /// be read is not proof the target is global, and a global plan measured
+    /// against a scoped target is exactly the operation the check exists to
+    /// stop.
+    #[test]
+    fn plan_refuses_a_corrupt_state_instead_of_measuring_globally() {
+        let target = seeded("corrupt-state-scope");
+        fs::write(target.join(TEST.state_file), b"{ not json").unwrap();
+        let error = refuse(args(
+            "plan-operation",
+            &target,
+            &[
+                "--operation",
+                "remove",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_01TEST",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
     }
 
     #[test]

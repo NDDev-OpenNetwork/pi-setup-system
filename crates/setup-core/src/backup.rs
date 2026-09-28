@@ -54,8 +54,21 @@ pub const NATIVE_SLOT_SCHEMA: u32 = 2;
 ///
 /// The reference is meaningful only against the target it was captured from;
 /// it is never a global identifier.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct BackupRef(String);
+
+/// A deserialized reference goes through [`BackupRef::parse`]: the value names
+/// a directory under the pool, so a persisted record may not mint one this
+/// kernel would refuse.
+impl<'de> Deserialize<'de> for BackupRef {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
 
 impl BackupRef {
     /// Build a reference from a sequence number.
@@ -496,14 +509,10 @@ impl Pool {
             return Ok(false);
         }
         // The reason travels with the hold. Without it a caller reading a full
-        // pool knows what to release and not what releasing it would cost.
-        fs::write(slot.join(SLOT_HELD_NAME), reason.as_bytes()).map_err(|source| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!("cannot hold {}", slot.display()),
-            )
-            .with_source(source)
-        })?;
+        // pool knows what to release and not what releasing it would cost. The
+        // write is atomic so a crash cannot leave an empty marker that reads as
+        // "held for no reason".
+        lock::atomic_write(&slot.join(SLOT_HELD_NAME), reason.as_bytes())?;
         Ok(true)
     }
 
@@ -519,7 +528,7 @@ impl Pool {
     /// Returns [`ReasonCode::StateUnavailable`] if the marker cannot be removed.
     pub fn release(&self, backup_ref: &BackupRef) -> Result<bool> {
         let marker = self.root.join(backup_ref.as_str()).join(SLOT_HELD_NAME);
-        match fs::remove_file(&marker) {
+        match lock::remove_file(&marker) {
             Ok(()) => Ok(true),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(source) => Err(Error::new(
@@ -596,14 +605,17 @@ impl Pool {
         // Counting them would make a hold quietly shorten the rolling window
         // instead of protecting one capture, and the caller asked for the
         // second thing.
-        let records: Vec<SlotRecord> = self
-            .list()?
-            .into_iter()
-            .filter(|record| !self.is_held(&record.backup_ref).unwrap_or(false))
-            .collect();
+        let mut records = Vec::new();
+        for record in self.list()? {
+            // An unreadable hold marker must not read as "not held": pruning
+            // past it would delete the snapshot somebody asked to keep.
+            if !self.is_held(&record.backup_ref)? {
+                records.push(record);
+            }
+        }
         for record in records.into_iter().skip(self.capacity) {
             let slot = self.root.join(record.backup_ref.as_str());
-            fs::remove_dir_all(&slot).map_err(|source| {
+            lock::remove_dir_all(&slot).map_err(|source| {
                 Error::new(
                     ReasonCode::StateUnavailable,
                     format!("cannot prune {}", slot.display()),
@@ -685,6 +697,19 @@ fn read_record(slot: &Path) -> Result<Option<SlotRecord>> {
                 record.schema_version
             ),
         ));
+    }
+    // Path members were written by an older self and are joined to the target
+    // at recovery time; a record cannot mint members this kernel would refuse.
+    if let Some(paths) = &record.previous_written_paths {
+        for member in paths {
+            crate::native_snapshot::validate_path(member)?;
+        }
+    }
+    if let Some(state) = &record.previous_provider_state {
+        state.validate()?;
+    }
+    if let Some(snapshot) = &record.native_snapshot {
+        snapshot.validate()?;
     }
     Ok(Some(record))
 }
@@ -808,6 +833,7 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
             format!("{} is a symbolic link and is not captured", from.display()),
         ));
     }
+    refuse_linked_destination(to)?;
     fs::copy(from, to).map_err(|error| {
         Error::new(
             ReasonCode::StateUnavailable,
@@ -818,12 +844,39 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Refuse to place bytes at `to` when a symbolic link already sits there.
+///
+/// `fs::copy` and `fs::create_dir_all` both follow the final component of the
+/// path they are given, so a link swapped in at the destination between the
+/// clear and the copy would carry the payload out of the tree it was being
+/// restored into. The question is asked of the destination exactly as it is
+/// asked of the source.
+fn refuse_linked_destination(to: &Path) -> Result<()> {
+    match fs::symlink_metadata(to) {
+        Ok(metadata) if metadata.is_symlink() => Err(Error::new(
+            ReasonCode::IntegrityMismatch,
+            format!(
+                "{} is a symbolic link and is not written through",
+                to.display()
+            ),
+        )),
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::new(
+            ReasonCode::StateUnavailable,
+            format!("cannot read {}", to.display()),
+        )
+        .with_source(source)),
+    }
+}
+
 fn copy_inner(
     source: &Path,
     destination: &Path,
     excluded_top_level: &[&str],
     at_root: bool,
 ) -> Result<()> {
+    refuse_linked_destination(destination)?;
     fs::create_dir_all(destination).map_err(|error| {
         Error::new(
             ReasonCode::StateUnavailable,
@@ -870,6 +923,7 @@ fn copy_inner(
                 format!("{} is a symbolic link and is not captured", from.display()),
             ));
         }
+        refuse_linked_destination(&to)?;
         if metadata.is_dir() {
             copy_inner(&from, &to, excluded_top_level, false)?;
         } else {
@@ -936,6 +990,45 @@ mod tests {
         );
     }
 
+    /// A link swapped in where the copy would land cannot carry the payload
+    /// out of the destination tree: `fs::copy` follows the final component,
+    /// and the destination is checked the way the source already is.
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_refuses_a_destination_swapped_for_a_link() {
+        let root = scratch("linked-destination");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a.md"), b"payload").unwrap();
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("a.md"), b"not ours").unwrap();
+        let destination = root.join("destination");
+        std::os::unix::fs::symlink(&outside, &destination).unwrap();
+
+        let error = copy_tree(&source, &destination, &[]).unwrap_err();
+        assert_eq!(error.reason(), ReasonCode::IntegrityMismatch);
+        assert_eq!(fs::read(outside.join("a.md")).unwrap(), b"not ours");
+    }
+
+    /// The same refusal one level down: a *member* swapped for a link, so
+    /// the copy's destination is a file inside a real directory.
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_refuses_a_member_swapped_for_a_link() {
+        let root = scratch("linked-member");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a.md"), b"payload").unwrap();
+        let destination = root.join("destination");
+        fs::create_dir_all(&destination).unwrap();
+        std::os::unix::fs::symlink(root.join("outside.md"), destination.join("a.md")).unwrap();
+
+        let error = copy_tree(&source, &destination, &[]).unwrap_err();
+        assert_eq!(error.reason(), ReasonCode::IntegrityMismatch);
+        assert!(!root.join("outside.md").exists());
+    }
+
     #[test]
     fn a_slot_written_before_the_definition_digest_existed_still_reads() {
         // The field was added without a schema bump, so a slot captured by an
@@ -965,6 +1058,133 @@ mod tests {
             assert!(BackupRef::parse(hostile).is_err(), "accepted {hostile:?}");
         }
         assert!(BackupRef::parse("slot-000000000001").is_ok());
+    }
+
+    /// Persisted records go through `parse` too: deserialization is not a side
+    /// door that mints references the parser would refuse.
+    #[test]
+    fn a_recorded_reference_that_could_escape_the_pool_is_refused_on_read() {
+        let root = scratch("record-escape-ref");
+        let slot = root.join("control/backups/slot-000000000001");
+        fs::create_dir_all(&slot).unwrap();
+        let marker = serde_json::json!({
+            "schema_version": SLOT_SCHEMA,
+            "backup_ref": "../escape",
+            "operation": "install",
+            "operation_id": "op_test",
+            "target_identity_digest": "sha256:target",
+            "setup_id": "full-auto",
+        });
+        fs::write(
+            slot.join(SLOT_MARKER_NAME),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let pool = Pool::observe(&root.join("control"), 3).unwrap();
+        let error = pool.list().unwrap_err();
+        assert_eq!(error.reason(), ReasonCode::StateUnavailable);
+    }
+
+    /// Path members a record carries are joined to the target at recovery; a
+    /// member that could escape it refuses the record, not just the member.
+    #[test]
+    fn a_record_listing_a_path_that_escapes_the_target_is_refused_on_read() {
+        let root = scratch("record-escape-path");
+        let slot = root.join("control/backups/slot-000000000001");
+        fs::create_dir_all(&slot).unwrap();
+        let escaped_state = serde_json::to_value(&crate::stamp::ProviderState {
+            state_schema: crate::stamp::STATE_SCHEMA,
+            protocol_version: 3,
+            provider_id: "test".to_owned(),
+            provider_version: "0.0.0".to_owned(),
+            provider_build_digest: "sha256:build".to_owned(),
+            provider_release_digest: None,
+            harness_id: "test".to_owned(),
+            canonical_target: "/target".to_owned(),
+            target_identity_digest: "sha256:after".to_owned(),
+            setup_stable_id: None,
+            setup_version: None,
+            setup_version_passport_digest: None,
+            setup_definition_digest: None,
+            component_refs: Vec::new(),
+            bundle_format: None,
+            bundle_digest: None,
+            artifact_digest: None,
+            projection_profile_digest: None,
+            provider_plan_digest: None,
+            operation_id: "op_test".to_owned(),
+            target_precondition_digest: "sha256:target".to_owned(),
+            native_ownership: Vec::new(),
+            written_paths: vec!["../escape".to_owned()],
+            backup_ref: None,
+            previous_verified_identity: None,
+            drift_state: crate::stamp::DriftState::Unknown,
+        })
+        .unwrap();
+        for (field, hostile) in [
+            ("previous_written_paths", serde_json::json!(["../escape"])),
+            ("previous_provider_state", escaped_state.clone()),
+        ] {
+            let mut marker = serde_json::json!({
+                "schema_version": NATIVE_SLOT_SCHEMA,
+                "backup_ref": "slot-000000000001",
+                "operation": "install",
+                "operation_id": "op_test",
+                "target_identity_digest": "sha256:target",
+                "native_snapshot": {
+                    "roots": ["skills"],
+                    "excluded": [],
+                    "entries": {}
+                },
+            });
+            marker[field] = hostile;
+            fs::write(
+                slot.join(SLOT_MARKER_NAME),
+                serde_json::to_vec(&marker).unwrap(),
+            )
+            .unwrap();
+            let pool = Pool::observe(&root.join("control"), 3).unwrap();
+            let error = pool.list().unwrap_err();
+            assert_eq!(
+                error.reason(),
+                ReasonCode::IntegrityMismatch,
+                "{field} carried an escaping path"
+            );
+        }
+    }
+
+    /// A snapshot inside a record is inspected data on write, but plain JSON on
+    /// read; its members get the same gate the writer applied.
+    #[test]
+    fn a_recorded_native_snapshot_with_an_escaping_member_is_refused() {
+        let root = scratch("record-escape-snapshot");
+        let slot = root.join("control/backups/slot-000000000001");
+        fs::create_dir_all(&slot).unwrap();
+        for hostile in [
+            serde_json::json!({"roots": ["../escape"], "excluded": [], "entries": {}}),
+            serde_json::json!({"roots": ["skills"], "excluded": ["../escape"], "entries": {}}),
+            serde_json::json!({"roots": ["skills"], "excluded": [], "entries": {"../escape": {"digest": null, "permissions": 420}}}),
+        ] {
+            let marker = serde_json::json!({
+                "schema_version": NATIVE_SLOT_SCHEMA,
+                "backup_ref": "slot-000000000001",
+                "operation": "install",
+                "operation_id": "op_test",
+                "target_identity_digest": "sha256:target",
+                "native_snapshot": hostile,
+            });
+            fs::write(
+                slot.join(SLOT_MARKER_NAME),
+                serde_json::to_vec(&marker).unwrap(),
+            )
+            .unwrap();
+            let pool = Pool::observe(&root.join("control"), 3).unwrap();
+            assert_eq!(
+                pool.list().unwrap_err().reason(),
+                ReasonCode::IntegrityMismatch,
+                "accepted {hostile}"
+            );
+        }
     }
 
     #[test]

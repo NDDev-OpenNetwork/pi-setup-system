@@ -37,7 +37,11 @@ pub fn extract(existing: &str) -> Option<&str> {
         return None;
     }
     let mut end_at = end + END.len();
-    if existing[end_at..].starts_with('\n') {
+    // The line the end marker closes may end either way; a `\r\n` left behind
+    // detaches as a stray blank line.
+    if existing[end_at..].starts_with("\r\n") {
+        end_at += 2;
+    } else if existing[end_at..].starts_with('\n') {
         end_at += 1;
     }
     Some(&existing[begin..end_at])
@@ -73,6 +77,12 @@ pub fn splice(existing: &str, section: &str) -> String {
 /// An empty file takes `section` whole so bytes the consumer placed *before*
 /// the markers (Cursor `alwaysApply` YAML) survive the first write. Later
 /// calls splice only the marked region.
+///
+/// That asymmetry is the contract, not an oversight: the frontmatter is
+/// *initialize-once*. It is the consumer's attachment metadata, written on
+/// first attach, and a later `section` carrying a different fence does not
+/// rewrite it -- the person may have edited `alwaysApply`, and the fence is
+/// theirs from then on exactly like the bytes outside the markers are.
 #[must_use]
 pub fn patch(existing: &str, section: &str) -> (String, bool) {
     let desired = extract(section).unwrap_or(section);
@@ -143,15 +153,43 @@ pub fn keep_region_on_withdraw(existing: &str) -> Option<String> {
 /// the region, and withdraw must still drop that body.
 fn owned_prefix(existing: &str) -> &str {
     const OPEN: &str = "---\n";
-    const CLOSE: &str = "\n---\n";
-    if !existing.starts_with(OPEN) {
-        return "";
-    }
-    let Some(rel) = existing[OPEN.len()..].find(CLOSE) else {
+    const OPEN_CRLF: &str = "---\r\n";
+    // The fence is a line that is exactly `---`, whichever line ending the
+    // file was saved with. A CRLF-saved file makes the fence the consumer
+    // wrote unreadable as ours without this, and detach would leave it
+    // orphaned.
+    let body_at = if let Some(rest) = existing.strip_prefix(OPEN_CRLF) {
+        existing.len() - rest.len()
+    } else if existing.starts_with(OPEN) {
+        OPEN.len()
+    } else {
         return "";
     };
-    let mut end = OPEN.len() + rel + CLOSE.len();
-    if existing[end..].starts_with('\n') {
+    let mut search = body_at;
+    let end = loop {
+        let Some(found) = existing[search..].find("---") else {
+            return "";
+        };
+        let start = search + found;
+        if !existing[..start].ends_with('\n') {
+            search = start + 3;
+            continue;
+        }
+        let after = &existing[start + 3..];
+        let end = if let Some(rest) = after.strip_prefix("\r\n") {
+            start + 3 + (after.len() - rest.len())
+        } else if let Some(rest) = after.strip_prefix('\n') {
+            start + 3 + (after.len() - rest.len())
+        } else {
+            search = start + 3;
+            continue;
+        };
+        break end;
+    };
+    let mut end = end;
+    if existing[end..].starts_with("\r\n") {
+        end += 2;
+    } else if existing[end..].starts_with('\n') {
         end += 1;
     }
     if extract(&existing[end..]).is_none() && !existing[end..].contains(BEGIN) {
@@ -255,6 +293,27 @@ mod tests {
         assert_eq!(remove_region(""), None);
         // A file holding only the attachment detaches to nothing.
         assert_eq!(remove_region(SECTION).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn crlf_saved_files_detach_without_a_stray_blank_line() {
+        // The end marker's `\r\n` belongs to the region: leaving it behind
+        // detaches as an empty line the user never wrote.
+        let existing = "keep-me\r\n:::begin-ai-stp\r\nhello\r\n:::end-ai-stp\r\ntrailer\r\n";
+        assert_eq!(
+            remove_region(existing).as_deref(),
+            Some("keep-me\r\ntrailer\r\n")
+        );
+    }
+
+    #[test]
+    fn crlf_saved_frontmatter_is_still_ours() {
+        // initialize wrote the fence and the file was later saved CRLF; a
+        // fence the reader no longer recognises would be orphaned on detach.
+        let existing =
+            "---\r\nalwaysApply: true\r\n---\r\n\r\n:::begin-ai-stp\r\nhello\r\n:::end-ai-stp\r\n";
+        assert_eq!(remove_region(existing).as_deref(), Some(""));
+        assert_eq!(keep_region_on_withdraw(existing).as_deref(), Some(existing));
     }
 
     #[test]

@@ -477,6 +477,17 @@ fn collect(
             .with_source(source)
         })?;
         let path = entry.path();
+        // `.staging` companions of `atomic_write` are in-flight writes, not
+        // content: counting one an interrupted write left behind would move
+        // the identity of a target the operation never finished changing,
+        // the same way the journal would if it were counted.
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(crate::lock::is_staging_name)
+        {
+            continue;
+        }
         let relative = relative_slash_path(root, &path)?;
         if current == root && excluded_top_level.contains(&relative.as_str()) {
             continue;
