@@ -49,7 +49,7 @@ above -- writing the root into the path again would nest it twice.
 
 | path | routes | shape | decided by | exercised by |
 | --- | --- | --- | --- | --- |
-| `skills` | skill | directory | measured from the pinned bundle, digest verified before reading (pi 0.84.4, package/dist/core/package-manager.js) | read its bytes |
+| `skills` | skill | directory | measured from the pinned bundle, digest verified before reading (pi 0.87.1, package/dist/core/package-manager.js) | read its bytes |
 
 **Under a scope the namespace is the permission and the recorded
 files are the inventory.** A root like this one is read by several

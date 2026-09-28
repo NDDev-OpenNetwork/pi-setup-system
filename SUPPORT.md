@@ -186,7 +186,7 @@ every path below is relative to that root.
 
 | Path | Component kinds routed here | Decided by |
 | --- | --- | --- |
-| `skills` | `skill` | measured from the pinned bundle, digest verified before reading (pi 0.84.4, package/dist/core/package-manager.js) |
+| `skills` | `skill` | measured from the pinned bundle, digest verified before reading (pi 0.87.1, package/dist/core/package-manager.js) |
 
 This root is read by several products at once, so under this scope
 `remove`, the backup and a restore act on the files this program

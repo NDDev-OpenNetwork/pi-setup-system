@@ -479,13 +479,13 @@ def remove_the_program(
                     f"command runs:\n  before: {launch_before!r}\n  after:  {launch_after!r}"
                 )
         else:
-            # Cursor is the real subject. It installs a program and supports
-            # rollback, but deliberately omits launch because only one of its
-            # configuration surfaces follows the target override. Calling the
-            # absent operation here made the new two-release evidence fail on
-            # the declaration doing its job. `software` has already proved the
-            # exposed command still names the older version; starting it is not
-            # an assertion this provider is allowed to make.
+            # Defensive branch: no current provider reaches it, since all
+            # seven declare launch -- five completely, cursor through the
+            # home-rooted overlay, antigravity against its documented home.
+            # It stays for a future build whose binding is `Undocumented`
+            # or which installs no program: `software` has already proved the
+            # exposed command still names the older version, and starting one
+            # is not an assertion such a provider is allowed to make.
             print("      -> launch not declared; exposure verified without starting a mixed target")
         return
     if "Nothing is exposed" not in said and "No version" not in said:
