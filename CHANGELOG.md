@@ -38,7 +38,7 @@ ownership are unchanged.
 All seven setup systems refresh their software pins from current vendor
 artifacts, with bytes and SHA256 checked for six published platforms each:
 Claude Code 2.1.283, Codex 0.157.1, Grok Build 1.0.42, Pi 0.87.1,
-OpenCode 1.18.32, Cursor 2026.09.26-024025f, and Antigravity CLI 1.2.12.
+OpenCode 1.18.32, Cursor 2026.09.26-dd393fe, and Antigravity CLI 1.2.12.
 Grok's published line now lands under the `alpha` dist-tag; the pin follows
 the current build and records the tag it was fetched under. The immediately
 preceding pins remain available for rollback.
