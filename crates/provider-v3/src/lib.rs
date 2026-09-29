@@ -8,8 +8,8 @@
 //!
 //! # The one authority
 //!
-//! The vocabulary is owned by `provider-kit/v3/manifest.json`, vendored beside
-//! this crate and verified against its own `SHA256SUMS`. The enums in
+//! The vocabulary is owned by `provider-kit/v3/manifest.json`, vendored at the
+//! workspace root and verified against its own `SHA256SUMS`. The enums in
 //! [`vocabulary`] exist only because a program must name its variants to match
 //! on them; tests bind every set back to the manifest, so a kit that gains a
 //! command and a build that does not is a test failure, not a silent divergence.

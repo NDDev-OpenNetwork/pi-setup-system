@@ -10,7 +10,7 @@
 //! `backup`, `restore` and `remove` need no bundle: they read the target, a
 //! backup slot, or the provider's own state.
 //!
-//! `install` and `replace` materialize an `ai-stp-bundle/1`. It is read and
+//! `install` and `replace` materialize an `ai-stp-bundle/2`. It is read and
 //! checked in full — raw digest, canonical archive shape, manifest identity,
 //! every file's digest and mode, every path — *before* the lock is taken, and
 //! again before the effect runs: the plan authorized an identity, not a file
@@ -2281,6 +2281,7 @@ pub(crate) fn perform(
                 ));
             }
             if let Some(parent) = destination.parent() {
+                lock::refuse_linked_descent(resolved.root(), parent).map_err(Error::from)?;
                 fs::create_dir_all(parent).map_err(|error| {
                     Error::from(
                         setup_core::Error::new(
@@ -2324,6 +2325,9 @@ pub(crate) fn perform(
                 // Never attached, or already detached: nothing of ours there.
                 Ok(previous_written.clone())
             } else {
+                if let Some(parent) = destination.parent() {
+                    lock::refuse_linked_descent(resolved.root(), parent).map_err(Error::from)?;
+                }
                 if remainder.is_empty() {
                     // The file held only the attachment; take the file with it.
                     lock::remove_file(&destination).map_err(|error| {
@@ -3100,6 +3104,7 @@ fn remember_written_fields(
 ) -> Result<()> {
     let path = written_fields_path(harness, target);
     if let Some(parent) = path.parent() {
+        lock::refuse_linked_descent(target.root(), parent).map_err(Error::from)?;
         fs::create_dir_all(parent).map_err(|error| {
             Error::from(
                 setup_core::Error::new(
@@ -3168,6 +3173,11 @@ fn forget_written_fields(harness: &Harness, target: &Target, relative: &str) {
         if map.is_empty() {
             let _ = lock::remove_file(&path);
         } else if let Ok(bytes) = serde_json::to_vec(&map) {
+            if let Some(parent) = path.parent()
+                && lock::refuse_linked_descent(target.root(), parent).is_err()
+            {
+                return;
+            }
             let _ = lock::atomic_write(&path, &bytes);
         }
     }
@@ -3288,6 +3298,9 @@ fn withdraw_written(
     if crate::instruction_region::is_attachment(relative, harness.instruction_region) {
         let existing = read_instruction_text(&destination)?;
         if let Some(region) = crate::instruction_region::keep_region_on_withdraw(&existing) {
+            if let Some(parent) = destination.parent() {
+                lock::refuse_linked_descent(target.root(), parent).map_err(Error::from)?;
+            }
             lock::atomic_write(&destination, region.as_bytes()).map_err(Error::from)?;
             return Ok(());
         }
@@ -3358,6 +3371,9 @@ fn strip_json_keys(path: &Path, root: &Path, keys: &[String]) -> Result<bool> {
                 .with_source(error),
             )
         })?;
+        if let Some(parent) = path.parent() {
+            lock::refuse_linked_descent(root, parent).map_err(Error::from)?;
+        }
         lock::atomic_write(path, &encoded).map_err(Error::from)?;
     }
     Ok(true)
@@ -3377,6 +3393,12 @@ fn remove_keeping_files(
     remove_managed(harness, target, scope)?;
     for (relative, (bytes, mode)) in files {
         let destination = target.root().join(relative);
+        // The same linked-descent refusal `write_host_file` applies: the clear
+        // just emptied the namespaces, and a directory swapped for a link
+        // since would carry the survivor write outside the target.
+        if let Some(parent) = destination.parent() {
+            lock::refuse_linked_descent(target.root(), parent).map_err(Error::from)?;
+        }
         lock::atomic_write(&destination, bytes)?;
         set_mode(&destination, *mode)?;
     }
@@ -6653,6 +6675,28 @@ mod tests {
         let error = withdraw_written(&TEST, &resolved, "skills/a.md", false).unwrap_err();
         assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
         assert_eq!(fs::read(outside.join("a.md")).unwrap(), b"not ours");
+    }
+
+    /// The survivor half of a remove-keeping: the clear has no business in a
+    /// directory nothing owned lives in, so a link planted there reaches the
+    /// write, which must refuse at the ancestor rather than carry the kept
+    /// file outside the target.
+    #[cfg(unix)]
+    #[test]
+    fn survivors_are_not_written_through_a_swapped_directory_link() {
+        let target = seeded("linked-survivors");
+        plan_then_apply(&target, "backup", &[]);
+        plan_then_apply(&target, "restore", &[]);
+
+        let outside = target.join("..").join("outside-survivors");
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, target.join("docs")).unwrap();
+
+        let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+        let files = BTreeMap::from([("docs/kept.md".to_string(), (b"theirs".to_vec(), 0o644_u32))]);
+        let error = remove_keeping_files(&TEST, &resolved, None, &files).unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert!(!outside.join("kept.md").exists());
     }
 
     #[test]
