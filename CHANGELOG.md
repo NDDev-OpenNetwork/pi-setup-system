@@ -15,6 +15,20 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.84] - 2026-09-30
+
+A routine pin refresh: six of the seven vendors published newer
+builds than the baselines carried, so the artifact tables were
+re-measured end to end — every digest computed from bytes this release
+read, npm artifacts additionally checked against the registry's own
+sha512. Pi Coding Agent now pins what its vendor publishes today. One
+behavioral change the move surfaced: Pi Coding Agent's standalone
+archive used to print a `0.0.0` placeholder for `--version`;
+the current build prints its release version, so the identity
+probe agrees with the pin again instead of riding an exact-
+artifact exception.
+Protocol, ownership and the kit are unchanged.
+
 ## [0.0.83] - 2026-09-29
 
 A second audit of the seven rendered trees, run against the shipped
