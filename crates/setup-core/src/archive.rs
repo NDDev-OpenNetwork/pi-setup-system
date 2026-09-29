@@ -992,9 +992,6 @@ mod zip {
                     .read(&mut input)
                     .map_err(|error| from_source_io("zip entry could not be read", error))?;
                 consumed = 0;
-                if filled == 0 {
-                    return Err(refuse("zip entry ended before its DEFLATE stream did"));
-                }
             }
             let result = miniz_oxide::inflate::stream::inflate(
                 &mut state,
@@ -1012,8 +1009,14 @@ mod zip {
             }
             match result.status {
                 Ok(miniz_oxide::MZStatus::StreamEnd) => return Ok((crc, length)),
+                Ok(_) if filled == 0 && written == 0 => {
+                    return Err(refuse("zip entry ended before its DEFLATE stream did"));
+                }
                 Ok(_) => {}
                 Err(error) => {
+                    if filled == 0 && error == miniz_oxide::MZError::Buf {
+                        return Err(refuse("zip entry ended before its DEFLATE stream did"));
+                    }
                     return Err(refuse(format!(
                         "zip entry's DEFLATE stream is malformed: {error:?}"
                     )));
@@ -2095,5 +2098,22 @@ mod tests {
             "nothing should have been written: the central directory states the \
              sizes, so the answer is knowable before the first byte lands"
         );
+    }
+
+    #[test]
+    fn a_deflate_entry_flushes_buffered_output_at_eof() {
+        let mut body = vec![0_u8; 1_000_000];
+        let mut state = 0x1234_5678_u32;
+        for byte in &mut body {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state.to_le_bytes()[0];
+        }
+        let archive = zip_bytes(&[("large.bin", &body, false)]);
+        let room = scratch("zip-buffered-eof");
+        extract_zip(io::Cursor::new(archive), &room, ROOMY).unwrap();
+        assert_eq!(read(&room, "large.bin"), body);
+        fs::remove_dir_all(&room).unwrap();
     }
 }
