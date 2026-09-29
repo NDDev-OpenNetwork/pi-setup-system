@@ -15,6 +15,27 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.82] - 2026-09-29
+
+A prose audit of all seven rendered trees against the shipped
+binaries, repaired at the source. SUPPORT now describes removal as it
+is — `remove` follows `written_paths` receipts and preserves
+unrecorded neighbours, while `reset` is the whole-namespace operation —
+and carries a per-harness home-write anecdote instead of one measured
+codex story on all seven. Production comments and templates that still
+named the retired `ai-stp-bundle/1` format now name v2. The posture
+table says what the postures are: `minimal` is the shared autonomous
+stance and nothing else, not "the product's own defaults". `install.ps1`
+honours the same install-directory environment variable `install.sh`
+documents, the quick-start names this product's documented
+home rather than a fictional `~/.tool-config`, and cursor's `launch` is
+described as the process-home overlay it is rather than a
+configuration-home variable. `agents/<name>.toml` entry points are
+checked for the `name`/`description` keys the product requires, the
+defect issue template substitutes this provider's real binary name, and
+the rendered workflows pin the toolchain `rust-toolchain.toml` declares.
+Protocol, ownership, software pins and the kit are unchanged.
+
 ## [0.0.81] - 2026-09-29
 
 The shared ZIP reader now flushes DEFLATE output buffered after the
