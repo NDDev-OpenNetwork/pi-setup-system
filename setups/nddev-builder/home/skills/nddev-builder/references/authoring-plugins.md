@@ -2,7 +2,7 @@
 
 Generated from the vendor's own reference and the pinned binary. Do not edit: the next render overwrites it, and a correction belongs in the source this file is derived from.
 
-**Where it goes**: `~/.pi/agent/extensions/`<name>.ts` or `<name>/index.ts``
+**Where it goes**: `~/.pi/agent/extensions/<name>.ts` or `<name>/index.ts`
 
 **Decided by**: https://pi.dev/docs/latest/extensions
 

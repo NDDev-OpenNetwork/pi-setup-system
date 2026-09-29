@@ -417,7 +417,7 @@ pub(crate) fn launch(
             // from one field here. Guessing produced a refusal that told cursor
             // callers *"this build installs no software"* -- false, it installs
             // and removes it, and the actual reason is that the product follows
-            // its variable for one of the eight surfaces this provider owns.
+            // its variable for one of the seven surfaces this provider owns.
             format!(
                 "{} does not declare launch: {}",
                 harness.provider_id,

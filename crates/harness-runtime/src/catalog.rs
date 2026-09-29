@@ -107,7 +107,7 @@ pub struct CatalogComponentRef {
 /// per-harness: `minimal` means the same thing to someone moving from codex to
 /// pi as it did before they moved.
 ///
-/// A harness may carry more -- cursor and antigravity each ship a builder
+/// A harness may carry more -- each of the seven also ships an `nddev-builder`
 /// toolkit -- but never fewer.
 pub const UNIVERSAL_SETUPS: &[&str] = &["baseline", "full-auto", "minimal"];
 

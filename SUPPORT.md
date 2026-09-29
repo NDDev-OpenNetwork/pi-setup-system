@@ -45,7 +45,7 @@ in a JSON file it owns it strips the keys it added rather than taking the
 file. Anything under those paths this build never wrote stays. Emptying every
 owned namespace is a separate, explicitly named operation: `reset`.
 
-No credential-free command is measured writing this product's home -- the dated measurement lives in `references/` and the absence is recorded, not assumed. The receipt discipline is the same for whatever arrives later: a file this provider wrote is captured into a slot before the next `install`, withdrawn by `remove`, and returned byte for byte by `restore`.
+No credential-free command is measured writing a surface this provider owns through `--target` -- neither --version nor list writes anything; installing an extension needs a source. The receipt discipline is the same for whatever arrives later: a file this provider wrote is captured into a slot before the next `install`, withdrawn by `remove`, and returned byte for byte by `restore`.
 
 So: point `--target` at a home you are willing to have managed. `backups
 --target <dir>` names every earlier state and which setup each preceded, and
@@ -170,8 +170,9 @@ Configuration home as the product documents it: `~/.pi/agent`.
 | `skills` | `skill` | [source](https://pi.dev/docs/latest/skills) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs |
 | `themes` | -- | [source](https://pi.dev/docs/latest/themes) -- confirmed against the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs |
 
-A path routing no component kind is owned so a setup can carry it;
-nothing compiles a component to it.
+A custody row like `APPEND_SYSTEM.md`, `SYSTEM.md`, `themes` routes no component kind because no setup
+can ever fill it: it is owned so a backup captures it and `remove`
+withdraws it, and so a posture switch does not empty it.
 
 ### A second target: `target_scope: user_root`
 

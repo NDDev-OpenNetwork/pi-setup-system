@@ -139,8 +139,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Each fetches the release artifact for this platform, checks it against the
-release's own `SHA256SUMS`, and places it at a predictable path: `~/.local/bin`
-on Linux and macOS, `%LOCALAPPDATA%\Programs` on Windows. Neither needs
+release's own `SHA256SUMS`, and places it at a predictable path:
+`~/.local/bin/pi-setup-system` on Linux and macOS,
+`%LOCALAPPDATA%\Programs\pi-setup-system\pi-setup-system.exe` on Windows. Neither needs
 privilege and neither registers anything anywhere.
 
 Somewhere else instead:
