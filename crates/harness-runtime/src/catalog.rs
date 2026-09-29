@@ -324,7 +324,10 @@ pub struct Examined {
 /// half is the part that took the measuring:
 ///
 /// * `SKILL.md`, and a file directly under `agents/`, are entry points. Cursor's
-///   own generator writes `{name, description}` for exactly these.
+///   own generator writes `{name, description}` for exactly these. A codex
+///   `agents/<name>.toml` is the same obligation in TOML: the product refuses
+///   the file by name when `name` or `description` is absent, so the check
+///   reads the keys instead of frontmatter.
 /// * A file under `references/` is **not** -- it is a document a skill links to,
 ///   and requiring frontmatter there would be inventing a rule.
 /// * A file under `commands/` is **not**. Cursor's loader builds
@@ -357,10 +360,18 @@ pub fn undescribed(setups: &[Setup]) -> Examined {
                 found.push(format!("{} cannot read {name:?}", setup.manifest.id));
                 continue;
             };
+            let named = if std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+            {
+                toml_names
+            } else {
+                frontmatter_names
+            };
             for key in ["name", "description"] {
-                if !frontmatter_names(&text, key) {
+                if !named(&text, key) {
                     found.push(format!(
-                        "{} ships {name:?} with no `{key}` in its frontmatter, and a component \
+                        "{} ships {name:?} with no `{key}` the product reads, and a component \
                          the product cannot describe is one the model cannot choose",
                         setup.manifest.id
                     ));
@@ -767,13 +778,34 @@ fn is_entry_point(relative: &str) -> bool {
     if leaf.eq_ignore_ascii_case("SKILL.md") {
         return true;
     }
-    // `agents/<name>.md`, and only directly under it.
+    // `agents/<name>.md` and `agents/<name>.toml`, and only directly under it.
+    // The `.toml` form is how codex declares a role file; it is measured there
+    // to carry the same two keys in TOML spelling.
     parts.len() >= 2
         && parts[parts.len() - 2] == "agents"
         && std::path::Path::new(leaf)
             .extension()
             .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("toml")
+            })
+}
+
+/// Whether a TOML entry point assigns `key` at the top level.
+///
+/// Read by structure rather than by searching the whole file: only lines
+/// before the first `[section]` header count, because a `description` three
+/// tables down belongs to that table and not to the agent the file names.
+fn toml_names(text: &str, key: &str) -> bool {
+    text.lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .any(|line| {
+            let line = line.trim_start();
+            line.starts_with(key)
+                && line[key.len()..]
+                    .trim_start_matches([' ', '\t'])
+                    .starts_with('=')
+        })
 }
 
 /// Whether a file opens with YAML frontmatter naming `key`.

@@ -172,7 +172,17 @@ def main() -> int:
     if args.self_check:
         with tempfile.TemporaryDirectory(prefix="nddev-crates-io-") as temporary:
             root = Path(temporary)
-            for harness in HARNESSES:
+            # This workspace carries all seven crates; a rendered public tree
+            # carries exactly one. The check walks whichever exist rather than
+            # asserting the shared layout in a tree that never had it.
+            harnesses = [
+                harness
+                for harness in HARNESSES
+                if (ROOT / "crates" / f"{harness}-setup-system").is_dir()
+            ]
+            if not harnesses:
+                raise SystemExit("no harness crate under crates/ -- nothing to self-check")
+            for harness in harnesses:
                 package = build(harness, root, args.version)
                 document = package.joinpath("Cargo.toml").read_text(encoding="utf-8")
                 expected = f'name = "{harness}-setup-system"'
@@ -184,23 +194,29 @@ def main() -> int:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            codex = root / "codex-setup-system"
+            first = harnesses[0]
+            built = root / f"{first}-setup-system"
             subprocess.run(
-                ["cargo", "build", "--quiet", "--manifest-path", str(codex / "Cargo.toml")],
+                ["cargo", "build", "--quiet", "--manifest-path", str(built / "Cargo.toml")],
                 check=True,
             )
             answer = subprocess.run(
-                [codex / "target/debug/codex-setup-system", "provider-info"],
+                [built / "target/debug" / f"{first}-setup-system", "provider-info"],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             info = json.loads(answer.stdout)
-            if info["provider_id"] != "codex-setup-system" or info["projection_profile"][
+            if info["provider_id"] != f"{first}-setup-system" or info["projection_profile"][
                 "bundle_formats"
             ] != ["ai-stp-bundle/2"]:
-                raise SystemExit("the installed-shape provider-info is not the v2-only Codex provider")
-        print("crates.io: seven same-name packages; all package, and a standalone provider runs")
+                raise SystemExit(
+                    f"the installed-shape provider-info is not the v2-only {first} provider"
+                )
+        print(
+            f"crates.io: {len(harnesses)} same-name package(s); all package, "
+            "and a standalone provider runs"
+        )
         return 0
     if args.out is None:
         parser.error("--out is required unless --self-check is used")

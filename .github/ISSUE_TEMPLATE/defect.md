@@ -18,7 +18,7 @@ labels: []
 ## Environment
 
 - Operating system and architecture:
-- `<tool>-setup-system --version`:
+- `pi-setup-system --version`:
 - Product version being configured:
 
 ## Target state, if relevant

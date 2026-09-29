@@ -34,7 +34,7 @@ therefore records a complete `st_mode`, and the self-check installs and runs a
 probe wheel without repairing it first.
 
 Usage:
-    python3 tools/build_wheels.py --harness claude --version 0.0.58 \
+    python3 tools/build_wheels.py --harness <harness> --version <version> \
         --assets <dir of release assets> --out <dir>
     python3 tools/build_wheels.py --self-check
 """

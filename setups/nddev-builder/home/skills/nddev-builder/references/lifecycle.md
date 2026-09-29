@@ -18,14 +18,15 @@ restore   [--backup <ref>] --target <dir>     the last backup, or a named one
 hold      --backup <ref> [--reason <why>] --target <dir>
 release   --backup <ref> --target <dir>
 remove    --target <dir>                      the files this program recorded writing
+adopt     --target <dir>                      take over a target the earlier provider left
 software  --prefix <dir>                      which product versions a prefix holds
 rollback  --to <version> --prefix <dir>       point the command at one already there
 ```
 
 There is no `--json` on these. JSON is the **provider** surface --
 `provider-info`, `status --target <dir> --json`, `validate-bundle`,
-`plan-operation`, `apply-operation`, `recover-operation` -- and a consumer calls
-those.
+`plan-operation`, `apply-operation`, `recover-operation`, `launch` -- and a
+consumer calls those.
 
 ## Invariants worth knowing before changing anything
 

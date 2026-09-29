@@ -1,12 +1,12 @@
 //! The provider command runtime every NDDev setup system shares.
 //!
-//! Five products, one set of commands. What differs between them is not
+//! Seven products, one set of commands. What differs between them is not
 //! behaviour but *facts*: which directory a product configures, which files
 //! inside it this provider owns, and which files belong to the product and must
 //! be left alone. [`Harness`] holds those facts; [`wire::dispatch`] performs the
 //! commands over them.
 //!
-//! Written this way, a change to the shared logic lands once instead of five
+//! Written this way, a change to the shared logic lands once instead of seven
 //! times, and a change to one product's surface lands in exactly one struct that
 //! a test binds to that product's verified baseline.
 //!
@@ -14,7 +14,7 @@
 //!
 //! It performs all five core operations. `backup`, `restore` and `remove` read
 //! the target, a backup slot, or the provider's own state. `install` and
-//! `replace` materialize an `ai-stp-bundle/1` the consumer sends, or a complete
+//! `replace` materialize an `ai-stp-bundle/2` the consumer sends, or a complete
 //! setup from the local catalog when the owner asks for one by name.
 //!
 //! The software lifecycle is optional in the contract, and a harness declares

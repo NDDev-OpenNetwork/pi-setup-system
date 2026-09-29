@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
   [string]$Version = "0.0.81",
-  [string]$InstallDir = "$env:LOCALAPPDATA\Programs\pi-setup-system"
+  [string]$InstallDir = $(if ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\pi-setup-system" })
 )
 $ErrorActionPreference = "Stop"
 
