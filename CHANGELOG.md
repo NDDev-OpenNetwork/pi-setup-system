@@ -15,6 +15,30 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.83] - 2026-09-29
+
+A second audit of the seven rendered trees, run against the shipped
+0.0.82: the previous wave's fixes were real, and each repaired sentence
+had a sibling copy still holding the old claim. The changelog now renders
+the `detach_instruction_region` claim only where a product declares an
+instruction surface — a product that declares none gets the correction,
+dated. SUPPORT's launch paragraph now describes the binding each build
+declares — a copied process home for the partial one — rather than
+implying a configuration-home variable reaches the rest, and the
+home-write anecdote no longer claims
+no measured write exists where one does — one product's `mcp add` writes
+its real global home regardless of the configuration-directory variable,
+which is exactly why it is not run for evidence. The platform-scope guard
+now reads `standard_unsupported_categories`, the spelling under which a
+baseline called Windows unsupported beside a shipped Windows artifact;
+that block is rebuilt from the artifact table with its retired npm-era
+record kept under a named sub-block. Dated measurements that named "the
+pinned build" now name their version, the baseline that denied a vendor
+JSON schema carries the correction beside it, and generated prose no
+longer splices subjects into sentence fragments or wraps backticked
+leaves in a second code span. Protocol, ownership, software pins and the
+kit are unchanged.
+
 ## [0.0.82] - 2026-09-29
 
 A prose audit of all seven rendered trees against the shipped
