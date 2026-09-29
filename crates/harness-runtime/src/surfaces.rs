@@ -227,7 +227,11 @@ fn never_touch_is_disclaimed(harness: &Harness, baseline: &Value, found: &mut Ve
 /// other direction: a namespace declared, owned, routing nothing, and written
 /// to by nobody.
 ///
-/// Three of them exist: claude's `rules`, opencode's `tui.json`, pi's `themes`.
+/// Seventeen of them exist -- claude's `rules`, `workflows`, `output-styles`,
+/// `routines` and `themes`; grok's `sandbox.toml`, `workflows`, `rules`,
+/// `commands`, `personas` and `roles`; pi's `APPEND_SYSTEM.md`, `SYSTEM.md` and
+/// `themes`; antigravity's `antigravity-cli/keybindings.json` and
+/// `antigravity-cli/plugins`; opencode's `tui.json`.
 /// Each is defensible -- claude's row explains that `instruction` already
 /// routes to `CLAUDE.md` and the namespace is owned so a setup *could* carry a
 /// rule -- and the point is not to remove them. It is that the answer should be

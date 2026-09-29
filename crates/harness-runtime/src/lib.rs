@@ -270,8 +270,9 @@ fn print_help(harness: &Harness) {
     println!("something to return to. The pool rolls, so a long series of changes");
     println!("eventually evicts the oldest: `hold` keeps one until `release` lets");
     println!("it go, which is how a baseline survives more captures than the pool.");
-    println!("Over the wire, install and replace arrive as a bundle and refuse --");
-    println!("this build reads setups from its own catalog.");
+    println!("Over the wire a bundle arrives with install or replace, and this");
+    println!("build applies it; this human surface refuses bundles and reads");
+    println!("setups from its own catalog.");
 }
 
 #[cfg(test)]

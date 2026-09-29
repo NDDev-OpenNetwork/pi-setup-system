@@ -416,7 +416,7 @@ def remove_the_program(
         # Capture what the *same exposed command* says before removal. Not every
         # vendor puts its release into `--version`: Pi's two Windows standalone
         # builds both answer `0.0.0`, while their archive digests and provider
-        # manifests correctly distinguish 0.84.3 from 0.84.4. Requiring the
+        # manifests correctly distinguish 0.85.1 from 0.87.1. Requiring the
         # expected version here tests the vendor's string, not whether removing
         # an inactive tree moved our command.
         launch_before = run_text(

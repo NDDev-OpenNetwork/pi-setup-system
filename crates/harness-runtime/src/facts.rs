@@ -58,8 +58,8 @@ pub struct Harness {
     /// and one that can execute code the chosen setup never carried.
     ///
     /// A fact rather than a conclusion, carrying how it was established, because
-    /// the five that are complete are not equally well established: three were
-    /// measured by asking the product what it resolved, one by making it write,
+    /// the five that are complete are not equally well established: two were
+    /// measured by asking the product what it resolved, two by making it write,
     /// and one rests on a vendor page because no credential-free command of that
     /// product writes its home.
     pub launch_binding: LaunchBinding,
