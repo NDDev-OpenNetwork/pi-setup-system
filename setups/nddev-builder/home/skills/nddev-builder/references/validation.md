@@ -8,8 +8,8 @@ When changing provider implementation, run that checkout's CI checks:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
 ```
 
 Report each result and any unavailable check. The cargo commands apply only

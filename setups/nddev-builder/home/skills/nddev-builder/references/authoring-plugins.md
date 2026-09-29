@@ -2,7 +2,7 @@
 
 Generated from the vendor's own reference and the pinned binary. Do not edit: the next render overwrites it, and a correction belongs in the source this file is derived from.
 
-**Where it goes**: `~/.pi/agent/extensions/<name>.ts` or `<name>/index.ts`
+**Where it goes**: `~/.pi/agent/extensions/`<name>.ts` or `<name>/index.ts``
 
 **Decided by**: https://pi.dev/docs/latest/extensions
 
@@ -13,7 +13,7 @@ Generated from the vendor's own reference and the pinned binary. Do not edit: th
 | export | required | what it does |
 |---|---|---|
 | `default export` | **yes** | A factory function taking `ExtensionAPI`. It may be async, and it runs before `session_start` completes. |
-| `package.json `pi.extensions`` | no | Entry points, for a multi-file extension with dependencies. |
+| `pi.extensions in package.json` | no | Entry points, for a multi-file extension with dependencies. |
 | `pi.registerTool()` | no | A tool the model may call. |
 | `pi.registerCommand()` | no | A `/command`. |
 | `pi.on()` | no | An event subscription. |
@@ -34,7 +34,7 @@ Generated from the same rows as the section above, for every harness in this est
 | field | `pi` | `opencode` |
 |---|---|---|
 | `default export` | **required** | — |
-| `package.json `pi.extensions`` | yes | — |
+| `pi.extensions in package.json` | yes | — |
 | `pi.registerTool()` | yes | — |
 | `pi.registerCommand()` | yes | — |
 | `pi.on()` | yes | — |
@@ -55,6 +55,6 @@ Generated from the same rows as the section above, for every harness in this est
 
 ## Before you ship one
 
-- **The surface is declared, so the component is a promise.** Every kind   this provider declares is a promise of a rollback. A component written   to a path the declaration does not carry is installed by nobody and   removed by nobody.
-- **Name it once.** Where the product derives identity from the directory   or the filename, the frontmatter `name` is either redundant or a second   place to be wrong. Keep them equal.
-- **Read it back.** After an install, look at the file where the product   reads it, not at the step that put it there.
+- **The surface is declared, so the component is a promise.** Every kind  this provider declares is a promise of a rollback. A component written  to a path the declaration does not carry is installed by nobody and  removed by nobody.
+- **Name it once.** Where the product derives identity from the directory  or the filename, the frontmatter `name` is either redundant or a second  place to be wrong. Keep them equal.
+- **Read it back.** After an install, look at the file where the product  reads it, not at the step that put it there.

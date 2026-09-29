@@ -579,7 +579,7 @@ mod tests {
     }
     /// Three postures, on every one of the seven.
     ///
-    /// `baseline` is a working floor, `minimal` is the product's own defaults,
+    /// `baseline` is a working floor, `minimal` is the shared autonomous posture and nothing else,
     /// and `full-auto` asks nothing and sandboxes nothing. A caller who learns
     /// them on one product knows them on all seven, which is the whole reason
     /// the names are the estate's rather than each harness's.

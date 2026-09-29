@@ -34,23 +34,18 @@ A provider that advertised an operation it cannot perform would let a caller ask
 for something that cannot be honoured, which is worse than not offering it.
 
 All five core operations do work: `backup`, `restore`, `remove`, `install` and
-`replace`, both from the local setup catalog and from an `ai-stp-bundle/1`
+`replace`, both from the local setup catalog and from an `ai-stp-bundle/2`
 arriving over the wire.
 
 ## Using this against a home you already have
 
-**An owned namespace is removed whole.** The table below says what this build
-owns; `remove` deletes each of those paths entirely, and a backup slot holds
-what was there first. That includes content this build never wrote -- if the
-product itself put a key in a configuration file this provider owns, `remove`
-takes the file, not the keys this provider added to it.
+**Removal follows receipts, not namespaces.** The table below says what this
+build owns; `remove` withdraws the files this provider recorded writing, and
+in a JSON file it owns it strips the keys it added rather than taking the
+file. Anything under those paths this build never wrote stays. Emptying every
+owned namespace is a separate, explicitly named operation: `reset`.
 
-Measured, with the real product: launching Codex through `launch` and running
-`mcp add` writes `~/.codex/config.toml` with an `[mcp_servers.*]` entry; a
-later `install` captures that file into a slot and replaces it; a later
-`remove` deletes it. The entry is not lost -- `backups` lists the slot as
-*before install, setup none*, and restoring it returns the file byte for byte
--- but it is not in the target either.
+No credential-free command is measured writing this product's home -- the dated measurement lives in `references/` and the absence is recorded, not assumed. The receipt discipline is the same for whatever arrives later: a file this provider wrote is captured into a slot before the next `install`, withdrawn by `remove`, and returned byte for byte by `restore`.
 
 So: point `--target` at a home you are willing to have managed. `backups
 --target <dir>` names every earlier state and which setup each preceded, and

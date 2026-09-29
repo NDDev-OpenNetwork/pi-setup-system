@@ -34,10 +34,10 @@ use crate::zip;
 /// The digest domain for a bundle manifest.
 pub const BUNDLE_DOMAIN: &str = "ai-stp:bundle:v1";
 
-/// The original format tag, kept byte-identical during the v2 rollout.
+/// The adaptation-bound format, the only tag a production bundle carries.
 pub const BUNDLE_FORMAT: &str = "ai-stp-bundle/2";
 
-/// The adaptation-bound format.
+/// The original format tag, retired by the v2 rollout and refused on read.
 #[cfg(test)]
 const RETIRED_BUNDLE_FORMAT_V1: &str = "ai-stp-bundle/1";
 
@@ -237,7 +237,7 @@ pub struct ComponentAdaptationBinding {
 pub struct Manifest {
     /// Schema of this manifest.
     pub schema_version: u32,
-    /// Always `ai-stp-bundle/1`.
+    /// Always `ai-stp-bundle/2`.
     pub bundle_format: String,
     /// The *bundle* protocol, which is 1. Not the provider protocol.
     pub protocol_version: u32,

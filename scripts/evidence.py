@@ -172,10 +172,12 @@ def plan(
         ]
     )
     if answer.get("reason") == "unsupported_platform":
-        # An honest answer, not a failure. Cursor publishes no Windows build,
-        # and the provider says so by name rather than planning something it
-        # could not apply. Treating that as a red would make this job report a
-        # vendor's product range as a defect of ours.
+        # An honest answer, not a failure. When a vendor's published manifest
+        # carries no build for a declared platform, the provider says so by
+        # name rather than planning something it could not apply. Treating
+        # that as a red would make this job report a vendor's product range
+        # as a defect of ours. No harness answers it today; the path stays
+        # wired because the reason is contract, not decoration.
         raise NothingToProve(str(answer.get("detail", "")))
     if answer.get("state") != "planned":
         raise Failed(

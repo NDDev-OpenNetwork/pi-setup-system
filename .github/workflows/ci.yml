@@ -32,7 +32,7 @@ jobs:
       contents: read
     uses: NDDev-OpenNetwork/ci-workflows/.github/workflows/rust-ci.yml@d92026cf31a10a0eeaa532e1f323c7cfdfbfac5b # 0.1.29
     with:
-      toolchain: '1.98.0'
+      toolchain: '1.98.1'
       # The three-OS matrix is the evidence ADR-0113 asks for, and standard
       # hosted runners are free with unlimited minutes on a public repository.
       test_matrix_os: '["ubuntu-latest", "macos-latest", "windows-latest"]'
@@ -99,7 +99,7 @@ jobs:
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1.17.0
         with:
-          toolchain: '1.98.0'
+          toolchain: '1.98.1'
           # The same reason the release job gives. This job's whole subject is
           # the bytes that come out of the build, so restoring someone else's
           # `target/` and then reading its import table would answer a question
@@ -181,9 +181,13 @@ jobs:
           # bypassed, or read by someone with no reason to trust it.
           #
           # Measured on Linux across all seven binaries, then on macOS by
-          # `0.0.8`'s own run, and the two agree exactly: the six that declare
-          # `launch` import `execvp` and nothing else; antigravity, which
-          # declares none, imports no spawn symbol at all, on either platform.
+          # `0.0.8`'s own run, and the two agree exactly: every build that
+          # declares `launch` imports `execvp` and nothing else. `0.0.8` still
+          # carried the era when antigravity declared none and imported no
+          # spawn symbol at all -- all seven declare it now (antigravity's is
+          # a documented-home binding), so today the negative arm is enforced
+          # on nobody, and stays because the day a launch slips out of a
+          # declaration is the day the spawn symbol must fail here.
           # So the linker drops what nothing calls and the absence is real
           # rather than incidental -- which is what had to be true before this
           # could be enforced anywhere.

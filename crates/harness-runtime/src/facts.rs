@@ -6,7 +6,7 @@
 //! *facts about a product*, verified against its official documentation and
 //! recorded in a baseline — not behaviour, and not code.
 //!
-//! Holding them as data rather than as five copies of a dispatcher means a
+//! Holding them as data rather than as seven copies of a dispatcher means a
 //! change to the shared logic lands in one place, and a change to a product's
 //! surface lands in exactly one struct with a test binding it to that product's
 //! baseline.
@@ -137,7 +137,7 @@ pub struct Harness {
     /// makes the name *visible*, which is the part that was missing: the
     /// answer was true about what it examined and silent about what decides.
     ///
-    /// Empty for six of the seven, and empty because they were asked -- a
+    /// Empty for three of the seven, and empty because they were asked -- a
     /// product whose alternate spellings nobody has measured belongs here as
     /// nothing rather than as a guess.
     pub shadowing_names: &'static [Shadow],
@@ -203,9 +203,9 @@ pub struct Harness {
     pub projection_kinds: &'static [ProjectionKind],
     /// Second targets this provider owns, if any.
     ///
-    /// Empty for six of the seven. Antigravity is the exception because the
-    /// product genuinely keeps a workspace copy of five of its surfaces, and
-    /// `ai_stp#424`/`#425` are the consumer asking for exactly that route.
+    /// No build leaves this empty today: each declares a `user_root` scope for
+    /// products that read the shared `~/.agents` convention, a `project`
+    /// scope for surfaces the product reads from a workspace, or both.
     pub scoped_projections: &'static [Scoped],
     /// The largest file count a bundle may carry.
     pub max_files: u64,
@@ -228,12 +228,6 @@ pub struct Harness {
     /// put a symbolic link or an executable file in here — a setup's digest
     /// records both, and bytes alone cannot carry either.
     pub embedded_setups: &'static [(&'static str, &'static [u8])],
-    /// How the product's own software is installed, when this build can do it.
-    ///
-    /// `None` means the software lifecycle is not offered at all. So does a
-    /// [`Delivery::Manager`], which is a different statement -- the product is
-    /// installable, but not by fetching bytes whose digest was fixed in advance
-    /// -- and the refusal says which.
     /// How the product's own software is installed, when this build can do it.
     ///
     /// `None` means the software lifecycle is not offered at all. So does a

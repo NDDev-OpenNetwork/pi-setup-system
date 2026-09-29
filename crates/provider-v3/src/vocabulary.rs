@@ -399,8 +399,8 @@ impl ProjectionKind {
 
 /// A target a projection profile owns, other than the product's own home.
 ///
-/// The kit's schema enumerates exactly one value today, and the global scope is
-/// deliberately not among them: the global profile is declared by
+/// The kit's schema enumerates exactly two values today, and the global scope
+/// is deliberately not among them: the global profile is declared by
 /// `projection_profile` itself, and two statements about one fact are a defect
 /// even while they agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

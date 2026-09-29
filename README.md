@@ -24,15 +24,15 @@ instructions, skills, commands, plugins and settings together, in one step.
 
 ```bash
 pi-setup-system list
-pi-setup-system install baseline    --target ~/.tool-config
-pi-setup-system status              --target ~/.tool-config
-pi-setup-system select full-auto    --target ~/.tool-config
-pi-setup-system diff                --target ~/.tool-config
-pi-setup-system reinstall           --target ~/.tool-config
-pi-setup-system backups             --target ~/.tool-config
-pi-setup-system hold --backup slot-000000000001 --reason "before the experiment" --target ~/.tool-config
-pi-setup-system restore --backup slot-000000000001 --target ~/.tool-config
-pi-setup-system remove              --target ~/.tool-config
+pi-setup-system install baseline    --target ~/.pi/agent
+pi-setup-system status              --target ~/.pi/agent
+pi-setup-system select full-auto    --target ~/.pi/agent
+pi-setup-system diff                --target ~/.pi/agent
+pi-setup-system reinstall           --target ~/.pi/agent
+pi-setup-system backups             --target ~/.pi/agent
+pi-setup-system hold --backup slot-000000000001 --reason "before the experiment" --target ~/.pi/agent
+pi-setup-system restore --backup slot-000000000001 --target ~/.pi/agent
+pi-setup-system remove              --target ~/.pi/agent
 ```
 
 Every command takes an explicit `--target`. There is no default and no fallback
@@ -47,8 +47,8 @@ seven setup systems, expressed in each product's own format:
 
 | | |
 | --- | --- |
-| `baseline` | a working floor: instructions plus a conservative configuration |
-| `minimal` | the product's own defaults, and the state a restore proves it can reach |
+| `baseline` | a working floor: instructions plus the shared autonomous posture |
+| `minimal` | instructions plus the shared autonomous posture, and nothing else |
 | `full-auto` | nothing asked and nothing sandboxed, in this product's own keys |
 | `nddev-builder` | the full-auto posture plus the product-native NDDev authoring toolkit |
 
