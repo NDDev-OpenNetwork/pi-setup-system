@@ -15,6 +15,20 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.80] - 2026-09-29
+
+The shared kernel extends linked-descent refusal to every staged
+write the way down covers: file replacement, survivor rewrite, backup,
+and report paths now check the ancestor chain before the write, not only
+at the instruction-file seam where the rule already held. The bundle
+credential screen matches its consumer byte-for-byte — basename, exact
+marker names, and the same case-sensitive prefix and suffix sets — so a
+bundle refused here is refused identically at install, and module prose
+that still described the retired `ai-stp-bundle/1` wire now names the v2
+format the code emits. `indexmap` re-pins to 2.14.2 inside the regular
+cooldown; postures, provider protocol version, software pins, and
+ownership are unchanged.
+
 ## [0.0.79] - 2026-09-28
 
 The shared kernel hardens its durable boundary against the failure
