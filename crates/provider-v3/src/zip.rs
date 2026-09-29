@@ -1,4 +1,4 @@
-//! A reader for the one ZIP shape `ai-stp-bundle/1` is allowed to be.
+//! A reader for the one ZIP shape `ai-stp-bundle/2` is allowed to be.
 //!
 //! The bundle format is a *canonical* ZIP: stored members only, members in a
 //! fixed order, every timestamp pinned to 1980-01-01T00:00:00, Unix creator,

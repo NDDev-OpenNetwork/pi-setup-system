@@ -1,4 +1,4 @@
-//! Reading and checking an `ai-stp-bundle/1` before anything is written.
+//! Reading and checking an `ai-stp-bundle/2` before anything is written.
 //!
 //! The order of checks is the contract's, and it matters. The raw bytes are
 //! hashed *before* the archive is parsed, so a corrupted artifact is refused by
@@ -43,11 +43,11 @@ const RETIRED_BUNDLE_FORMAT_V1: &str = "ai-stp-bundle/1";
 
 /// The protocol version a bundle manifest declares.
 ///
-/// This is **not** the provider protocol. A bundle is `ai-stp-bundle/1` and says
-/// `protocol_version: 1`; the provider speaking about it is protocol v3. Two
-/// numbers, two contracts, one field name each — comparing a manifest against
-/// the provider's version rejects every well-formed bundle, and does it with a
-/// message that sounds right.
+/// This is **not** the provider protocol, and not the format tag either. A
+/// bundle is `ai-stp-bundle/2` and says `protocol_version: 1`; the provider
+/// speaking about it is protocol v3. Three numbers, three contracts, one field
+/// name each — comparing a manifest against the provider's version rejects
+/// every well-formed bundle, and does it with a message that sounds right.
 pub const BUNDLE_PROTOCOL_VERSION: u32 = 1;
 
 /// The manifest member, always first.
@@ -79,21 +79,27 @@ pub const CONTRACT_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// The largest archive the contract admits: 64 MiB.
 pub const CONTRACT_MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Path segments and names that mean credentials, refused by name.
+/// Names, prefixes and suffixes that mean credentials, refused by name.
+///
+/// The predicate is the consumer's, kept identical so a refusal here is exactly
+/// the bundle a consumer would refuse: the last path segment decides, never a
+/// parent, and matching is case-sensitive and exact. `id_rsa.pub`,
+/// `auth.json.sample` and `docs/secrets.md` install; `keys/id_ed25519` and
+/// `x.env.local` do not.
 ///
 /// Opening a file to decide whether it holds a secret is the very act this rule
 /// exists to prevent, so the decision is made from the name alone.
-const SECRET_MARKERS: &[&str] = &[
-    "credentials",
-    ".credentials.json",
-    "auth.json",
+const SECRET_NAMES: &[&str] = &[
+    ".env",
     ".netrc",
+    ".npmrc",
+    "credentials",
     "id_rsa",
     "id_ed25519",
-    ".pem",
-    ".p12",
-    "secrets",
+    ".pgpass",
 ];
+const SECRET_PREFIXES: &[&str] = &[".env."];
+const SECRET_SUFFIXES: &[&str] = &[".pem", ".key", ".p12", ".pfx", ".keystore"];
 
 /// What a manifest record says a file *is*.
 ///
@@ -984,8 +990,13 @@ fn check_path(path: &str) -> Result<()> {
             format!("{path:?} uses a backslash separator"),
         ));
     }
-    let lowered = path.to_lowercase();
-    if SECRET_MARKERS.iter().any(|marker| lowered.contains(marker)) {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if SECRET_NAMES.contains(&name)
+        || SECRET_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        || SECRET_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+    {
         return Err(Error::refuse(
             WireReason::SpecialFileNotAllowed,
             format!("{path:?} is named like a credential and is refused by name"),
@@ -1481,12 +1492,22 @@ mod tests {
     #[test]
     fn a_path_named_like_a_credential_is_refused_without_opening_it() {
         // Opening a file to decide whether it is a secret is the act this rule
-        // exists to prevent.
+        // exists to prevent. The set is the consumer's own -- a refusal here
+        // names exactly what the reader would refuse.
         for path in [
-            ".credentials.json",
-            "auth.json",
+            ".env",
+            ".env.production",
+            ".netrc",
+            ".npmrc",
+            "credentials",
+            "keys/id_rsa",
             "keys/id_ed25519",
+            ".pgpass",
             "certs/server.pem",
+            "private.key",
+            "bundle.p12",
+            "store.pfx",
+            "keys/ring.keystore",
         ] {
             let error = check_path(path).unwrap_err();
             assert_eq!(
@@ -1494,6 +1515,25 @@ mod tests {
                 Some(WireReason::SpecialFileNotAllowed),
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn a_path_only_shaped_like_a_credential_installs() {
+        // The consumer decides on the basename, case-sensitive and exact --
+        // refusing more here would refuse bundles the reader accepts, and a
+        // bundle refused differently on each side is no contract at all.
+        for path in [
+            "id_rsa.pub",
+            "auth.json",
+            "auth.json.sample",
+            ".credentials.json",
+            "docs/secrets.md",
+            "not-credentials.txt",
+            "ID_RSA",
+            "certs/pembroke.pub",
+        ] {
+            assert!(check_path(path).is_ok(), "{path:?} was refused");
         }
     }
 
