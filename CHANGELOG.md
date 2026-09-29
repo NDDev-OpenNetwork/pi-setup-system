@@ -15,6 +15,14 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.81] - 2026-09-29
+
+The shared ZIP reader now flushes DEFLATE output buffered after the
+last compressed byte. This lets the valid pi Windows x64 distribution pass
+archive extraction and its evidence workflow. Truncated streams still fail
+with an integrity error. Verification commands in the other six harnesses
+and the provider protocol are unchanged.
+
 ## [0.0.80] - 2026-09-29
 
 The shared kernel extends linked-descent refusal to every staged
