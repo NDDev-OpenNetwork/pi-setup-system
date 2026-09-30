@@ -22,7 +22,7 @@ Generated from the vendor's own reference and the pinned binary. Do not edit: th
 
 ## The same file on the other harnesses
 
-Generated from the same rows as the section above, for every harness in this estate that routes this kind. `—` means the product's own reference does not name the field, and **dropped** means it names it as one it accepts and does not act on.
+Generated from the same rows as the section above, for every harness in this estate that describes this kind the same way. A harness that routes the kind another way is absent rather than approximated. `—` means the product's own reference does not name the field, and **dropped** means it names it as one it accepts and does not act on.
 
 | field | `claude` | `codex` | `pi` | `opencode` | `cursor` | `antigravity` |
 |---|---|---|---|---|---|---|
@@ -41,6 +41,6 @@ Generated from the same rows as the section above, for every harness in this est
 
 ## Before you ship one
 
-- **The surface is declared, so the component is a promise.** Every kind  this provider declares is a promise of a rollback. A component written  to a path the declaration does not carry is installed by nobody and  removed by nobody.
-- **Name it once.** Where the product derives identity from the directory  or the filename, the frontmatter `name` is either redundant or a second  place to be wrong. Keep them equal.
-- **Read it back.** After an install, look at the file where the product  reads it, not at the step that put it there.
+- **The surface is declared, so the component is a promise.** Every kind this provider declares is a promise of a rollback. A component written to a path the declaration does not carry is installed by nobody and removed by nobody.
+- **Name it once.** Where the product derives identity from the directory or the filename, the frontmatter `name` is either redundant or a second place to be wrong. Keep them equal.
+- **Read it back.** After an install, look at the file where the product reads it, not at the step that put it there.

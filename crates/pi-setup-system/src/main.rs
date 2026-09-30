@@ -5,19 +5,19 @@
 //! behaviour lands once and a change to Pi Coding Agent's surface lands here.
 //!
 //! This harness offers the program lifecycle like the other six. It reads
-//! `src/software.rs`, generated from measured bytes: one npm tarball, one
-//! digest, one member that runs.
+//! `src/software.rs`, generated from measured bytes: six standalone release
+//! archives, six digests, and the member that runs per platform -- `pi/pi` in
+//! the four gzip-tars and `pi.exe` at the root of the two zips.
 //!
-//! This paragraph used to say the opposite -- that pi could not be installed
-//! because npm resolves a dependency closure at install time, so no single
-//! artifact's digest could be named in a plan. `7180648` measured that and
-//! found it wrong twice: the published package ships `npm-shrinkwrap.json`, so
-//! the closure is fixed, and it does not matter anyway because the bundle
-//! imports only Node built-ins and runs with no `node_modules` at all. The
-//! correction is held by a test rather than by prose --
-//! `setup_core::software`'s *pi installs from one tarball and the thing that
-//! lands runs*. The sentence survived the commit that refuted it, in three
-//! files; this was one.
+//! This paragraph used to describe the npm tarball it replaced -- the vendor
+//! ships one archive per platform now, and this provider installs that rather
+//! than the 6.8MB JavaScript package whose `#!/usr/bin/env node` shebang left
+//! a host without Node holding a program that installed and could not start.
+//! An earlier draft said pi could not be pinned at all, on the theory that npm
+//! resolves a dependency closure at install time; `7180648` measured that and
+//! found it wrong twice -- the package ships `npm-shrinkwrap.json`, and the
+//! bundle imports only Node built-ins anyway. The correction is held by tests
+//! rather than by prose.
 
 use std::process::ExitCode;
 
@@ -105,7 +105,7 @@ pub const PI: Harness = Harness {
     // read, never written, and never copied into a backup slot.
     // `auth.json` first, and it took a sweep across all seven to notice it was
     // missing here. Pi joins it against its agent directory
-    // (`agentDir, "auth.json"` in the pinned 0.84.3 bundle) and five of the
+    // (`agentDir, "auth.json"`, measured in the 0.84.3 bundle) and five of the
     // seven providers already listed their equivalent. No live leak --
     // `capture` walks `native_namespaces` and this file is inside none of them
     // -- but a safety list that depends on a namespace never widening is a
@@ -202,8 +202,9 @@ pub const PI: Harness = Harness {
     // writing -- the removal refuses rather than widening when it cannot read
     // the record, the capture takes ours and not a neighbour's, and a restore
     // leaves a neighbour's file as it was. Five of the seven products read
-    // this root and one declared it; the reason was simply not re-read when
-    // the thing it described changed.
+    // this root. This sentence used to say one declared it; all five do now --
+    // the reason had simply not been re-read when the thing it described
+    // changed, and the sentence kept its old answer.
     scoped_projections: &[Scoped {
         target_scope: TargetScope::UserRoot,
         // Distinct from the global identity, because the digest binds a
@@ -429,41 +430,6 @@ mod tests {
         assert!(PI.state_file.starts_with("NDDEV-"));
         assert!(!PI.native_namespaces.contains(&PI.state_file));
     }
-    /// A setup that writes a configuration file says where its format came from.
-    ///
-    /// The release before this one made the *surfaces* sourced: a path this
-    /// provider owns cites the page that documents it. This is the same rule
-    /// one level down, and it was written because two of the seven failed it.
-    ///
-    /// opencode's baseline set `"permission": "ask"` where the product
-    /// documents an object of tool names, and antigravity's set
-    /// `toolPermissions` where the product reads `toolPermission` with four
-    /// values, none of them the one written. Both were valid JSON in the right
-    /// file at the right path. Both installed, verified and restored cleanly.
-    /// Neither changed anything about the product — a target that looks
-    /// configured and is not, which is the failure this estate refuses one
-    /// level up and had been shipping one level down.
-    /// Two files in one setup that a case-insensitive filesystem would merge.
-    ///
-    /// macOS and Windows fold case, so such a pair is one file there and two on
-    /// Linux -- the setup would install different content depending on the
-    /// machine, and its catalogue digest would differ per platform. The bundle
-    /// reader has refused this for an arriving bundle since 0.0.11; this is the
-    /// same rule applied to what this repository authors.
-    /// Every component entry point describes itself.
-    ///
-    /// A `SKILL.md` or an agent whose frontmatter lost its `description` still
-    /// installs, verifies and restores cleanly -- and the product names it after
-    /// its directory and gives the model nothing to choose on. Documents under
-    /// `references/` and files under `commands/` are exempt, because the
-    /// products measured do not read frontmatter from either.
-    /// Supporting documents are reachable from an entry point.
-    ///
-    /// A `references/` folder whose skill has no `SKILL.md` is prose nothing
-    /// routes to. A generator in this repository produced exactly that, and
-    /// every other guard passed it: the files are documents, so `unsourced`
-    /// exempts them, and there is no `SKILL.md`, so `undescribed` has nothing
-    /// to check.
     /// Nothing shipped sends a reader to a file this setup does not carry.
     ///
     /// A routing table naming `references/surfaces.md` in a setup that ships no
@@ -485,6 +451,13 @@ mod tests {
     }
 
     #[test]
+    /// Supporting documents are reachable from an entry point.
+    ///
+    /// A `references/` folder whose skill has no `SKILL.md` is prose nothing
+    /// routes to. A generator in this repository produced exactly that, and
+    /// every other guard passed it: the files are documents, so `unsourced`
+    /// exempts them, and there is no `SKILL.md`, so `undescribed` has nothing
+    /// to check.
     fn every_reference_folder_has_an_entry_point() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../setups").join(TOOL);
@@ -527,6 +500,13 @@ mod tests {
     }
 
     #[test]
+    /// Every component entry point describes itself.
+    ///
+    /// A `SKILL.md` or an agent whose frontmatter lost its `description` still
+    /// installs, verifies and restores cleanly -- and the product names it after
+    /// its directory and gives the model nothing to choose on. Documents under
+    /// `references/` and files under `commands/` are exempt, because the
+    /// products measured do not read frontmatter from either.
     fn every_component_entry_point_describes_itself() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../setups").join(TOOL);
@@ -551,6 +531,13 @@ mod tests {
     }
 
     #[test]
+    /// Two files in one setup that a case-insensitive filesystem would merge.
+    ///
+    /// macOS and Windows fold case, so such a pair is one file there and two on
+    /// Linux -- the setup would install different content depending on the
+    /// machine, and its catalogue digest would differ per platform. The bundle
+    /// reader has refused this for an arriving bundle since 0.0.11; this is the
+    /// same rule applied to what this repository authors.
     fn no_two_files_in_a_setup_differ_only_in_case() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../setups").join(TOOL);
@@ -565,6 +552,20 @@ mod tests {
     }
 
     #[test]
+    /// A setup that writes a configuration file says where its format came from.
+    ///
+    /// The release before this one made the *surfaces* sourced: a path this
+    /// provider owns cites the page that documents it. This is the same rule
+    /// one level down, and it was written because two of the seven failed it.
+    ///
+    /// opencode's baseline set `"permission": "ask"` where the product
+    /// documents an object of tool names, and antigravity's set
+    /// `toolPermissions` where the product reads `toolPermission` with four
+    /// values, none of them the one written. Both were valid JSON in the right
+    /// file at the right path. Both installed, verified and restored cleanly.
+    /// Neither changed anything about the product — a target that looks
+    /// configured and is not, which is the failure this estate refuses one
+    /// level up and had been shipping one level down.
     fn a_setup_that_writes_configuration_says_where_its_format_came_from() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../setups").join(TOOL);

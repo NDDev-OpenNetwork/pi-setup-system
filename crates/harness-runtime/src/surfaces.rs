@@ -216,6 +216,22 @@ fn never_touch_is_disclaimed(harness: &Harness, baseline: &Value, found: &mut Ve
         if harness.native_namespaces.contains(name) {
             found.push(format!("{name:?} is claimed and disclaimed"));
         }
+        // When the block itself is absent, `disagreements` already names that
+        // one absence; repeating it once per disclaimed name adds noise, not
+        // information.
+        let recorded = baseline.get(BLOCK).is_none()
+            || baseline
+                .get("never_touch")
+                .and_then(Value::as_array)
+                .is_some_and(|list| list.iter().any(|entry| entry.as_str() == Some(name)));
+        if !recorded {
+            found.push(format!(
+                "{name:?} is disclaimed by {} and the baseline's never_touch \
+                 list does not record it -- a disclaimer without a measured \
+                 record is one a reader cannot check",
+                harness.provider_id
+            ));
+        }
     }
 }
 
@@ -1504,7 +1520,11 @@ mod tests {
                         "source": "this provider's own contract",
                     },
                 ],
-            }
+            },
+            // A disclaimer without a measured record is one a reader cannot
+            // check: every real baseline records the names its declaration
+            // disclaims at the top level, so the fixture does too.
+            "never_touch": TEST.never_touch,
         })
     }
 

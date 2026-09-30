@@ -15,7 +15,7 @@ this file and the binary disagree, the binary is right -- ask it with
 
 `settings.json` is **json**, and the parser does not accept comments.
 
-JSON. The vendor documents no comment support and publishes no schema; searched 2026-08-28 and none found on SchemaStore or the vendor's own site.
+Strict JSON -- the vendor documents no comment support and publishes no schema; searched 2026-08-28 and none found on SchemaStore or the vendor's own site.
 
 ## Owned surfaces
 
@@ -50,7 +50,7 @@ path again would nest it twice.
 
 | path | routes | shape | decided by | exercised by |
 | --- | --- | --- | --- | --- |
-| `skills` | skill | directory | measured from the pinned bundle, digest verified before reading (pi 0.87.1, package/dist/core/package-manager.js) | read its bytes |
+| `skills` | skill | directory | measured from the pinned bundle, digest verified before reading (pi 0.99.1, package/dist/core/package-manager.js) | read its bytes |
 
 **Under a scope the namespace is the permission and the recorded
 files are the inventory.** A root like this one is read by several

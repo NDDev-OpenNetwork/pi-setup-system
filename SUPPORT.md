@@ -64,7 +64,7 @@ newer. `scoped_projection_profiles` (`ADR-0125`) is the field this applies to,
 and it is omitted entirely when empty -- so a build that declares no scope
 satisfies an older checker by accident, and a build that declares one does not.
 
-Two versions, two different answers, both measured:
+Three versions, three different answers, all measured:
 
 | checker | result |
 | --- | --- |
@@ -182,7 +182,7 @@ every path below is relative to that root.
 
 | Path | Component kinds routed here | Decided by |
 | --- | --- | --- |
-| `skills` | `skill` | measured from the pinned bundle, digest verified before reading (pi 0.87.1, package/dist/core/package-manager.js) |
+| `skills` | `skill` | measured from the pinned bundle, digest verified before reading (pi 0.99.1, package/dist/core/package-manager.js) |
 
 This root is read by several products at once, so under this scope
 `remove`, the backup and a restore act on the files this program
@@ -239,7 +239,7 @@ So there is no MCP surface at any scope, and the capability arrives through `ext
 
 **`hooks.json`** -- Hooks here are an **extension API concept, not a configuration surface**. `extensions.md`, under the pinned bundle's own `package/docs/`, documents `session_start`, a `spawnHook` around tool execution and session-scoped teardown hooks -- all of them functions inside an extension module. There is no `hooks.json` and no `hooks` key in `settings.json`, so a hook reaches this product through `extensions/`, which is owned and routes `plugin`. (the product's own shipped documentation, extensions.md under the pinned bundle's package/docs/)
 
-**`sessions`** -- The product's own session store under the agent home (`PI_CODING_AGENT_SESSION_DIR` relocates it). Session history is runtime state, the same class as claude's `session-runtime-state` and grok's `sessions` -- a replace would drop or resurrect conversations, and no component kind routes it. ([source](https://pi.dev/docs/latest) -- (session persistence); measured 2026-09-27)
+**`sessions`** -- The product's own session store under the agent home (`PI_CODING_AGENT_SESSION_DIR` relocates it). Session history is runtime state, the same class as claude's `session-runtime-state` and grok's `sessions` -- a replace would drop or resurrect conversations, and no component kind routes it. ([source](https://pi.dev/docs/latest) -- session persistence; measured 2026-09-27)
 
 ## Response
 

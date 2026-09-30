@@ -10,6 +10,11 @@ on:
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag to rebuild, matching the crate version
+        required: true
+        type: string
 
 permissions: {}
 
@@ -56,6 +61,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # A dispatched run releases the tag it was asked for, not whatever the
+          # dispatching branch happened to point at -- `github.ref_name` there
+          # is the branch, and `gh release create` would mint a tag named after
+          # it. On a tag push the input is empty and `github.ref_name` is the
+          # tag, so the expression is the tag either way.
+          ref: ${{ inputs.tag || github.ref_name }}
           persist-credentials: false
 
       - name: Set up Rust toolchain
@@ -77,9 +88,9 @@ jobs:
       # -- only `python` is -- so running it on all three would fail there for a
       # reason that has nothing to do with the release.
       - name: Refuse a tag that does not match the crate version
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        if: matrix.os == 'ubuntu-latest'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "pi-setup-system"))')
@@ -170,7 +181,7 @@ jobs:
       - name: Publish one immutable release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release create "$TAG" staging/* \
             --repo "$GITHUB_REPOSITORY" \
@@ -196,6 +207,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.tag || github.ref_name }}
           persist-credentials: false
 
       - name: Collect the built binaries
@@ -224,7 +236,7 @@ jobs:
       - name: Build and push both architectures
         id: push
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           docker buildx create --use --name release >/dev/null 2>&1 || docker buildx use release

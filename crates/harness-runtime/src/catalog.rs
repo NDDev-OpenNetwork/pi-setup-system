@@ -428,12 +428,14 @@ pub fn undescribed(setups: &[Setup]) -> Examined {
 /// Matched on the suffix so a fifth vendor works rather than being a silent
 /// miss.
 ///
-/// **Two of the six that declare `plugin` have no manifest at all, and saying
-/// "the rest" was wrong.** An OpenCode plugin is a JavaScript or TypeScript
-/// module — `plugins/<name>.js`, one file exporting functions — and a Pi
-/// extension is a package. Neither carries `name` or `description` for a
-/// product to read, so there is nothing here to check and no arm to add: a
-/// module's identity is its filename and its behaviour is its exports.
+/// **Two of the six plugin-kind projections have no manifest at all, and
+/// saying "the rest" was wrong.** An OpenCode plugin is a JavaScript or
+/// TypeScript module — `plugins/<name>.js`, one file exporting functions — and
+/// a Pi extension is a package (its `ProjectionKind::Package`, counted here
+/// because it answers the same question). Neither carries `name` or
+/// `description` for a product to read, so there is nothing here to check and
+/// no arm to add: a module's identity is its filename and its behaviour is its
+/// exports.
 ///
 /// That is a real difference rather than a gap, and it is written down because
 /// the first version of this comment claimed the manifest shapes covered every
@@ -931,8 +933,9 @@ pub struct Setup {
     /// -- and those three are exactly what a consumer renders on the surface
     /// that precedes an install. `full-auto`'s description runs to 3312
     /// characters on one harness and is safety context, not marketing copy;
-    /// `sources` is what `check_authored_keys.py` reads to source every key a
-    /// setup writes. The provenance chain ran through a file no digest held.
+    /// `sources` is what `check_authored_keys.py` -- not shipped in the
+    /// rendered trees -- reads to source every key a setup writes. The provenance
+    /// chain ran through a file no digest held.
     ///
     /// Proved rather than reasoned: a description was rewritten and the whole
     /// gate stayed clean.

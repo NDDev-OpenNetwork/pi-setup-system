@@ -13,7 +13,7 @@ belongs.
 | comments | **do not parse** |
 | home moved by | `PI_CODING_AGENT_DIR` |
 
-JSON. The vendor documents no comment support and publishes no schema; searched 2026-08-28 and none found on SchemaStore or the vendor's own site.
+Strict JSON -- the vendor documents no comment support and publishes no schema; searched 2026-08-28 and none found on SchemaStore or the vendor's own site.
 
 ## The same question on the other harnesses
 

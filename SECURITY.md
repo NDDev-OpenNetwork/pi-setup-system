@@ -27,5 +27,5 @@ before, and reports identity digests. It does not read credentials, does not
 send anything over the network in its configuration lifecycle, and records no
 secret values in its state.
 
-A finding that breaks any of those four statements is in scope regardless of
+A finding that breaks any of those statements is in scope regardless of
 severity.
