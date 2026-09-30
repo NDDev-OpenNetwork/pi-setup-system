@@ -15,6 +15,14 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.87] - 2026-09-30
+
+A small pin refresh: codex moved to 0.159.2 and antigravity to
+1.2.14 in the hours after 0.0.86 was measured, so the artifact tables
+were re-measured for both — every digest computed from bytes this
+release read. The other five products pin what their vendors published
+at the same check. Protocol, ownership and the kit are unchanged.
+
 ## [0.0.86] - 2026-09-30
 
 The rendered workflows move `setup-rust-toolchain` from 1.17.0 to
