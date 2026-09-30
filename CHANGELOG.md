@@ -15,6 +15,16 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.86] - 2026-09-30
+
+The rendered workflows move `setup-rust-toolchain` from 1.17.0 to
+2.0.0 — the bump dependabot proposed on every tree, taken at the
+renderer so the trees stay generated rather than diverged. v2 sets the
+warnings-as-errors default through cargo's `build.warnings` config
+instead of `RUSTFLAGS`, which composes better with `.cargo/config.toml`,
+and adds a panic-location matcher. Product code, protocol, ownership,
+software pins and the kit are unchanged.
+
 ## [0.0.85] - 2026-09-30
 
 A third audit of the seven rendered trees against the shipped
