@@ -15,6 +15,25 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.85] - 2026-09-30
+
+A third audit of the seven rendered trees against the shipped
+0.0.84, each finding verified against the declaration, the baseline or
+the pinned artifact before any edit. Per-product corrections:
+opencode declares `tui.jsonc` a shadow of the owned `tui.json` — the
+pinned loader merges the JSONC spelling last — and the baseline note
+that denied it was rewritten from that measurement; pi's environment
+record names the eighteen `PI_*` literals 0.99.1 reads, including
+`PI_STARTUP_BENCHMARK`, and its npm-era prose moved to dated history;
+antigravity's settings note lists the six keys the setups actually
+write; grok's platform record reports the six-platform matrix with the
+npm-era rows kept under a dated sub-block; cursor's sandbox reference
+stops naming source-tree paths it does not ship; and codex's SUPPORT
+heading matches the three-row table under it. A manually dispatched
+release run now checks out the tag it was asked for rather than the
+default branch. Protocol, ownership, software pins and the kit are
+unchanged.
+
 ## [0.0.84] - 2026-09-30
 
 A routine pin refresh: six of the seven vendors published newer
