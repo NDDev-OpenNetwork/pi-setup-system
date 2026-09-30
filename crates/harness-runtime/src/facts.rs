@@ -158,7 +158,9 @@ pub struct Harness {
     ///
     /// Measured 2026-08-31 across the seven: twelve of them, in five harnesses.
     /// A person's keybindings under one, a plugin directory under another, and
-    /// a `select minimal` took both.
+    /// a `select minimal` took both. Recounted 2026-09-30: seventeen in the
+    /// same five harnesses -- claude's four further namespaces and pi's three
+    /// were added as the audits reached them.
     ///
     /// They stay **owned**, which is the point: a backup still captures them,
     /// the identity still hashes them so drift is visible, and `remove` still

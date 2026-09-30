@@ -13,11 +13,12 @@ doc-valid-idents = ["NDDev", "OpenNetwork", "OpenCode", "GitHub", "macOS", "Setu
 # `std::net` is refused outright: no command here opens a socket, and every v3
 # phase declares `network_requirement: none`.
 #
-# `std::process::Command` is refused everywhere except two `#[allow]` sites that
-# name their reason: `harness_runtime::software` starts the product for `launch`,
-# which is `runtime_external` by declaration, and `harness_runtime::probe` drives
-# this binary's own executable from a test. An allowlist of two, both named, is a
-# boundary; an allowlist nobody counted is a habit.
+# `std::process::Command` is refused everywhere except two spawn sites that
+# name their reason: `harness_runtime::software` builds the product command for
+# `launch` and hands it to `exec` -- one site in two `#[allow]` attributes --
+# and `harness_runtime::probe` drives this binary's own executable from a test.
+# An allowlist of two, both named, is a boundary; an allowlist nobody counted is
+# a habit.
 #
 # Chosen over asserting a child count at run time: counting children portably
 # means /proc on Linux and something else on each of the other two, so that

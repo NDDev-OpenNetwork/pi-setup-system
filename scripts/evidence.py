@@ -670,7 +670,8 @@ def owned_surfaces_named_by_the_product(binary: str, prefix: Path, info: dict) -
 
     **It reports and never promotes.** Writing an `evidence` value still takes
     somebody recording what they measured, and `tools/derive_evidence.py --check`
-    refuses a value stronger than a row's own prose supports. Two instruments
+    -- which is not shipped in this tree -- refuses a
+    value stronger than a row's own prose supports. Two instruments
     with one opinion between them would be one instrument.
 
     **Both inputs are asked of their owner rather than copied.** The namespaces
