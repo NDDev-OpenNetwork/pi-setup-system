@@ -9,11 +9,11 @@
   },
   "package": {
     "name": "@earendil-works/pi-coding-agent",
-    "version": "0.99.1",
+    "version": "1.0.0",
     "registry": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent",
-    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.99.1.tgz",
-    "integrity": "sha512-cWUrTOqA5M73cOYMgsh9PlhDrsBhavd+n5kVY6F7BGbGl1RjqCteVCoeVMVqhngoGACVDyw1tbLjajL8l9jrHg==",
-    "shasum": "00e7e6c668d67d0825fc8814d80097eb07ec44e0",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.0.0.tgz",
+    "integrity": "sha512-/FtbxoSQU/mEv1QnichJjRjqteqaIaMWxmhB4G367+MwZfX7/DI5B9YAg5lqbN7nztFskBEtUSZ+FlmMBECtMw==",
+    "shasum": "ae6346e0d5e2a7e2d1fdd177965cda781aa3c514",
     "node": ">=22.19.0",
     "repository_directory": "packages/coding-agent",
     "note": "**This block describes the npm distribution, which this provider no longer installs.** It is kept because it is a true and useful record of the product -- `bin.pi`, `engines.node`, the registry tarball and its integrity -- and because the version it names is the one the standalone release carries. `node: >=22.19.0` is a requirement of *that* distribution: the artifacts installed here carry their own runtime, and the whole lifecycle was measured 2026-08-31 with `node` absent from `PATH`."
@@ -25,14 +25,14 @@
         "pi",
         "--version"
       ],
-      "expected_stdout": "0.99.1",
+      "expected_stdout": "1.0.0",
       "independent_package_identity_required": true,
-      "measured_artifact_sha256": "sha256:c81b9a367bb2985fa45a2c0d4f12b147acc43655683910a5abf937fe22208425",
-      "measured_at": "2026-09-30"
+      "measured_artifact_sha256": "sha256:8fd5543a52a889d60ad57ccbf6c969e73c75c5240aae18ac40b506947a63dc38",
+      "measured_at": "2026-10-03"
     },
     "install_docs": "https://pi.dev/docs/latest",
     "install_script": "https://pi.dev/install.sh",
-    "note": "**No `bin` here, and its absence is deliberate.** It held `dist/cli.js` while the artifact table said `package/dist/bundle/cli.js`, and the version probe expected `0.0.0` beside a pin of `0.84.4` -- one fact kept twice and allowed to disagree, in both fields. Measured 2026-08-31 from the pinned bytes: the npm package declares `bin.pi = dist/bundle/cli.js` and prints `0.84.4`.\n\n**And then the entry point stopped being one value.** This provider now installs the vendor's standalone release rather than the npm package, and the executable inside it is `pi/pi` in the four gzip-tars and `pi.exe` at the root of the two zips. A single `bin` string cannot hold both, and a copy that can only be right for some platforms is worse than no copy. The artifact table's `member` is the owner of that fact, per platform, and the artifact-table transcription check refuses this block if it grows a second copy that disagrees.\n\n`expected_stdout` stays, because a version the product prints is not derivable from a member and is the one thing a run can check.\n\nRe-measured 2026-09-25 from digest-checked Linux x86_64 standalone archives: both outgoing 0.85.1 and pinned 0.87.1 print `0.0.0` for `pi --version` (exit 0). This is a vendor binary placeholder, not the release identity; `version_probe.measured_artifact_sha256` binds that observation to the current archive and forces a fresh probe when the pin moves.\n\nRe-measured 2026-09-30 against the pinned 0.99.1 linux/x86_64 archive (sha256:c81b9a367bb2985fa45a2c0d4f12b147acc43655683910a5abf937fe22208425): `pi --version` prints `0.99.1` (exit 0). The vendor retired the `0.0.0` placeholder between 0.87.1 and 0.99.1, so `expected_stdout` now agrees with the pin and no longer rides the exact-artifact exception. The probe stays bound to the measured digest, and `--skill`/`--no-skills` and the absence of a workspace flag were re-observed on the same bytes' `--help`.",
+    "note": "**No `bin` here, and its absence is deliberate.** It held `dist/cli.js` while the artifact table said `package/dist/bundle/cli.js`, and the version probe expected `0.0.0` beside a pin of `0.84.4` -- one fact kept twice and allowed to disagree, in both fields. Measured 2026-08-31 from the pinned bytes: the npm package declares `bin.pi = dist/bundle/cli.js` and prints `0.84.4`.\n\n**And then the entry point stopped being one value.** This provider now installs the vendor's standalone release rather than the npm package, and the executable inside it is `pi/pi` in the four gzip-tars and `pi.exe` at the root of the two zips. A single `bin` string cannot hold both, and a copy that can only be right for some platforms is worse than no copy. The artifact table's `member` is the owner of that fact, per platform, and the artifact-table transcription check refuses this block if it grows a second copy that disagrees.\n\n`expected_stdout` stays, because a version the product prints is not derivable from a member and is the one thing a run can check.\n\nRe-measured 2026-09-25 from digest-checked Linux x86_64 standalone archives: both outgoing 0.85.1 and pinned 0.87.1 print `0.0.0` for `pi --version` (exit 0). This is a vendor binary placeholder, not the release identity; `version_probe.measured_artifact_sha256` binds that observation to the current archive and forces a fresh probe when the pin moves.\n\nRe-measured 2026-09-30 against the then-pinned 0.99.1 linux/x86_64 archive (sha256:c81b9a367bb2985fa45a2c0d4f12b147acc43655683910a5abf937fe22208425): `pi --version` prints `0.99.1` (exit 0). The vendor retired the `0.0.0` placeholder between 0.87.1 and 0.99.1, so `expected_stdout` now agrees with the pin and no longer rides the exact-artifact exception. The probe stays bound to the measured digest, and `--skill`/`--no-skills` and the absence of a workspace flag were re-observed on the same bytes' `--help`. Re-measured 2026-10-03 against the pinned 1.0.0 linux/x86_64 archive (sha256:8fd5543a52a889d60ad57ccbf6c969e73c75c5240aae18ac40b506947a63dc38): `pi --version` prints `1.0.0` (exit 0), and `--skill`/`--no-skills` and the absence of a workspace flag were re-observed on the same bytes' `--help`, which now also lists `--tui-mode` (`fullscreen` default) and `--verbose` as the override for the new `quietStartup` setting.",
     "entry_point_source": "software_artifacts.platforms[*].member"
   },
   "launch_scope": {
@@ -48,7 +48,7 @@
       "parser": "dist/cli/args.js",
       "documentation": "https://pi.dev/docs/latest/usage",
       "workspace_project_cwd_flags": [],
-      "note": "Grammar last read from the npm package at 0.87.1 -- the standalone archives this provider installs carry no dist/ tree. Re-observed on the pinned 0.99.1 linux/x86_64 archive's own `--help` (2026-09-30, digest-bound): `--skill`/`--no-skills` still present, and still no workspace flag."
+      "note": "Grammar last read from the npm package at 0.87.1 -- the standalone archives this provider installs carry no dist/ tree. Re-observed on the then-pinned 0.99.1 linux/x86_64 archive's own `--help` (2026-09-30, digest-bound): `--skill`/`--no-skills` still present, and still no workspace flag. Re-observed on the pinned 1.0.0 linux/x86_64 archive's own `--help` (2026-10-03, digest-bound): `--skill`/`--no-skills` still present, still no workspace flag; `--tui-mode` and `--verbose` joined the grammar with 1.0.0's fullscreen-by-default TUI."
     },
     "note": "Corrected 2026-09-30: this block previously named a manager `--workspace` option and a `resolved-workspace` child cwd. Neither exists -- `launch` accepts `--target`, `--json`, `--prefix` and a bare-`--` tail for the product, and the spawned child inherits the caller's working directory (argv.rs usage table, software.rs launch). A record that describes an option nobody can pass is a contract a reader would try to use."
   },
@@ -130,9 +130,9 @@
     "telemetry_environment_override": "PI_TELEMETRY",
     "documentation": "https://pi.dev/docs/latest/settings",
     "measured_env_vars": {
-      "measured_at": "2026-09-30",
-      "measured_against": "0.99.1",
-      "note": "Literal `process.env.PI_*` in the pinned 0.99.1 linux/x86_64 binary (sha256:c81b9a36…, the artifact this table pins). The previous sweep read the installed 0.85.1 -- one name joined the read list since: `PI_STARTUP_BENCHMARK` gates interactive mode at startup. `PI_CODING_AGENT` is *written* by the binary (`= \"true\"`) to mark an in-pi process, not read; `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are read through a config helper rather than `process.env` directly and so are absent from this literal list. `PI_OFFLINE` and `PI_SKIP_VERSION_CHECK` are both read at their checks and written (`= \"1\"`) by the self-installer.",
+      "measured_at": "2026-10-03",
+      "measured_against": "1.0.0",
+      "note": "Literal `process.env.PI_*` in the 0.99.1 linux/x86_64 binary (sha256:c81b9a36…, the artifact this table pinned at that measurement). The previous sweep read the installed 0.85.1 -- one name joined the read list since: `PI_STARTUP_BENCHMARK` gates interactive mode at startup. `PI_CODING_AGENT` is *written* by the binary (`= \"true\"`) to mark an in-pi process, not read; `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are read through a config helper rather than `process.env` directly and so are absent from this literal list. `PI_OFFLINE` and `PI_SKIP_VERSION_CHECK` are both read at their checks and written (`= \"1\"`) by the self-installer. Re-measured 2026-10-03 against the pinned 1.0.0 linux/x86_64 binary (sha256:8fd5543a…): the literal `process.env.PI_*` read list is unchanged -- no name joined, none left; `process.env.PI_CODING_AGENT` still appears only as a write.",
       "read": [
         "PI_CLEAR_ON_SHRINK",
         "PI_EXPERIMENTAL",
@@ -218,7 +218,7 @@
     "plugin_marketplace": null,
     "mcp_projection": null
   },
-  "verified_at": "2026-09-30T07:07:24+00:00",
+  "verified_at": "2026-10-02T22:11:34+00:00",
   "native_surfaces": {
     "verified_at": "2026-08-31",
     "config_home": "~/.pi/agent",
@@ -321,6 +321,16 @@
         "note": "**Re-asked at 0.84.4 on 2026-08-31.** The pinned npm package was fetched and its `integrity` checked before a byte was read; the row still stands (`auth.json` 139). Searched with three controls -- `nddev_invented_reference_line`, `~/.nddev-not-a-home/skills/` and `NDDEV_INVENTED_SURFACE` -- each zero in the same bytes, so the search discriminates."
       },
       {
+        "path": "mcp-auth.json",
+        "reason": "MCP OAuth tokens, stored per server name and URL -- `mcp.md` in the 1.0.0 archive's own `docs/` states it plainly: *\"Pi registers itself with the authorization server, stores tokens in `~/.pi/agent/mcp-auth.json`, and refreshes access tokens when they expire.\"* Same class as `auth.json` beside it: never owned and never captured, because a backup of someone else's credentials is a leak with a schedule. The file did not exist at 0.99.1 -- MCP OAuth arrived with 1.0.0 -- and the `never_touch` list gained it on the same evidence.",
+        "source": "the 1.0.0 standalone archive's own mcp.md under the archive's docs/ (sha256:8fd5543a…, the artifact this table pins), 2026-10-03"
+      },
+      {
+        "path": "mcp.json",
+        "reason": "User-level MCP server registry, managed by `pi mcp add` and read on every session start; the project-scoped `.pi/mcp.json` is gated behind project trust (`security.md` under the archive's `docs/`). Entries carry commands, URLs, headers and token-bearing env-var names -- a file this provider wrote would own server trust without the user ever signing a server. Declined like `keybindings.json`: the user's own surface, present at 1.0.0, absent from the 0.84.4 measurement the `mcp_config.json` row still cites.",
+        "source": "the 1.0.0 standalone archive's own mcp.md, configuration.md and security.md under the archive's docs/ (sha256:8fd5543a…), 2026-10-03"
+      },
+      {
         "path": "git",
         "reason": "Package checkouts the product clones and manages: `~/.pi/agent/git/<host>/<path>` for a global install. Its own shipped docs say what happens to anything a person leaves there -- *\"When reconciliation changes the checkout, pi resets and cleans the clone\"* -- so it is not a surface a setup can promise, and a backup of it would capture somebody else's repository.",
         "source": "measured 2026-08-28 in the product's own shipped documentation, read from the 0.84.3 package at node_modules/@earendil-works/pi-coding-agent/docs",
@@ -380,7 +390,8 @@
       {
         "path": "mcp_config.json",
         "reason": "**The vendor says this product has none.** Its own shipped documentation, `usage.md`, under the 0.84.4 bundle's own `package/docs/`, and confirmed against the live page 2026-08-29: *\"It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages…\"*\n\nSo there is no MCP surface at any scope, and the capability arrives through `extensions/`, which this provider owns and routes as `plugin`. A stated absence is worth more than a missing file: it says the next release will not quietly add one under a name nobody guessed.",
-        "source": "the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage"
+        "source": "the product's own shipped documentation, usage.md under the pinned bundle's package/docs/; https://pi.dev/docs/latest/usage",
+        "note": "**Corrected 2026-10-03 at 1.0.0, and the sentence it leans on is no longer true of the product.** The 1.0.0 archive's own `mcp.md` documents a real MCP surface -- `builtin:mcp` is a default-on built-in extension, `pi mcp add/list` manage servers, and OAuth tokens live in `mcp-auth.json`. What it still does not carry is this name: the file it reads is `mcp.json` (`configuration.md` lists `<agent-dir>/mcp.json` and `.pi/mcp.json`), declined beside it rather than owned. The declined surface was named right and documented wrong -- the row answered a spelling the product never used."
       },
       {
         "path": "agents",
@@ -436,6 +447,54 @@
     "shape": "gzip-tar",
     "platforms": {
       "linux/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-arm64.tar.gz",
+        "bytes": 42646353,
+        "sha256": "sha256:b60b3fda830a43c1dc3f5edb5fc7b681f22a0a930b48cdac13b97570c6045819",
+        "member": "pi/pi"
+      },
+      "linux/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-x64.tar.gz",
+        "bytes": 42549511,
+        "sha256": "sha256:8fd5543a52a889d60ad57ccbf6c969e73c75c5240aae18ac40b506947a63dc38",
+        "member": "pi/pi"
+      },
+      "macos/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-darwin-arm64.tar.gz",
+        "bytes": 31004152,
+        "sha256": "sha256:97291e7d2eb2d7d95ab1f67d26de7902302201bc8786c132bbbc9e53fa8526cc",
+        "member": "pi/pi"
+      },
+      "macos/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-darwin-x64.tar.gz",
+        "bytes": 33464767,
+        "sha256": "sha256:62fb78fcdbc7c0dbd21044dd44bfb3af20df447285bb55e9debf86ff4838776d",
+        "member": "pi/pi"
+      },
+      "windows/arm64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-windows-arm64.zip",
+        "bytes": 43674914,
+        "sha256": "sha256:122d3a1825eac4aa17081c769188c1d058febf579a9407091ae829626997ea96",
+        "shape": "zip",
+        "member": "pi.exe"
+      },
+      "windows/x86_64": {
+        "url": "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-windows-x64.zip",
+        "bytes": 45041072,
+        "sha256": "sha256:f7dbd39814bf6763f01e7f688ad089615de1d0eb55fc8915a49acdc2088f4404",
+        "shape": "zip",
+        "member": "pi.exe"
+      }
+    },
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. At that measurement the product answered `0.84.4`; this block's pinned archive answers `1.0.0` (digest-bound probe, 2026-10-03 -- `cli_identity`).\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
+    "version": "1.0.0",
+    "verified_at": "2026-10-02T22:11:34+00:00"
+  },
+  "setup_catalogue_digest": "sha256:0a5301ca213865017f625ea83ab4cb1689b69afe40345068c9cc6f5f485161cf",
+  "previous_software_artifacts": {
+    "command": "pi",
+    "shape": "gzip-tar",
+    "platforms": {
+      "linux/arm64": {
         "url": "https://github.com/earendil-works/pi/releases/download/v0.99.1/pi-linux-arm64.tar.gz",
         "bytes": 42712503,
         "sha256": "sha256:e632a9e55bc86525ffd0f71d09185d630883f64b9cfc858f731d1edc92716954",
@@ -474,57 +533,9 @@
         "member": "pi.exe"
       }
     },
-    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. At that measurement the product answered `0.84.4`; this block's pinned archive answers `0.99.1` (digest-bound probe, 2026-09-30 -- `cli_identity`).\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
+    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. At that measurement the product answered `0.84.4`; this block's archive answers `0.99.1` (digest-bound probe, 2026-09-30 -- `cli_identity`).\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
     "version": "0.99.1",
     "verified_at": "2026-09-30T07:07:24+00:00"
-  },
-  "setup_catalogue_digest": "sha256:f78d604c5dd65df77e37128f5a0612f719f4a6529053cca8cea0c26b3e5dec3c",
-  "previous_software_artifacts": {
-    "command": "pi",
-    "shape": "gzip-tar",
-    "platforms": {
-      "linux/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-arm64.tar.gz",
-        "bytes": 42217308,
-        "sha256": "sha256:364b4a9f8491450b27a4857d4e3c780dbaf696790821c176a873e860cbbc3b89",
-        "member": "pi/pi"
-      },
-      "linux/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-x64.tar.gz",
-        "bytes": 42120827,
-        "sha256": "sha256:80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c",
-        "member": "pi/pi"
-      },
-      "macos/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-darwin-arm64.tar.gz",
-        "bytes": 30563988,
-        "sha256": "sha256:4f8d288b78c9768d3a4ac6f61f06cd34394b82ac17d5b42d1e44a437add401b7",
-        "member": "pi/pi"
-      },
-      "macos/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-darwin-x64.tar.gz",
-        "bytes": 33033993,
-        "sha256": "sha256:01d8ee28d7114fec4f4eeedbb7561f790853040e9bfbdeebe79437ab66ea51f5",
-        "member": "pi/pi"
-      },
-      "windows/arm64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-windows-arm64.zip",
-        "bytes": 43250108,
-        "sha256": "sha256:2e0d544999a765018ee5c2ff1a8b1a7e0f5d5b6b1e00b32d8c025d6c1dbcc833",
-        "shape": "zip",
-        "member": "pi.exe"
-      },
-      "windows/x86_64": {
-        "url": "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-windows-x64.zip",
-        "bytes": 44615504,
-        "sha256": "sha256:aab2ba67baf8ff97a52d05b62d88e9e65a840c6ea8fa1029a28d62d210d4e5fc",
-        "shape": "zip",
-        "member": "pi.exe"
-      }
-    },
-    "note": "**The vendor's standalone release, not its npm package, since 2026-08-31.** The npm tarball is 6.8MB of JavaScript whose entry point is `dist/bundle/cli.js` with a `#!/usr/bin/env node` shebang. Installing it left a host without Node >= 22.19 with a program that installed and could not start -- an install that succeeds and a launch that fails, with nothing between them saying so.\n\nThe release publishes one standalone archive per platform for all six declared hosts, and each was fetched, checked against the vendor's own `SHA256SUMS`, and recorded from the bytes. **Two layouts in one release:** the four gzip-tars carry the executable at `pi/pi`, and the two Windows ZIPs carry `pi.exe` at the root. A rule built from the platform name would have been right four times -- the same lesson cursor and antigravity each taught once, on the container rather than the path.\n\n**Measured, with the absence controlled:** the whole lifecycle -- install, launch, update from 0.84.3, rollback, roll forward, inactive removal, removal -- runs with `node` unreachable on `PATH`, and the run checked that it was unreachable. At that measurement the product answered `0.84.4`; this block's bytes answer `0.0.0` -- the vendor placeholder retired at 0.99.1 (`cli_identity`).\n\nthe pin refresher reads the release rather than the registry now, and refuses an artifact whose bytes disagree with the vendor's published digest. The twelve records here were produced twice -- once by hand and once by the tool -- and compared.",
-    "version": "0.87.1",
-    "verified_at": "2026-09-28T14:27:26+00:00"
   },
   "surface_presence": {
     "measured_at": "2026-09-02",
@@ -540,6 +551,7 @@
   },
   "never_touch": [
     "auth.json",
+    "mcp-auth.json",
     "trust.json",
     "sessions"
   ]
