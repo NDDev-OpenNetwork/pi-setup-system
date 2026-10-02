@@ -20,6 +20,60 @@ use harness_runtime::{Artifact, Delivery, Previous, Shape, Software};
 pub(crate) const ARTIFACTS: &[Artifact] = &[
     Artifact {
         platform: "linux/arm64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-arm64.tar.gz",
+        bytes: 42_646_353,
+        sha256: "sha256:b60b3fda830a43c1dc3f5edb5fc7b681f22a0a930b48cdac13b97570c6045819",
+        shape: Shape::GzipTar,
+        member: "pi/pi",
+    },
+    Artifact {
+        platform: "linux/x86_64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-linux-x64.tar.gz",
+        bytes: 42_549_511,
+        sha256: "sha256:8fd5543a52a889d60ad57ccbf6c969e73c75c5240aae18ac40b506947a63dc38",
+        shape: Shape::GzipTar,
+        member: "pi/pi",
+    },
+    Artifact {
+        platform: "macos/arm64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-darwin-arm64.tar.gz",
+        bytes: 31_004_152,
+        sha256: "sha256:97291e7d2eb2d7d95ab1f67d26de7902302201bc8786c132bbbc9e53fa8526cc",
+        shape: Shape::GzipTar,
+        member: "pi/pi",
+    },
+    Artifact {
+        platform: "macos/x86_64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-darwin-x64.tar.gz",
+        bytes: 33_464_767,
+        sha256: "sha256:62fb78fcdbc7c0dbd21044dd44bfb3af20df447285bb55e9debf86ff4838776d",
+        shape: Shape::GzipTar,
+        member: "pi/pi",
+    },
+    Artifact {
+        platform: "windows/arm64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-windows-arm64.zip",
+        bytes: 43_674_914,
+        sha256: "sha256:122d3a1825eac4aa17081c769188c1d058febf579a9407091ae829626997ea96",
+        shape: Shape::Zip,
+        member: "pi.exe",
+    },
+    Artifact {
+        platform: "windows/x86_64",
+        url: "https://github.com/earendil-works/pi/releases/download/v1.0.0/pi-windows-x64.zip",
+        bytes: 45_041_072,
+        sha256: "sha256:f7dbd39814bf6763f01e7f688ad089615de1d0eb55fc8915a49acdc2088f4404",
+        shape: Shape::Zip,
+        member: "pi.exe",
+    },
+];
+
+/// The artifacts 0.99.1 was published as, kept so
+/// `software_update` has a version to move from and `rollback` a tree to
+/// return to. Measured from bytes when it was the current pin.
+pub(crate) const PREVIOUS_ARTIFACTS: &[Artifact] = &[
+    Artifact {
+        platform: "linux/arm64",
         url: "https://github.com/earendil-works/pi/releases/download/v0.99.1/pi-linux-arm64.tar.gz",
         bytes: 42_712_503,
         sha256: "sha256:e632a9e55bc86525ffd0f71d09185d630883f64b9cfc858f731d1edc92716954",
@@ -68,68 +122,14 @@ pub(crate) const ARTIFACTS: &[Artifact] = &[
     },
 ];
 
-/// The artifacts 0.87.1 was published as, kept so
-/// `software_update` has a version to move from and `rollback` a tree to
-/// return to. Measured from bytes when it was the current pin.
-pub(crate) const PREVIOUS_ARTIFACTS: &[Artifact] = &[
-    Artifact {
-        platform: "linux/arm64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-arm64.tar.gz",
-        bytes: 42_217_308,
-        sha256: "sha256:364b4a9f8491450b27a4857d4e3c780dbaf696790821c176a873e860cbbc3b89",
-        shape: Shape::GzipTar,
-        member: "pi/pi",
-    },
-    Artifact {
-        platform: "linux/x86_64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-linux-x64.tar.gz",
-        bytes: 42_120_827,
-        sha256: "sha256:80d78dd62d50049a006b981d994c61255bcc10e730b0c278d4ea0a755909764c",
-        shape: Shape::GzipTar,
-        member: "pi/pi",
-    },
-    Artifact {
-        platform: "macos/arm64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-darwin-arm64.tar.gz",
-        bytes: 30_563_988,
-        sha256: "sha256:4f8d288b78c9768d3a4ac6f61f06cd34394b82ac17d5b42d1e44a437add401b7",
-        shape: Shape::GzipTar,
-        member: "pi/pi",
-    },
-    Artifact {
-        platform: "macos/x86_64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-darwin-x64.tar.gz",
-        bytes: 33_033_993,
-        sha256: "sha256:01d8ee28d7114fec4f4eeedbb7561f790853040e9bfbdeebe79437ab66ea51f5",
-        shape: Shape::GzipTar,
-        member: "pi/pi",
-    },
-    Artifact {
-        platform: "windows/arm64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-windows-arm64.zip",
-        bytes: 43_250_108,
-        sha256: "sha256:2e0d544999a765018ee5c2ff1a8b1a7e0f5d5b6b1e00b32d8c025d6c1dbcc833",
-        shape: Shape::Zip,
-        member: "pi.exe",
-    },
-    Artifact {
-        platform: "windows/x86_64",
-        url: "https://github.com/earendil-works/pi/releases/download/v0.87.1/pi-windows-x64.zip",
-        bytes: 44_615_504,
-        sha256: "sha256:aab2ba67baf8ff97a52d05b62d88e9e65a840c6ea8fa1029a28d62d210d4e5fc",
-        shape: Shape::Zip,
-        member: "pi.exe",
-    },
-];
-
 /// Pi Coding Agent's program, and where its bytes come from.
 pub(crate) const SOFTWARE: Software = Software {
-    version: "0.99.1",
+    version: "1.0.0",
     command: "pi",
     delivery: Delivery::Artifacts(ARTIFACTS),
     unsupported: &[],
     previous: Some(Previous {
-        version: "0.87.1",
+        version: "0.99.1",
         artifacts: PREVIOUS_ARTIFACTS,
     }),
 };

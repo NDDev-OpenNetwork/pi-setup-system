@@ -149,9 +149,9 @@ pub const PI: Harness = Harness {
             "git",
             "npm",
         ],
-        excluded: &["auth.json", "trust.json", "sessions"],
+        excluded: &["auth.json", "mcp-auth.json", "trust.json", "sessions"],
     }],
-    never_touch: &["auth.json", "trust.json", "sessions"],
+    never_touch: &["auth.json", "mcp-auth.json", "trust.json", "sessions"],
     // Oh My Pi is a separate product descended from the same code: package
     // `@oh-my-pi/pi-coding-agent`, command `omp`, home `~/.omp/agent`. Its
     // shape is Pi's -- both keep their configuration one directory down under
