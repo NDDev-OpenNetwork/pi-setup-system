@@ -15,6 +15,19 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.88] - 2026-10-03
+
+A routine pin refresh: all seven vendors moved since 0.0.87 was
+measured — claude 2.1.288, codex 0.160.0, grok 1.0.49, pi 1.0.0,
+opencode 1.18.34, cursor 2026.10.01-e373342 and antigravity 1.2.15 —
+so every artifact table was re-measured from bytes this release read.
+pi's 1.0.0 stores MCP OAuth tokens in `~/.pi/agent/mcp-auth.json`, a
+credentials file that joined `never_touch` and the backup exclusion so
+no snapshot or restore ever holds it. The baseline comparator learned
+to read 64-bit Mach-O signatures, so an opencode darwin pair differing
+only inside LC_CODE_SIGNATURE now reports `signature-only` rather than
+a false divergence. Protocol, ownership and the kit are unchanged.
+
 ## [0.0.87] - 2026-09-30
 
 A small pin refresh: codex moved to 0.159.2 and antigravity to
