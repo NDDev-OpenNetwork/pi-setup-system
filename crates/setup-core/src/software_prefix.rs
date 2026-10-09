@@ -266,6 +266,22 @@ pub fn observe(root: &Path, control: &str) -> Result<Observation> {
     })
 }
 
+/// Seal every entry below a held stage, with no excluded bookkeeping name.
+pub(crate) fn digest_directory(directory: &Dir) -> Result<String> {
+    let mut reading = Reading {
+        started: Instant::now(),
+        entries: 0,
+        bytes: 0,
+        hash: Sha256::new(),
+    };
+    field(&mut reading.hash, b"nddev:software-stage:v1");
+    reading.walk(directory, "", 0, "")?;
+    Ok(format!(
+        "sha256:{}",
+        crate::digest::hex(&reading.hash.finalize())
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -315,13 +331,9 @@ mod tests {
         fs::remove_file(root.join("large")).unwrap();
         #[cfg(unix)]
         {
-            use std::{
-                ffi::OsString,
-                os::unix::{
-                    ffi::OsStringExt,
-                    fs::{PermissionsExt, symlink},
-                    net::UnixListener,
-                },
+            use std::os::unix::{
+                fs::{PermissionsExt, symlink},
+                net::UnixListener,
             };
             fs::write(parent.join("outside"), b"outside").unwrap();
             symlink(parent.join("outside"), root.join("link")).unwrap();
@@ -339,10 +351,15 @@ mod tests {
             fs::set_permissions(root.join("executable"), fs::Permissions::from_mode(0o700))
                 .unwrap();
             assert_ne!(unexecutable, observe(&root, ".control").unwrap().digest);
-            let invalid = root.join(OsString::from_vec(vec![0xff]));
-            fs::write(&invalid, b"unrepresentable name").unwrap();
-            assert!(observe(&root, ".control").is_err());
-            fs::remove_file(invalid).unwrap();
+            // Linux permits byte names which APFS refuses before observation.
+            #[cfg(target_os = "linux")]
+            {
+                use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+                let invalid = root.join(OsString::from_vec(vec![0xff]));
+                fs::write(&invalid, b"unrepresentable name").unwrap();
+                assert!(observe(&root, ".control").is_err());
+                fs::remove_file(invalid).unwrap();
+            }
             let socket = UnixListener::bind(root.join("socket")).unwrap();
             assert!(observe(&root, ".control").is_err());
             drop(socket);

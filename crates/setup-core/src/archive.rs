@@ -39,7 +39,7 @@
 
 mod output;
 
-use output::Destination;
+pub(crate) use output::Destination;
 use std::fs;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path};
@@ -691,12 +691,20 @@ pub fn extract_gzip_tar(
     destination: &Path,
     limits: Limits,
 ) -> Result<Vec<Entry>> {
+    let output = Destination::open(destination)
+        .map_err(|error| from_io("destination could not be opened", error))?;
+    extract_gzip_tar_into(source, destination, limits, &output)
+}
+
+pub(crate) fn extract_gzip_tar_into(
+    source: impl Read,
+    destination: &Path,
+    limits: Limits,
+    output: &Destination,
+) -> Result<Vec<Entry>> {
     let mut tar = Tar::new(Gunzip::new(source)?);
     let mut written = Vec::new();
     let mut total = 0_u64;
-
-    let output = Destination::open(destination)
-        .map_err(|error| from_io("destination could not be opened", error))?;
 
     while let Some(entry) = tar.next_entry()? {
         if written.len() as u64 >= limits.entries {
@@ -1031,6 +1039,7 @@ mod zip {
         mut source: impl Read + Seek,
         destination: &Path,
         limits: Limits,
+        output: &Destination,
     ) -> Result<Vec<Entry>> {
         let (count, size, at) = locate(&mut source)?;
         if count > limits.entries {
@@ -1058,9 +1067,6 @@ mod zip {
                 limits.bytes
             )));
         }
-
-        let output = Destination::open(destination)
-            .map_err(|error| from_io("destination could not be opened", error))?;
 
         let mut written = Vec::with_capacity(listed.len());
         for entry in listed {
@@ -1115,7 +1121,18 @@ pub fn extract_zip(
     destination: &Path,
     limits: Limits,
 ) -> Result<Vec<Entry>> {
-    zip::extract(source, destination, limits)
+    let output = Destination::open(destination)
+        .map_err(|error| from_io("destination could not be opened", error))?;
+    extract_zip_into(source, destination, limits, &output)
+}
+
+pub(crate) fn extract_zip_into(
+    source: impl Read + Seek,
+    destination: &Path,
+    limits: Limits,
+    output: &Destination,
+) -> Result<Vec<Entry>> {
+    zip::extract(source, destination, limits, output)
 }
 
 /// Prove the joined path really is inside the destination.
@@ -1149,6 +1166,10 @@ fn apply_mode(file: &fs::File, mode: u32) -> Result<()> {
 
 /// Windows has no mode bits to carry, and executability is decided by extension.
 #[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Unix permissions are fallible; this platform has no Unix mode."
+)]
 fn apply_mode(_file: &fs::File, _mode: u32) -> Result<()> {
     Ok(())
 }
@@ -1171,8 +1192,16 @@ pub fn place_executable(source: impl Read, destination: &Path) -> Result<u64> {
         .ok_or_else(|| refuse("executable has no file name"))?;
     let output = Destination::open(parent)
         .map_err(|error| from_io("destination directory could not be opened", error))?;
+    place_executable_into(source, Path::new(name), &output)
+}
+
+pub(crate) fn place_executable_into(
+    source: impl Read,
+    name: &Path,
+    output: &Destination,
+) -> Result<u64> {
     let mut file = output
-        .file(Path::new(name))
+        .file(name)
         .map_err(|error| from_io("executable could not be created", error))?;
     let mut source = source;
     let written = io::copy(&mut source, &mut file)
@@ -1811,12 +1840,20 @@ mod tests {
             bytes: io::Cursor<&'a [u8]>,
             destination: &'a Path,
             moved: &'a Path,
+            blocked: bool,
         }
         impl Read for MovingSource<'_> {
             fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
                 if self.bytes.position() == 10 {
-                    fs::rename(self.destination, self.moved)?;
-                    fs::create_dir(self.destination)?;
+                    match fs::rename(self.destination, self.moved) {
+                        Ok(()) => fs::create_dir(self.destination)?,
+                        Err(error)
+                            if cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32)) =>
+                        {
+                            self.blocked = true;
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 self.bytes.read(buffer)
             }
@@ -1865,14 +1902,21 @@ mod tests {
         // tar reader can return an entry. Extraction must keep its original dir.
         let fresh = root.join("fresh");
         let moved = root.join("moved");
-        let source = MovingSource {
+        let mut source = MovingSource {
             bytes: io::Cursor::new(archive.as_slice()),
             destination: &fresh,
             moved: &moved,
+            blocked: false,
         };
-        extract_gzip_tar(source, &fresh, ROOMY).unwrap();
-        assert_eq!(fs::read(moved.join("package/program")).unwrap(), b"new");
-        assert!(fs::read_dir(&fresh).unwrap().next().is_none());
+        extract_gzip_tar(&mut source, &fresh, ROOMY).unwrap();
+        if source.blocked {
+            // Windows directory handles deliberately deny FILE_SHARE_DELETE.
+            assert!(!moved.exists());
+            assert_eq!(fs::read(fresh.join("package/program")).unwrap(), b"new");
+        } else {
+            assert_eq!(fs::read(moved.join("package/program")).unwrap(), b"new");
+            assert!(fs::read_dir(&fresh).unwrap().next().is_none());
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 

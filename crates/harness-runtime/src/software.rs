@@ -30,8 +30,8 @@
 //!
 //! Software operations hold a prefix lock and revalidate the plan's bounded
 //! content observation before recovery or effects. Install stages the version
-//! before exposing its entry point. Staging is not an operation receipt: exact
-//! recovery ownership and replay remain separate from this stale-plan guard.
+//! before exposing its entry point. A per-command journal owns staging recovery;
+//! installed-version ownership and exact-plan replay remain separate boundaries.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -396,7 +396,7 @@ pub(crate) fn apply(
             ));
         }
         let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
-        let recovered = setup_core::software::recover(&root)?;
+        let recovered = setup_core::software::recover(&declared, &root)?;
         let removed = software::remove(&declared, &root)?;
         return Ok(serde_json::json!({
             "state": "verified",
@@ -414,7 +414,7 @@ pub(crate) fn apply(
     // Reject incomplete or incorrect inputs before creating prefix bookkeeping
     // or recovering any previously observed staging. The kernel consumes this
     // same held input and verifies the extraction stream before promotion.
-    // Operation-specific recovery ownership remains a separate boundary.
+    // Recovery only touches physical directories named by its staging journal.
     let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
 
     // Re-checked here, not trusted from the plan: applying happens later, and
@@ -436,7 +436,7 @@ pub(crate) fn apply(
         ));
     }
 
-    let recovered = setup_core::software::recover(&root)?;
+    let recovered = setup_core::software::recover(&declared, &root)?;
     let installed = software::install_verified(&declared, artifact, input, &root)?;
 
     Ok(serde_json::json!({
@@ -930,6 +930,10 @@ fn replace_this_process(mut command: std::process::Command, executable: &Path) -
 
 /// Windows has no `exec`, so the status is carried back by hand.
 #[cfg(not(unix))]
+#[allow(
+    clippy::disallowed_types,
+    reason = "The declared launch operation forwards this command's status."
+)]
 fn replace_this_process(mut command: std::process::Command, executable: &Path) -> Error {
     match command.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),

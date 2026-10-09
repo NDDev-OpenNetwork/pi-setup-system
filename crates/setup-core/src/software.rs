@@ -17,6 +17,7 @@
 //! could not.
 
 mod input;
+mod staging;
 
 pub use input::VerifiedArtifact;
 
@@ -515,52 +516,39 @@ pub fn install_verified(
     source.begin(artifact)?;
     let version_root = root.join(software.version);
 
-    // **Staged beside the final path, never into it.** This used to clear
-    // `<root>/<version>` and extract into that same directory, so between those
-    // two steps there was no installation at all -- and on a reinstall of the
-    // version currently exposed, `bin/<command>` pointed into a directory that
-    // had just been deleted. A crash, a full disk, or an archive that turns out
-    // not to carry its declared executable took the working program with it.
-    //
-    // The names begin with a dot, which is not decoration: `Present::under_on`
-    // skips dotted entries when it lists installed versions, so a staging or
-    // quarantine directory left by an interruption is never read as a version
-    // somebody could roll back to.
-    let staging = root.join(format!(".incoming-{}", software.version));
-    let quarantine = root.join(format!(".replaced-{}", software.version));
-    for leftover in [&staging, &quarantine] {
-        if leftover.exists() {
-            crate::lock::remove_dir_all(leftover).map_err(|error| {
-                Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("{} could not be cleared: {error}", leftover.display()),
-                )
-                .with_source(error)
-            })?;
-        }
-    }
+    let member = if artifact.shape == Shape::Raw {
+        software.command
+    } else {
+        artifact.member
+    };
+    let mut transaction =
+        staging::Staging::begin(root, software.command, software.version, member)?;
+    let staging = transaction.stage_path();
+    let output = transaction.destination()?;
 
     let (executable, files) = match artifact.shape {
         Shape::Raw => {
             let placed = staging.join(software.command);
-            archive::place_executable(source.reader(), &placed)?;
+            archive::place_executable_into(source.reader(), Path::new(software.command), &output)?;
             (placed, 1)
         }
         Shape::GzipTar | Shape::Zip => {
             let entries = if artifact.shape == Shape::Zip {
-                archive::extract_zip(source.reader(), &staging, artifact.limits())?
+                archive::extract_zip_into(source.reader(), &staging, artifact.limits(), &output)?
             } else {
-                archive::extract_gzip_tar(source.reader(), &staging, artifact.limits())?
+                archive::extract_gzip_tar_into(
+                    source.reader(),
+                    &staging,
+                    artifact.limits(),
+                    &output,
+                )?
             };
             let found = entries
                 .iter()
                 .any(|entry| entry.path == artifact.member && entry.kind == archive::Kind::File);
             if !found {
-                // Refused with the staged tree still in the staging directory
-                // and the installed one untouched. Cleaning up is best-effort:
-                // a leftover `.incoming-*` is cleared by the next attempt and is
-                // never read as an installed version.
-                let _ = crate::lock::remove_dir_all(&staging);
+                // The journal owns this incomplete stage. Recovery may discard
+                // only that physical directory; the installed version is intact.
                 return Err(Error::new(
                     ReasonCode::IntegrityMismatch,
                     format!(
@@ -574,48 +562,10 @@ pub fn install_verified(
     };
 
     source.finish()?;
+    // Windows holds extraction directories against rename until this closes.
+    drop(output);
 
-    // Promote the fully checked staging tree. Moving the old version aside
-    // before the second rename leaves an interruption window; these renames
-    // alone do not establish durable operation recovery. Replacing a populated
-    // directory directly is not a portable operation.
-    let replaced = version_root.exists();
-    if replaced {
-        fs::rename(&version_root, &quarantine).map_err(|error| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!(
-                    "the installed {} tree could not be moved aside: {error}",
-                    software.version
-                ),
-            )
-            .with_source(error)
-        })?;
-    }
-    if let Err(error) = fs::rename(&staging, &version_root) {
-        // Put back what was there. If this second rename also fails the tree is
-        // in quarantine under a name nothing reads as a version, and the refusal
-        // says so rather than reporting a success over an empty final path.
-        let restored = !replaced || fs::rename(&quarantine, &version_root).is_ok();
-        return Err(Error::new(
-            ReasonCode::StateUnavailable,
-            format!(
-                "the staged {} tree could not be promoted: {error}{}",
-                software.version,
-                if restored {
-                    ""
-                } else {
-                    ". The previous tree is in .replaced-<version> and was not put back"
-                }
-            ),
-        )
-        .with_source(error));
-    }
-    if replaced {
-        // Best-effort: the install is complete and correct without it, and a
-        // leftover is cleared by the next attempt.
-        let _ = crate::lock::remove_dir_all(&quarantine);
-    }
+    transaction.promote()?;
 
     let executable = version_root.join(
         executable
@@ -627,6 +577,7 @@ pub fn install_verified(
         .join("bin")
         .join(exposed_name(software.command, artifact.member));
     expose(&executable, &exposed, software.version, software.command)?;
+    transaction.complete()?;
 
     Ok(Installed {
         version: software.version.to_owned(),
@@ -636,97 +587,36 @@ pub fn install_verified(
     })
 }
 
-/// Resolve whatever an interrupted software operation left in a prefix.
+/// Recover the one recorded software transaction for this command.
 ///
-/// Configuration mutations have a durable journal and a `recover-operation` that
-/// reads it. Software operations have neither: the protocol's recovery takes a
-/// `--target` and this work happens under a `--prefix`, which is a different
-/// root with a different lifetime. So an interrupted install used to be resolved
-/// by the *next* install happening to clear the leftovers, and nothing could say
-/// an operation had been interrupted at all.
-///
-/// The filesystem is the record here, and it is enough for a decision because
-/// the promote is two renames in a known order. Three states, and each has one
-/// right answer:
-///
-/// * **staging present** — extraction did not finish. The final path was never
-///   touched, so the installation that was there is still there. Take the
-///   staging directory.
-/// * **quarantine present and the version present** — the promote landed and
-///   the cleanup did not. The new tree is in place. Take the quarantine.
-/// * **quarantine present and the version absent** — the promote failed after
-///   the old tree stepped aside. Put it back.
-///
-/// The third is the one that matters and the one the old code could not have
-/// resolved: `<version>` empty with a full `.replaced-<version>` beside it reads
-/// as "nothing installed" to every other function here.
-///
-/// Idempotent: run twice and the second run finds nothing and says so. It
-/// answers what it did rather than how it went, because a caller printing this
-/// is telling a person what happened to their prefix.
+/// Unrecorded staging, quarantine and temporary file names are never touched.
+/// Incomplete extraction or promotion preserves the previous version. A promoted
+/// tree completes its entry-point exposure before its recorded predecessor is
+/// removed. Directory identities are checked before and after relative renames.
 ///
 /// # Errors
-///
-/// Fails where a leftover cannot be removed or a tree cannot be put back, which
-/// is a prefix nobody can repair by running this again.
-pub fn recover(root: &Path) -> Result<Vec<String>> {
-    fn fail(what: String) -> impl FnOnce(std::io::Error) -> Error {
-        move |error: std::io::Error| {
-            Error::new(ReasonCode::StateUnavailable, format!("{what}: {error}")).with_source(error)
-        }
+/// Refuses malformed journals, changed identities and unavailable filesystem operations.
+pub fn recover(software: &Software, root: &Path) -> Result<Vec<String>> {
+    let Some(transaction) = staging::Staging::load(root, software.command)? else {
+        return Ok(Vec::new());
+    };
+    let version = transaction.version().to_owned();
+    if transaction.recover()? {
+        let executable = transaction.executable();
+        let exposed = root.join("bin").join(exposed_name(
+            software.command,
+            &executable.to_string_lossy(),
+        ));
+        expose(&executable, &exposed, &version, software.command)?;
+        transaction.complete()?;
+        Ok(vec![format!(
+            "completed the recorded installation of {version}"
+        )])
+    } else {
+        Ok(vec![format!(
+            "discarded the recorded incomplete installation of {version}; the previous tree is intact"
+        )])
     }
-
-    let mut done = Vec::new();
-    let mut entries: Vec<PathBuf> = fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
-    entries.sort();
-
-    for path in entries {
-        let Some(name) = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-        else {
-            continue;
-        };
-        if let Some(version) = name.strip_prefix(".incoming-") {
-            crate::lock::remove_dir_all(&path).map_err(fail(format!(
-                "the staged {version} tree could not be cleared"
-            )))?;
-            done.push(format!(
-                "an install of {version} was interrupted before it landed; the staged tree \
-                 is gone and whatever was installed is untouched"
-            ));
-        } else if let Some(version) = name.strip_prefix(".replaced-") {
-            let final_path = root.join(version);
-            if final_path.exists() {
-                crate::lock::remove_dir_all(&path).map_err(fail(format!(
-                    "the replaced {version} tree could not be cleared"
-                )))?;
-                done.push(format!(
-                    "an install of {version} landed and its cleanup did not; the new tree is \
-                     in place and the old one is gone"
-                ));
-            } else {
-                fs::rename(&path, &final_path).map_err(fail(format!(
-                    "the previous {version} tree could not be put back"
-                )))?;
-                done.push(format!(
-                    "an install of {version} failed after the installed tree stepped aside; \
-                     it is back"
-                ));
-            }
-        } else if name.ends_with(".incoming") {
-            // A staged marker or manifest. Neither is a tree and neither is the
-            // record until it is renamed, so a leftover is only litter.
-            let _ = crate::lock::remove_file(&path);
-            done.push(format!("a half-written {name} was cleared"));
-        }
-    }
-    Ok(done)
 }
 
 /// Remove one installed version, and the exposed command if it pointed at it.
@@ -1656,75 +1546,6 @@ mod tests {
         );
     }
 
-    /// An interrupted software operation is resolved by a decision, not by luck.
-    ///
-    /// Until this existed, the leftovers of an interrupted install were cleared
-    /// by whatever ran next, and nothing could say an operation had been
-    /// interrupted. The protocol's `recover-operation` cannot help: it takes a
-    /// `--target` and this is a `--prefix`, a different root with a different
-    /// lifetime.
-    ///
-    /// The three states, each asserted for what it leaves behind rather than
-    /// for what it says. The third is the one that matters: a version directory
-    /// that is *empty of the promote* with a full quarantine beside it reads as
-    /// "nothing installed" to every other function here, so luck would have
-    /// resolved it as a missing installation.
-    #[test]
-    fn an_interrupted_install_is_resolved_by_the_state_it_left() {
-        let root = scratch("recover-prefix");
-        fs::create_dir_all(&root).unwrap();
-
-        // Staging only: extraction stopped, the final path was never touched.
-        fs::create_dir_all(root.join(".incoming-1.2.3/package")).unwrap();
-        fs::create_dir_all(root.join("1.2.2")).unwrap();
-        fs::write(root.join("1.2.2/kept"), b"the installation that was there").unwrap();
-        let said = recover(&root).unwrap();
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].contains("interrupted before it landed"), "{said:?}");
-        assert!(!root.join(".incoming-1.2.3").exists());
-        assert!(
-            root.join("1.2.2/kept").is_file(),
-            "an untouched tree was taken"
-        );
-
-        // Quarantine with the version present: promoted, cleanup interrupted.
-        fs::create_dir_all(root.join(".replaced-1.2.3")).unwrap();
-        fs::write(root.join(".replaced-1.2.3/old"), b"the previous tree").unwrap();
-        fs::create_dir_all(root.join("1.2.3")).unwrap();
-        fs::write(root.join("1.2.3/new"), b"the tree that landed").unwrap();
-        let said = recover(&root).unwrap();
-        assert!(
-            said.iter().any(|line| line.contains("cleanup did not")),
-            "{said:?}"
-        );
-        assert!(!root.join(".replaced-1.2.3").exists());
-        assert_eq!(
-            fs::read(root.join("1.2.3/new")).unwrap(),
-            b"the tree that landed",
-            "the promoted tree was replaced by the one it replaced"
-        );
-
-        // Quarantine with the version absent: the promote failed after the old
-        // tree stepped aside. Every other function here reads this as nothing
-        // installed.
-        fs::remove_dir_all(root.join("1.2.3")).unwrap();
-        fs::create_dir_all(root.join(".replaced-1.2.3")).unwrap();
-        fs::write(root.join(".replaced-1.2.3/old"), b"the previous tree").unwrap();
-        let said = recover(&root).unwrap();
-        assert!(
-            said.iter().any(|line| line.contains("it is back")),
-            "{said:?}"
-        );
-        assert_eq!(
-            fs::read(root.join("1.2.3/old")).unwrap(),
-            b"the previous tree",
-            "the tree that stepped aside was not put back"
-        );
-
-        // Idempotent, and it says nothing rather than inventing something.
-        assert!(recover(&root).unwrap().is_empty());
-    }
-
     /// A marker truncated onto a sibling version is not believed.
     ///
     /// The consumer constructed the accident I told them I could not. The
@@ -2260,12 +2081,18 @@ mod tests {
         assert_eq!(error.reason(), ReasonCode::StateUnavailable);
         assert_eq!(fs::read(&installed.executable).unwrap(), bytes);
         assert_eq!(
-            fs::metadata(root.join(".incoming-1.2.3/codex"))
-                .unwrap()
-                .len(),
+            fs::metadata(
+                staging::Staging::load(&root, "codex")
+                    .unwrap()
+                    .unwrap()
+                    .stage_path()
+                    .join("codex")
+            )
+            .unwrap()
+            .len(),
             65_536
         );
-        assert!(!root.join(".replaced-1.2.3").exists());
+        assert_eq!(recover(&software(), &root).unwrap().len(), 1);
         fs::remove_dir_all(&at).unwrap();
     }
 

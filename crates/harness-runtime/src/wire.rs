@@ -60,19 +60,31 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             target,
             plan_path,
             plan_digest,
+            provider_release_digest,
             bundle,
             prefix,
             software_artifacts,
-            ..
-        } => apply(
-            harness,
-            &target,
-            &plan_path,
-            &plan_digest,
-            bundle.as_ref(),
-            prefix.as_deref(),
-            &software_artifacts,
-        ),
+        } => {
+            let artifact = load_plan(&plan_path, &plan_digest)?;
+            if Operation::SOFTWARE.contains(&operation_of(&artifact)?) {
+                if bundle.is_some() {
+                    return Err(Error::refuse(
+                        WireReason::UnsupportedOperation,
+                        "software operations take no configuration bundle",
+                    ));
+                }
+                validate_software_binding(harness, &target, &provider_release_digest, &artifact)?;
+            }
+            apply(
+                harness,
+                &target,
+                artifact,
+                &plan_digest,
+                bundle.as_ref(),
+                prefix.as_deref(),
+                &software_artifacts,
+            )
+        }
         Invocation::RecoverOperation { target } => recover(harness, &target),
         Invocation::Launch {
             target,
@@ -1901,7 +1913,7 @@ fn scope_of(artifact: &serde_json::Value) -> Option<provider_v3::TargetScope> {
 fn apply(
     harness: &Harness,
     target: &Path,
-    plan_path: &Path,
+    artifact: serde_json::Value,
     plan_digest: &str,
     bundle: Option<&ArgvBundle>,
     prefix: Option<&Path>,
@@ -1910,7 +1922,6 @@ fn apply(
     downloaded: &[std::path::PathBuf],
 ) -> Result<serde_json::Value> {
     let mut verified: Option<Bundle> = None;
-    let artifact = load_plan(plan_path, plan_digest)?;
     let operation = operation_of(&artifact)?;
     let expires_at = string_field(&artifact, "expires_at")?;
     // Both refusals are `stale` and both are fail-closed, but they are not the
@@ -2423,6 +2434,60 @@ pub(crate) fn perform(
 /// plan-digest"* was read as being about `plan-operation` alone. That is why the
 /// test beside it asserts the **wire** shape against the contract's list rather
 /// than against this function's output.
+/// Check the context the consumer approved before software can touch its prefix.
+/// The release argument is a consumer claim; authentication remains its owner.
+fn validate_software_binding(
+    harness: &Harness,
+    target: &Path,
+    release_digest: &str,
+    artifact: &serde_json::Value,
+) -> Result<()> {
+    let stale = || {
+        Error::refuse(
+            WireReason::Stale,
+            "the software plan does not match this provider, release, target, scope or platform; no software effect was made",
+        )
+    };
+    let scope = match artifact.get("target_scope") {
+        None => None,
+        Some(serde_json::Value::String(name)) => {
+            Some(provider_v3::TargetScope::parse(name).ok_or_else(stale)?)
+        }
+        _ => return Err(stale()),
+    };
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    refuse_another_scopes_record(harness, &resolved, scope)?;
+    let profile = harness.projection_profile_for(scope)?;
+    let owned = owned_here(harness, &resolved, scope)?;
+    let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
+    let expected = serde_json::json!({
+        "format": provider_v3::PLAN_FORMAT,
+        "protocol_version": provider_v3::PROTOCOL_VERSION,
+        "provider_id": harness.provider_id,
+        "provider_version": harness.version,
+        "provider_build_digest": harness.build_digest()?,
+        "provider_release_digest": release_digest,
+        "canonical_target": resolved.root().to_string_lossy(),
+        "expected_target_digest": identity,
+        "projection_profile_digest": profile.digest,
+        "platform": provider_v3::platform::echo(),
+        "bundle": null, "backup_ref": null, "restore_target_digest": null,
+        "permission_profile": null,
+    });
+    if expected
+        .as_object()
+        .ok_or_else(stale)?
+        .iter()
+        .any(|(key, value)| artifact.get(key) != Some(value))
+        || artifact
+            .get("native_capture")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(stale());
+    }
+    Ok(())
+}
+
 fn apply_software(
     harness: &Harness,
     prefix: Option<&Path>,
@@ -2808,6 +2873,10 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Unix permissions are fallible; Windows has no Unix mode."
+)]
 fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
     // Windows has no Unix mode to set. Claiming one was applied would be a
     // claim about permissions this platform does not express that way.
@@ -8892,6 +8961,65 @@ mod tests {
         );
     }
 
+    fn refuse_conflicting_software_bindings(
+        target: &Path,
+        prefix: &str,
+        operation: &str,
+        planned: &serde_json::Value,
+        downloaded: Option<&Path>,
+    ) {
+        let before =
+            setup_core::software_prefix::observe(Path::new(prefix), ".unused-test-control")
+                .unwrap()
+                .digest;
+        let foreign_digest = digest::of_bytes(b"another verified coordinate");
+        let mut foreign_platform = planned["plan"]["platform"].clone();
+        foreign_platform["os"] = if foreign_platform["os"] == "windows" {
+            "linux".into()
+        } else {
+            "windows".into()
+        };
+        for (field, value) in [
+            ("provider_id", serde_json::json!("foreign")),
+            ("provider_version", serde_json::json!("0.0.1")),
+            ("provider_build_digest", serde_json::json!(foreign_digest)),
+            ("provider_release_digest", serde_json::json!(foreign_digest)),
+            ("expected_target_digest", serde_json::json!(foreign_digest)),
+            (
+                "projection_profile_digest",
+                serde_json::json!(foreign_digest),
+            ),
+            ("canonical_target", serde_json::json!("/foreign")),
+            ("platform", foreign_platform),
+            ("format", serde_json::json!("foreign/1")),
+            ("protocol_version", serde_json::json!(1)),
+            ("target_scope", serde_json::json!("unknown")),
+            ("bundle", serde_json::json!({})),
+            ("backup_ref", serde_json::json!("foreign")),
+            ("restore_target_digest", serde_json::json!("foreign")),
+            ("permission_profile", serde_json::json!("foreign")),
+            ("native_capture", serde_json::json!({})),
+        ] {
+            let mut changed = planned.clone();
+            changed["plan"][field] = value;
+            changed["plan_digest"] =
+                digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &changed["plan"])
+                    .unwrap()
+                    .into();
+            let extra = apply_args(target, prefix, operation, &changed, downloaded);
+            let borrowed: Vec<&str> = extra.iter().map(String::as_str).collect();
+            let error = refuse(args("apply-operation", target, &borrowed));
+            assert_eq!(error.reason(), Some(WireReason::Stale), "{field}: {error}");
+            assert_eq!(
+                setup_core::software_prefix::observe(Path::new(prefix), ".unused-test-control")
+                    .unwrap()
+                    .digest,
+                before,
+                "{field} changed prefix bytes or control state"
+            );
+        }
+    }
+
     #[test]
     fn every_software_apply_echoes_the_plan_digest_it_was_handed() {
         // **Red before 2026-08-31, and no test here could have been.**
@@ -8952,6 +9080,7 @@ mod tests {
             } else {
                 Some(file.as_path())
             };
+            refuse_conflicting_software_bindings(&target, &prefix, operation, &planned, artifact);
             // Drift must refuse before global recovery can delete a newly
             // appeared stage or an unplanned version tree.
             let stage = Path::new(&prefix).join(".incoming-unplanned");

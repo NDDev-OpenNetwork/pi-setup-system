@@ -46,7 +46,7 @@ fn reparse(metadata: &Metadata) -> bool {
 
 fn child(parent: &Dir, name: &Path) -> io::Result<Dir> {
     match parent.create_dir(name) {
-        Ok(()) => {}
+        Ok(()) => sync(parent)?,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),
     }
@@ -57,11 +57,15 @@ fn child(parent: &Dir, name: &Path) -> io::Result<Dir> {
     Ok(directory)
 }
 
-pub(super) struct Destination {
+pub(crate) struct Destination {
     root: Dir,
 }
 
 impl Destination {
+    pub(crate) fn from_directory(root: Dir) -> Self {
+        Self { root }
+    }
+
     /// The caller selects the parent; the final destination and every archive
     /// component below it are opened without following links. Missing parents
     /// are created from the nearest existing ancestor, retaining each handle.
@@ -121,6 +125,22 @@ impl Destination {
         if !metadata.is_file() || reparse(&metadata) {
             return Err(invalid());
         }
+        sync(&directory)?;
         Ok(file.into_std())
     }
+}
+
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Preserve the fallible Unix directory-sync interface."
+    )
+)]
+fn sync(directory: &Dir) -> io::Result<()> {
+    #[cfg(unix)]
+    directory.open(".")?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
 }
