@@ -16,6 +16,8 @@ repository = "https://github.com/NDDev-OpenNetwork/pi-setup-system"
 authors = ["Danil Silantyev / NDDev"]
 
 [workspace.dependencies]
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"

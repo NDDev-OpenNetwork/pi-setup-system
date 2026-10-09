@@ -63,6 +63,13 @@ def nested_source(text: str, module: str) -> str:
 def cargo_toml(harness: str, release: str) -> str:
     package = f"{harness}-setup-system"
     product = PRODUCTS[harness]
+    # The standalone package embeds the workspace crates, so it needs their
+    # actual third-party declarations rather than a second dependency ledger.
+    source = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    block = source.split("[workspace.dependencies]", 1)[1].split("\n[", 1)[0]
+    dependencies = "\n".join(
+        line for line in block.strip().splitlines() if 'path = "crates/' not in line
+    )
     return f'''[package]
 name = "{package}"
 version = "{release}"
@@ -78,10 +85,7 @@ categories = ["command-line-utilities", "development-tools"]
 publish = ["crates-io"]
 
 [dependencies]
-serde = {{ version = "1", features = ["derive"] }}
-serde_json = {{ version = "1", features = ["preserve_order"] }}
-sha2 = "0.11"
-miniz_oxide = "0.9"
+{dependencies}
 
 [profile.release]
 lto = true
@@ -123,9 +127,13 @@ def build(harness: str, out_root: Path, release: str) -> Path:
     for module, crate in MODULES.items():
         destination = out / "src" / module
         destination.mkdir()
-        for source in sorted((ROOT / "crates" / crate / "src").glob("*.rs")):
-            name = "mod.rs" if source.name == "lib.rs" else source.name
-            destination.joinpath(name).write_text(
+        source_directory = ROOT / "crates" / crate / "src"
+        for source in sorted(source_directory.rglob("*.rs")):
+            relative = source.relative_to(source_directory)
+            name = Path("mod.rs") if relative == Path("lib.rs") else relative
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
                 nested_source(source.read_text(encoding="utf-8"), module),
                 encoding="utf-8",
             )

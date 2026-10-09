@@ -30,6 +30,13 @@ confidence-threshold = 0.93
 # Failing on one would make removing a dependency break the build.
 unused-allowed-license = "allow"
 
+# Windows handle operations used by cap-primitives; keep this allowance scoped
+# to the reviewed release instead of allowing the exception across the graph.
+[[licenses.exceptions]]
+name = "winx"
+version = "=0.36.4"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
@@ -39,9 +46,9 @@ wildcards = "deny"
 # An **allowlist**, not a list of forbidden networking crates, and the direction
 # is the point: a denylist catches only the ones somebody thought of, while this
 # fails on *any* new dependency until a person adds it -- which is the moment to
-# ask what it does. The third-party entries are all filesystem, serialization,
-# hashing and compression; not one opens a socket, measured on the released
-# binaries as zero network symbols imported and only libc and libgcc_s linked.
+# ask what it does. The capability-based filesystem layer also resolves OS
+# handle bindings and address types through cap-primitives. Provider code uses
+# its filesystem APIs; dependency names alone do not prove network behavior.
 #
 # Workspace members are listed too. An earlier version of this comment said
 # cargo-deny scopes `allow` to external crates; it does not, and
@@ -91,6 +98,34 @@ allow = [
     { crate = "typenum" },
     { crate = "unicode-ident" },
     { crate = "zmij" },
+    # setup-core's directory-relative I/O closure. Remove with cap-std/cap-fs-ext.
+    { crate = "ambient-authority" },
+    { crate = "bitflags" },
+    { crate = "cap-fs-ext" },
+    { crate = "cap-primitives" },
+    { crate = "cap-std" },
+    { crate = "errno" },
+    { crate = "fs-set-times" },
+    { crate = "io-extras" },
+    { crate = "io-lifetimes" },
+    { crate = "ipnet" },
+    { crate = "linux-raw-sys" },
+    { crate = "maybe-owned" },
+    { crate = "once_cell" },
+    { crate = "rustix" },
+    { crate = "rustix-linux-procfs" },
+    { crate = "windows-link" },
+    { crate = "windows-sys" },
+    { crate = "windows-targets" },
+    { crate = "windows_aarch64_gnullvm" },
+    { crate = "windows_aarch64_msvc" },
+    { crate = "windows_i686_gnu" },
+    { crate = "windows_i686_gnullvm" },
+    { crate = "windows_i686_msvc" },
+    { crate = "windows_x86_64_gnu" },
+    { crate = "windows_x86_64_gnullvm" },
+    { crate = "windows_x86_64_msvc" },
+    { crate = "winx" },
 ]
 
 [sources]

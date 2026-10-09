@@ -232,6 +232,9 @@ pub struct PlanArtifact {
     /// the key existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub software_prefix: Option<String>,
+    /// Exact prefix content observed by this build before a software effect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_software_digest: Option<String>,
     /// The exact software version this plan selected.
     ///
     /// `--software-version` steers planning; apply reads this field, not the
@@ -320,6 +323,8 @@ pub struct PlanInputs<'a> {
     pub software_artifacts: Vec<SoftwareArtifact>,
     /// The absolute program directory a software plan is bound to.
     pub software_prefix: Option<&'a str>,
+    /// Bounded software-prefix observation, required only for software plans.
+    pub expected_software_digest: Option<&'a str>,
     /// The exact software version a software plan selected.
     pub software_version: Option<&'a str>,
     /// Per-path end states, for a `remove` that carries a bundle. Empty
@@ -409,15 +414,24 @@ impl PlanArtifact {
             software,
             inputs.software_prefix.filter(|value| !value.is_empty()),
             inputs.software_version.filter(|value| !value.is_empty()),
+            inputs.expected_software_digest.filter(|value| {
+                value.strip_prefix("sha256:").is_some_and(|hash| {
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            }),
         ) {
-            (true, Some(_), Some(_)) | (false, None, None) => {}
-            (true, _, _) => {
+            (true, Some(_), Some(_), Some(_)) => {}
+            (false, None, None, None) if inputs.expected_software_digest.is_none() => {}
+            (true, _, _, _) => {
                 return Err(Error::refuse(
                     WireReason::ProviderUnavailable,
-                    "a software plan must bind --prefix and the exact software version",
+                    "a software plan must bind --prefix, its content digest and the exact software version",
                 ));
             }
-            (false, _, _) => {
+            (false, _, _, _) => {
                 return Err(Error::refuse(
                     WireReason::ProviderUnavailable,
                     format!(
@@ -486,6 +500,7 @@ impl PlanArtifact {
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),
             software_prefix: inputs.software_prefix.map(str::to_owned),
+            expected_software_digest: inputs.expected_software_digest.map(str::to_owned),
             software_version: inputs.software_version.map(str::to_owned),
             software_artifacts: inputs.software_artifacts,
             end_state: inputs.end_state,
@@ -625,6 +640,7 @@ mod tests {
             target_scope: None,
             software_artifacts: Vec::new(),
             software_prefix: None,
+            expected_software_digest: None,
             software_version: None,
             end_state: Vec::new(),
             provider_id: "claude-setup-system",

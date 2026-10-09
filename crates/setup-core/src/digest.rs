@@ -22,7 +22,7 @@ pub const PREFIX: &str = "sha256:";
 /// hasher's output type: that type changed between `sha2` 0.10 and 0.11, and a
 /// digest's spelling is part of this program's contract. It should not move
 /// because a dependency reorganized its traits.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
         .iter()

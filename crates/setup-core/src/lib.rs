@@ -27,6 +27,7 @@ pub mod journal;
 pub mod lock;
 pub mod native_snapshot;
 pub mod software;
+pub mod software_prefix;
 pub mod stamp;
 pub mod target;
 

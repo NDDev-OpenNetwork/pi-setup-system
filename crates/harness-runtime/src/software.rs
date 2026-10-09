@@ -28,12 +28,10 @@
 //! ten backup slots on a capture nobody can use. Installing ten times would
 //! evict every configuration backup the target had.
 //!
-//! What it does keep is a lock, because two installs racing into one directory
-//! is a real failure. It needs nothing more, because the layout makes the
-//! operation atomic by construction: bytes land in a directory named for their
-//! version, and the entry point is pointed at them only once every byte is
-//! written. An interrupted install leaves a partial directory the next one
-//! replaces, and an entry point still naming the version that worked.
+//! Software operations hold a prefix lock and revalidate the plan's bounded
+//! content observation before recovery or effects. Install stages the version
+//! before exposing its entry point. A per-command journal owns staging recovery;
+//! installed-version ownership and exact-plan replay remain separate boundaries.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -241,23 +239,44 @@ pub(crate) fn plan(
     ))
 }
 
-/// Apply one software operation under a lock, with no network open.
-///
-/// # Errors
-///
-/// Refuses a missing `--prefix`, a count of downloaded files that does not match
-/// what the plan named, bytes that are not the ones it named, or an archive that
-/// does not hold the member it named.
-pub(crate) fn apply(
+fn acquire_prefix(
     harness: &Harness,
-    prefix: Option<&Path>,
+    root: &Path,
     operation: Operation,
-    planned_version: &str,
-    planned_artifacts: &[SoftwareArtifact],
-    downloaded: &[PathBuf],
-) -> Result<serde_json::Value> {
-    let declared = version_for(&declared(harness)?, Some(planned_version))?;
-    let root = program_directory(prefix, operation)?;
+    expected_software_digest: &str,
+) -> Result<setup_core::lock::TargetLock> {
+    // A plan binds the bytes below this prefix, not just its absolute name.
+    // Check before creating bookkeeping, then again under the writer lock.
+    let before = setup_core::software_prefix::observe(root, harness.control_directory)?;
+    if before.digest != expected_software_digest {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the software prefix changed after planning; no software effect was made",
+        ));
+    }
+    let created = if before.present {
+        false
+    } else {
+        let parent = root.parent().ok_or_else(|| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                "software prefix has no parent",
+            )
+        })?;
+        fs::create_dir_all(parent).map_err(|_| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                "software prefix parent cannot be created",
+            )
+        })?;
+        fs::create_dir(root).map_err(|_| {
+            Error::refuse(
+                WireReason::Stale,
+                "software prefix appeared after observation",
+            )
+        })?;
+        true
+    };
 
     // The lock lives in this provider's own dotted directory inside the prefix,
     // not at its root. `acquire` takes a control directory, and a `target.lock`
@@ -271,42 +290,26 @@ pub(crate) fn apply(
         )
     })?;
     let mut guard = setup_core::lock::TargetLock::acquire(&control)?;
+    let after = setup_core::software_prefix::observe(root, harness.control_directory)?;
+    if after.digest != expected_software_digest && !(created && after.present && after.empty) {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the software prefix changed before its writer lock was acquired; no software effect was made",
+        ));
+    }
     guard.annotate(&format!("{} {operation}", harness.provider_id))?;
 
-    // **Under the lock, before anything reads the prefix.** An interrupted
-    // install leaves a staged tree, or a tree that stepped aside for a promote
-    // that did not land -- and the second reads as "nothing installed" to every
-    // other function here. Until this call the leftovers were cleared by
-    // whatever ran next, so the resolution was a side effect of the next
-    // operation rather than a decision, and an install could be planned against
-    // a prefix whose real state was a version in quarantine.
-    //
-    // Reported rather than done quietly: a person whose install was interrupted
-    // should be told what was found, and the answer is empty on every ordinary
-    // run.
-    let recovered = setup_core::software::recover(&root)?;
+    Ok(guard)
+}
 
-    if operation == Operation::SoftwareRemove {
-        if !downloaded.is_empty() {
-            return Err(Error::refuse(
-                WireReason::UnsupportedOperation,
-                "software_remove downloads nothing, so it takes no --software-artifact",
-            ));
-        }
-        let removed = software::remove(&declared, &root)?;
-        return Ok(serde_json::json!({
-            "state": "verified",
-            "recovered": recovered,
-            "operation": operation.as_str(),
-            "command": declared.command,
-            "version": declared.version,
-            "removed": removed,
-        }));
-    }
-
-    // One file per entry the plan named. This build's table names one, so a
-    // second file is a caller holding a plan from a different build -- which the
-    // plan digest already refuses, but saying which mismatch it is costs a line.
+fn installation_input(
+    declared: &software::Software,
+    operation: Operation,
+    planned_artifacts: &[SoftwareArtifact],
+    downloaded: &[PathBuf],
+) -> Result<(&'static software::Artifact, software::VerifiedArtifact)> {
+    // Artifact delivery requires one downloaded file and one exact compiled
+    // platform record before any prefix effect.
     let [path] = downloaded else {
         return Err(Error::refuse(
             WireReason::ProviderUnavailable,
@@ -327,6 +330,93 @@ pub(crate) fn apply(
         ));
     };
 
+    let (os, arch) = platform_of_this_host();
+    let artifact = declared.artifact_for(os, arch)?;
+    if artifact.sha256 != planned.sha256 {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "this plan binds {} but names {}; {} publishes {}",
+                declared.version, planned.sha256, declared.command, artifact.sha256
+            ),
+        ));
+    }
+    if planned.platform != artifact.platform
+        || planned.url != artifact.url
+        || planned.byte_length != artifact.bytes
+        || planned.entry_point
+            != format!(
+                "bin/{}",
+                software::exposed_name(declared.command, artifact.member)
+            )
+    {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            "the planned software artifact differs from this provider's exact platform artifact",
+        ));
+    }
+    let input = software::VerifiedArtifact::open(artifact, path).map_err(|error| {
+        Error::refuse(
+            WireReason::from(error.reason()),
+            format!(
+                "the artifact for {} must match {}: {}",
+                declared.version,
+                artifact.sha256,
+                error.detail()
+            ),
+        )
+    })?;
+    Ok((artifact, input))
+}
+
+/// Apply one software operation under a lock, with no network open.
+///
+/// # Errors
+///
+/// Refuses a missing `--prefix`, a count of downloaded files that does not match
+/// what the plan named, bytes that are not the ones it named, or an archive that
+/// does not hold the member it named.
+pub(crate) fn apply(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    operation: Operation,
+    planned_version: &str,
+    expected_software_digest: &str,
+    planned_artifacts: &[SoftwareArtifact],
+    downloaded: &[PathBuf],
+) -> Result<serde_json::Value> {
+    let declared = version_for(&declared(harness)?, Some(planned_version))?;
+    let root = program_directory(prefix, operation)?;
+
+    if operation == Operation::SoftwareRemove {
+        if !downloaded.is_empty() || !planned_artifacts.is_empty() {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                "software_remove downloads nothing, so it takes no --software-artifact",
+            ));
+        }
+        let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+        let recovered = setup_core::software::recover(&declared, &root)?;
+        let removed = software::remove(&declared, &root)?;
+        return Ok(serde_json::json!({
+            "state": "verified",
+            "recovered": recovered,
+            "operation": operation.as_str(),
+            "command": declared.command,
+            "version": declared.version,
+            "removed": removed,
+        }));
+    }
+
+    let (artifact, input) =
+        installation_input(&declared, operation, planned_artifacts, downloaded)?;
+
+    // Reject incomplete or incorrect inputs before creating prefix bookkeeping
+    // or recovering any previously observed staging. The kernel consumes this
+    // same held input and verifies the extraction stream before promotion.
+    // Recovery only touches physical directories named by its staging journal.
+    let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+
     // Re-checked here, not trusted from the plan: applying happens later, and
     // the prefix could have been emptied in between. The plan's digest binds
     // what was decided, not what the disk still holds.
@@ -346,32 +436,8 @@ pub(crate) fn apply(
         ));
     }
 
-    // The plan named both the version and the artifact. Bytes that belong to
-    // another pin this build publishes are still the wrong effect: they are
-    // not the bytes this plan authorised. Digest-of-file remains the
-    // observation; it no longer selects a neighbour release.
-    let digest = setup_core::digest::of_file(path)?;
-    if digest != planned.sha256 {
-        return Err(Error::refuse(
-            WireReason::DigestMismatch,
-            format!(
-                "the artifact given hashes to {digest}; this plan named {} for {planned_version}",
-                planned.sha256
-            ),
-        ));
-    }
-    let (os, arch) = platform_of_this_host();
-    let artifact = declared.artifact_for(os, arch)?;
-    if artifact.sha256 != planned.sha256 {
-        return Err(Error::refuse(
-            WireReason::DigestMismatch,
-            format!(
-                "this plan binds {planned_version} but names {}; {} publishes {}",
-                planned.sha256, declared.command, artifact.sha256
-            ),
-        ));
-    }
-    let installed = software::install(&declared, artifact, path, &root)?;
+    let recovered = setup_core::software::recover(&declared, &root)?;
+    let installed = software::install_verified(&declared, artifact, input, &root)?;
 
     Ok(serde_json::json!({
         "state": "verified",
@@ -864,6 +930,10 @@ fn replace_this_process(mut command: std::process::Command, executable: &Path) -
 
 /// Windows has no `exec`, so the status is carried back by hand.
 #[cfg(not(unix))]
+#[allow(
+    clippy::disallowed_types,
+    reason = "The declared launch operation forwards this command's status."
+)]
 fn replace_this_process(mut command: std::process::Command, executable: &Path) -> Error {
     match command.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
