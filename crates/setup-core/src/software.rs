@@ -16,10 +16,15 @@
 //! program can serve several targets, which a program living inside one of them
 //! could not.
 
+mod exposure;
 mod input;
+mod ownership;
+mod records;
 mod staging;
 
 pub use input::VerifiedArtifact;
+
+use exposure::expose;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +32,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{self, Limits};
+#[cfg(test)]
 use crate::digest;
 use crate::error::{Error, ReasonCode, Result};
 
@@ -480,7 +486,7 @@ impl Artifact {
     }
 }
 
-/// Install a verified artifact under `root`, replacing any same-version tree.
+/// Install verified bytes, replacing only an unchanged owned or exactly adopted tree.
 ///
 /// The digest is checked here rather than trusted from the download phase,
 /// because this phase is the one that runs without a network and is therefore
@@ -521,8 +527,13 @@ pub fn install_verified(
     } else {
         artifact.member
     };
-    let mut transaction =
-        staging::Staging::begin(root, software.command, software.version, member)?;
+    let mut transaction = staging::Staging::begin(
+        root,
+        software.command,
+        software.version,
+        member,
+        artifact.sha256,
+    )?;
     let staging = transaction.stage_path();
     let output = transaction.destination()?;
 
@@ -623,7 +634,7 @@ pub fn recover(software: &Software, root: &Path) -> Result<Vec<String>> {
 ///
 /// # Errors
 ///
-/// Fails if the tree exists and cannot be removed.
+/// Refuses an unrecorded or modified tree, or a filesystem failure during removal.
 pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     let version_root = root.join(software.version);
     if !version_root.exists() {
@@ -644,16 +655,9 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     let exposed_version =
         Present::under_named(root, software.command, software.member_here()).exposed;
 
-    crate::lock::remove_dir_all(&version_root).map_err(|error| {
-        Error::new(
-            ReasonCode::StateUnavailable,
-            format!(
-                "the {} tree could not be removed: {error}",
-                software.version
-            ),
-        )
-        .with_source(error)
-    })?;
+    if !ownership::remove(root, software.command, software.version)? {
+        return Ok(false);
+    }
 
     // Some(this one)  -- the command named what was just taken; it goes too.
     // Some(another)   -- the command names a version still installed; it stays.
@@ -678,7 +682,23 @@ pub fn remove(software: &Software, root: &Path) -> Result<bool> {
     }
     // The record goes with the command it described. A marker outliving it
     // would name a version nothing runs.
-    let _ = crate::lock::remove_file(&Present::marker(root, software.command));
+    let remove_record = |path: &Path| -> Result<()> {
+        match crate::lock::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(Error::new(
+                ReasonCode::StateUnavailable,
+                "software launch record could not be removed",
+            )
+            .with_source(error)),
+        }
+    };
+    remove_record(&Present::marker(root, software.command))?;
+    if Manifest::read(root, software.command)
+        .is_some_and(|record| record.version == software.version)
+    {
+        remove_record(&Manifest::path(root, software.command))?;
+    }
     Ok(true)
 }
 
@@ -887,45 +907,6 @@ pub fn member_kind(member: &str, windows: bool) -> MemberKind {
     }
 }
 
-/// Point one stable path at the executable inside a versioned tree.
-///
-/// The member is left where the archive put it. Codex's binary needs the `rg`
-/// and `bwrap` beside it and cursor's launcher needs its bundled `node`, so
-/// moving the executable out of its tree would produce a file that runs on the
-/// machine it was built on and nowhere else.
-/// Write a file so a reader sees the old contents or the new ones, never a part.
-///
-/// Staged in the same directory and renamed, because a rename within one
-/// directory is atomic and a plain write can stop anywhere. Factored when the
-/// second caller arrived: the version marker needed it after the consumer
-/// constructed an interrupted write that truncated onto another installed
-/// version, and the manifest beside it has the same failure and a worse one --
-/// a half-written JSON document does not parse, so a reader would call an
-/// installation unverifiable rather than wrong.
-///
-/// The staging name is dotted and sits beside its target, which every reader in
-/// this module already skips.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let staging = match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => {
-            let name = name.to_string_lossy();
-            // Dotted once, not twice. Both callers already write a dotted file,
-            // and blindly prefixing produced `..codex.version.incoming` -- which
-            // works and reads as a mistake. Caught by the marker test, which
-            // blocks the staging path by name to prove the write stages at all.
-            let dotted = if name.starts_with('.') {
-                format!("{name}.incoming")
-            } else {
-                format!(".{name}.incoming")
-            };
-            parent.join(dotted)
-        }
-        _ => return fs::write(path, bytes),
-    };
-    fs::write(&staging, bytes)?;
-    fs::rename(&staging, path)
-}
-
 /// What this prefix runs, recorded so a launch can check it rather than trust it.
 ///
 /// The version marker beside this answers *which* version is exposed. It cannot
@@ -1010,116 +991,6 @@ pub enum ManifestState {
     },
     /// A current receipt.
     Present(Manifest),
-}
-
-fn expose(executable: &Path, exposed: &Path, version: &str, command: &str) -> Result<()> {
-    let fail = |error: std::io::Error| {
-        Error::new(
-            ReasonCode::StateUnavailable,
-            format!("{} could not be exposed: {error}", exposed.display()),
-        )
-        .with_source(error)
-    };
-
-    if let Some(parent) = exposed.parent() {
-        fs::create_dir_all(parent).map_err(fail)?;
-    }
-    if exposed.symlink_metadata().is_ok() {
-        crate::lock::remove_file(exposed).map_err(fail)?;
-    }
-
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(executable, exposed).map_err(fail)?;
-    }
-    #[cfg(not(unix))]
-    {
-        match member_kind(&executable.to_string_lossy(), true) {
-            MemberKind::JavaScript => {
-                // A launcher rather than a link. Windows runs a file by its
-                // extension, so neither a hard link nor a copy of a `.js` is a
-                // program -- and the interpreter has to be named. `%*` forwards
-                // every argument, and the quotes survive a prefix with spaces,
-                // which `%LOCALAPPDATA%\Programs` is one bad default away from.
-                fs::write(
-                    exposed,
-                    format!("@node \"{}\" %*\r\n", executable.display()),
-                )
-                .map_err(fail)?;
-            }
-            MemberKind::CommandScript => {
-                // A wrapper that *calls* the vendor script where it lives.
-                // Copying or linking it here would move it out of its own tree,
-                // and a batch launcher locates the runtime it starts through
-                // `%~dp0` -- which would then resolve to `bin\` and name
-                // nothing. `call` so the wrapper returns the script's exit
-                // status rather than ending the shell, and `%*` to forward
-                // arguments with their quoting intact.
-                fs::write(
-                    exposed,
-                    format!("@call \"{}\" %*\r\n", executable.display()),
-                )
-                .map_err(fail)?;
-            }
-            MemberKind::Native => {
-                // Windows reserves symlink creation for privileged or
-                // developer-mode processes, so a hard link is what actually
-                // works; a copy is the last resort and costs a second copy of a
-                // large binary. An extensionless name is fine here: an explicit
-                // path to a PE runs whatever it is called.
-                fs::hard_link(executable, exposed)
-                    .or_else(|_| fs::copy(executable, exposed).map(|_| ()))
-                    .map_err(fail)?;
-            }
-        }
-    }
-
-    // Which version this now runs, recorded rather than left to be inferred
-    // from a link that two of the three systems do not make. Written after the
-    // command is in place, so a marker never names a version that is not
-    // exposed yet.
-    if let Some(root) = exposed.parent().and_then(Path::parent) {
-        // **Staged and renamed, because a partial marker can name a real
-        // version.** A plain write can stop anywhere, and the version filter on
-        // the reading side rejects a fragment only because a fragment is not an
-        // installed version -- unless the truncation stops somewhere that *is*
-        // one. `1.2.3` cut short is `1.2`, and where `1.2` is also installed
-        // both readers believe it: `versions.contains("1.2")` is true because
-        // 1.2 really is there. Nothing in a plain-text marker separates "1.2
-        // because that is exposed" from "1.2 because the write stopped there".
-        //
-        // Constructed by the consumer after both of us had reasoned that only a
-        // person could produce a wrong-but-plausible marker. An interrupted
-        // write and a sibling whose string is a prefix of another is not a
-        // person, and the prefix relationship makes it free.
-        //
-        // A rename within one directory is atomic, so a reader sees the marker
-        // that was there or the one being put there, never a third thing. The
-        // staging name is dotted like the marker itself, which `Present` already
-        // skips when it lists versions.
-        write_atomically(&Present::marker(root, command), version.as_bytes()).map_err(fail)?;
-
-        // And what a launch needs to check the bytes rather than trust them.
-        // Written after the marker: a reader that finds a manifest and no
-        // marker has a partial record, and a reader that finds a marker and no
-        // manifest has the state every prefix written before this had, which is
-        // accepted rather than refused.
-        let relative = executable.strip_prefix(root).unwrap_or(executable);
-        let manifest = Manifest {
-            schema_version: 1,
-            version: version.to_owned(),
-            executable: relative.to_string_lossy().replace('\\', "/"),
-            executable_sha256: digest::of_file(executable)?,
-        };
-        let body = serde_json::to_vec(&manifest).map_err(|error| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!("the installation record could not be written: {error}"),
-            )
-        })?;
-        write_atomically(&Manifest::path(root, command), &body).map_err(fail)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1593,7 +1464,10 @@ mod tests {
         let marker = root.join("bin").join(".codex.version");
         fs::write(&marker, "1.2.3").unwrap();
         let staging = marker.with_extension("version.incoming");
-        fs::create_dir_all(&staging).unwrap(); // the staging path cannot be written
+        fs::write(&staging, b"unrelated temporary file").unwrap();
+        let manifest = Manifest::path(&root, "codex");
+        fs::remove_file(&manifest).unwrap();
+        fs::create_dir(&manifest).unwrap(); // the destination is not a metadata file
         let refused = expose(
             &root.join("1.2").join(CODEX_MEMBER),
             &root.join("bin").join("codex"),
@@ -1608,6 +1482,11 @@ mod tests {
             fs::read_to_string(&marker).unwrap(),
             "1.2.3",
             "a failed marker write replaced the marker that was there"
+        );
+        assert_eq!(fs::read(&staging).unwrap(), b"unrelated temporary file");
+        assert_eq!(
+            fs::read(root.join("bin/codex")).unwrap(),
+            b"#!/bin/sh\necho new\n"
         );
     }
 
@@ -2097,15 +1976,18 @@ mod tests {
     }
 
     #[test]
-    fn installing_twice_replaces_the_tree_rather_than_merging_into_it() {
+    fn reinstallation_preserves_modified_trees_and_replaces_unchanged_ones() {
         let (at, artifact) = staged("twice", b"first", CODEX_MEMBER);
         let root = at.join("software");
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         let stray = root.join("1.2.3/package/left-over");
-        fs::write(&stray, b"from an older install").unwrap();
+        fs::write(&stray, b"unrecorded content").unwrap();
 
+        assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
+        assert_eq!(fs::read(&stray).unwrap(), b"unrecorded content");
+        fs::remove_file(&stray).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
-        assert!(!stray.exists(), "a replaced tree must not keep older files");
+        assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"first");
         fs::remove_dir_all(&at).unwrap();
     }
 
@@ -2168,9 +2050,34 @@ mod tests {
         let installed = install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert!(installed.executable.symlink_metadata().is_ok());
 
+        // A receipt does not authorize deleting files added after installation.
+        let foreign = root.join("1.2.3/personal-file");
+        fs::write(&foreign, b"preserve").unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        assert!(installed.executable.symlink_metadata().is_ok());
+        fs::remove_file(&foreign).unwrap();
+
+        let receipt = root.join(".nddev-software-codex-1.2.3.installed.json");
+        fs::remove_file(&receipt).unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(root.join("1.2.3").is_dir());
+        // Legacy adoption needs the exact archive and every installed byte.
+        fs::write(&foreign, b"preserve legacy data").unwrap();
+        assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve legacy data");
+        recover(&software(), &root).unwrap();
+        fs::remove_file(&foreign).unwrap();
+        install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        assert!(receipt.is_file());
+
         assert!(remove(&software(), &root).unwrap());
+        assert!(!receipt.exists());
         assert!(!root.join("1.2.3").exists());
         assert!(installed.executable.symlink_metadata().is_err());
+        assert!(!Present::marker(&root, "codex").exists());
+        assert!(!Manifest::path(&root, "codex").exists());
         // Removing what is already gone is not a failure, and says so.
         assert!(!remove(&software(), &root).unwrap());
         fs::remove_dir_all(&at).unwrap();
