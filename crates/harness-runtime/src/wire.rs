@@ -8919,7 +8919,25 @@ mod tests {
                 plan_then_install(&target, "software_install", Some(&file));
             }
             let prefix = ready_prefix(&target);
+            // An input refusal must preserve even staging already present at
+            // planning time. A matching prefix digest is not permission to run
+            // recovery before the supplied inputs have been checked.
+            let preserved = Path::new(&prefix).join(".incoming-unrelated");
+            fs::create_dir(&preserved).unwrap();
+            fs::write(preserved.join("keep"), b"preplanned staging").unwrap();
+            let incomplete = software_plan(&target, operation);
+            let invalid_artifact = (operation == "software_remove").then_some(file.as_path());
+            let invalid = apply_args(&target, &prefix, operation, &incomplete, invalid_artifact);
+            let borrowed: Vec<&str> = invalid.iter().map(String::as_str).collect();
+            let error = refuse(args("apply-operation", &target, &borrowed));
+            assert!(error.detail().contains("--software-artifact"), "{error}");
+            assert_eq!(
+                fs::read(preserved.join("keep")).unwrap(),
+                b"preplanned staging"
+            );
+            fs::remove_dir_all(&preserved).unwrap();
             if operation == "software_install" {
+                assert!(!Path::new(&prefix).join(TEST.control_directory).exists());
                 fs::remove_dir(&prefix).unwrap();
             }
             let planned = run(args(
@@ -8990,6 +9008,9 @@ mod tests {
         let file = downloaded(&target, &tampered);
 
         let prefix = ready_prefix(&target);
+        let preserved = Path::new(&prefix).join(".incoming-unrelated");
+        fs::create_dir(&preserved).unwrap();
+        fs::write(preserved.join("keep"), b"preplanned staging").unwrap();
         let planned = software_plan(&target, "software_install");
         let plan_path = target.join("..").join("plan-tampered.json");
         fs::write(
@@ -9014,6 +9035,38 @@ mod tests {
             ],
         ));
         assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert_eq!(
+            fs::read(preserved.join("keep")).unwrap(),
+            b"preplanned staging"
+        );
+        assert!(!Path::new(&prefix).join(TEST.control_directory).exists());
+
+        // A caller can rehash a document; that does not make a contradictory
+        // artifact size agree with this build, even with the correct payload.
+        fs::write(&file, TEST_PAYLOAD).unwrap();
+        let mut contradictory = planned.clone();
+        contradictory["plan"]["software_artifacts"][0]["byte_length"] = 0.into();
+        contradictory["plan_digest"] = setup_core::digest::of_domain_canonical_json(
+            provider_v3::PLAN_DOMAIN,
+            &contradictory["plan"],
+        )
+        .unwrap()
+        .into();
+        let extra = apply_args(
+            &target,
+            &prefix,
+            "software_install",
+            &contradictory,
+            Some(&file),
+        );
+        let borrowed: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let error = refuse(args("apply-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::DigestMismatch));
+        assert_eq!(
+            fs::read(preserved.join("keep")).unwrap(),
+            b"preplanned staging"
+        );
+        assert!(!Path::new(&prefix).join(TEST.control_directory).exists());
         assert!(
             !Path::new(&ready_prefix(&target))
                 .to_path_buf()

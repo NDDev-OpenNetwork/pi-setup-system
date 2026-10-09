@@ -37,6 +37,9 @@
 //! this runs on can spare, so bytes move from the compressed input to the file
 //! on disk without a copy of the archive existing anywhere.
 
+mod output;
+
+use output::Destination;
 use std::fs;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path};
@@ -692,8 +695,8 @@ pub fn extract_gzip_tar(
     let mut written = Vec::new();
     let mut total = 0_u64;
 
-    fs::create_dir_all(destination)
-        .map_err(|error| from_io("destination could not be created", error))?;
+    let output = Destination::open(destination)
+        .map_err(|error| from_io("destination could not be opened", error))?;
 
     while let Some(entry) = tar.next_entry()? {
         if written.len() as u64 >= limits.entries {
@@ -714,21 +717,18 @@ pub fn extract_gzip_tar(
         guard_within(destination, &path)?;
         match entry.kind {
             Kind::Directory => {
-                fs::create_dir_all(&path)
+                output
+                    .directory(Path::new(&entry.path))
                     .map_err(|error| from_io("archive directory could not be created", error))?;
             }
             Kind::File => {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|error| {
-                        from_io("archive parent directory could not be created", error)
-                    })?;
-                }
-                let mut file = fs::File::create(&path)
+                let mut file = output
+                    .file(Path::new(&entry.path))
                     .map_err(|error| from_io("archive file could not be created", error))?;
                 tar.copy_entry(&mut file)?;
+                apply_mode(&file, entry.mode)?;
                 file.sync_all()
                     .map_err(|error| from_io("archive file could not be flushed", error))?;
-                apply_mode(&path, entry.mode)?;
             }
         }
         written.push(entry);
@@ -765,7 +765,8 @@ pub fn extract_gzip_tar(
 /// using one the message says which.
 mod zip {
     use super::{
-        Entry, Kind, Limits, check_relative, from_io, from_source_io, guard_within, refuse,
+        Destination, Entry, Kind, Limits, check_relative, from_io, from_source_io, guard_within,
+        refuse,
     };
     use crate::checksum::continue_crc32;
     use crate::error::Result;
@@ -1058,15 +1059,16 @@ mod zip {
             )));
         }
 
-        fs::create_dir_all(destination)
-            .map_err(|error| from_io("destination could not be created", error))?;
+        let output = Destination::open(destination)
+            .map_err(|error| from_io("destination could not be opened", error))?;
 
         let mut written = Vec::with_capacity(listed.len());
         for entry in listed {
             let path = destination.join(&entry.path);
             guard_within(destination, &path)?;
             if entry.directory {
-                fs::create_dir_all(&path)
+                output
+                    .directory(Path::new(&entry.path))
                     .map_err(|error| from_io("archive directory could not be created", error))?;
                 written.push(Entry {
                     path: entry.path,
@@ -1081,12 +1083,8 @@ mod zip {
                 });
                 continue;
             }
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| {
-                    from_io("archive parent directory could not be created", error)
-                })?;
-            }
-            let mut file = fs::File::create(&path)
+            let mut file = output
+                .file(Path::new(&entry.path))
                 .map_err(|error| from_io("archive file could not be created", error))?;
             write_entry(&mut source, &entry, &mut file)?;
             file.sync_all()
@@ -1142,16 +1140,16 @@ fn guard_within(destination: &Path, candidate: &Path) -> Result<()> {
 
 /// Carry the archive's executable bit across, where the system has one.
 #[cfg(unix)]
-fn apply_mode(path: &Path, mode: u32) -> Result<()> {
+fn apply_mode(file: &fs::File, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let bits = if mode & 0o111 == 0 { 0o644 } else { 0o755 };
-    fs::set_permissions(path, fs::Permissions::from_mode(bits))
+    file.set_permissions(fs::Permissions::from_mode(bits))
         .map_err(|error| from_io("archive file permissions could not be set", error))
 }
 
 /// Windows has no mode bits to carry, and executability is decided by extension.
 #[cfg(not(unix))]
-fn apply_mode(_path: &Path, _mode: u32) -> Result<()> {
+fn apply_mode(_file: &fs::File, _mode: u32) -> Result<()> {
     Ok(())
 }
 
@@ -1164,18 +1162,24 @@ fn apply_mode(_path: &Path, _mode: u32) -> Result<()> {
 ///
 /// Fails if the destination cannot be created or written.
 pub fn place_executable(source: impl Read, destination: &Path) -> Result<u64> {
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| from_io("destination directory could not be created", error))?;
-    }
-    let mut file = fs::File::create(destination)
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = destination
+        .file_name()
+        .ok_or_else(|| refuse("executable has no file name"))?;
+    let output = Destination::open(parent)
+        .map_err(|error| from_io("destination directory could not be opened", error))?;
+    let mut file = output
+        .file(Path::new(name))
         .map_err(|error| from_io("executable could not be created", error))?;
     let mut source = source;
     let written = io::copy(&mut source, &mut file)
         .map_err(|error| from_io("executable could not be written", error))?;
+    apply_mode(&file, 0o755)?;
     file.sync_all()
         .map_err(|error| from_io("executable could not be flushed", error))?;
-    apply_mode(destination, 0o755)?;
     Ok(written)
 }
 
@@ -1801,6 +1805,77 @@ mod tests {
         fs::remove_dir_all(&into).unwrap();
     }
 
+    #[test]
+    fn extraction_preserves_existing_files_and_stays_in_its_held_directory() {
+        struct MovingSource<'a> {
+            bytes: io::Cursor<&'a [u8]>,
+            destination: &'a Path,
+            moved: &'a Path,
+        }
+        impl Read for MovingSource<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.bytes.position() == 10 {
+                    fs::rename(self.destination, self.moved)?;
+                    fs::create_dir(self.destination)?;
+                }
+                self.bytes.read(buffer)
+            }
+        }
+        let root = scratch("held-output");
+        let into = root.join("destination");
+        fs::create_dir_all(into.join("package")).unwrap();
+        let existing = into.join("package/program");
+        fs::write(&existing, b"owned by somebody else").unwrap();
+        let archive = gzip_tar(
+            &[Item::file("package/program", b"new", 0o755)],
+            Dialect::Posix,
+        );
+        assert!(extract_gzip_tar(archive.as_slice(), &into, ROOMY).is_err());
+        let zip = zip_bytes(&[("package/program", b"new", true)]);
+        assert!(extract_zip(io::Cursor::new(zip), &into, ROOMY).is_err());
+        assert!(place_executable(b"new".as_slice(), &existing).is_err());
+        assert_eq!(fs::read(&existing).unwrap(), b"owned by somebody else");
+
+        for name in ["file:stream", "CON.txt", "COM¹", "trailing.", "trailing "] {
+            let bytes = gzip_tar(&[Item::file(name, b"new", 0o644)], Dialect::Posix);
+            assert!(
+                extract_gzip_tar(bytes.as_slice(), &into, ROOMY).is_err(),
+                "{name}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let outside = root.join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("program"), b"outside").unwrap();
+            std::os::unix::fs::symlink(&outside, into.join("linked")).unwrap();
+            let bytes = gzip_tar(
+                &[Item::file("linked/program", b"new", 0o755)],
+                Dialect::Posix,
+            );
+            assert!(extract_gzip_tar(bytes.as_slice(), &into, ROOMY).is_err());
+            assert_eq!(fs::read(outside.join("program")).unwrap(), b"outside");
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(&outside, &alias).unwrap();
+            assert!(extract_gzip_tar(archive.as_slice(), &alias, ROOMY).is_err());
+            assert!(!outside.join("package").exists());
+        }
+
+        // Substitute the destination pathname after it is opened, before the
+        // tar reader can return an entry. Extraction must keep its original dir.
+        let fresh = root.join("fresh");
+        let moved = root.join("moved");
+        let source = MovingSource {
+            bytes: io::Cursor::new(archive.as_slice()),
+            destination: &fresh,
+            moved: &moved,
+        };
+        extract_gzip_tar(source, &fresh, ROOMY).unwrap();
+        assert_eq!(fs::read(moved.join("package/program")).unwrap(), b"new");
+        assert!(fs::read_dir(&fresh).unwrap().next().is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// A deterministic mutator, so a failure is reproducible from the seed.
     ///
     /// Not a random number generator worth the name -- an LCG with the
@@ -1842,6 +1917,7 @@ mod tests {
 
         let into = scratch("arbitrary");
         for seed in 0..256_u64 {
+            let destination = into.join(seed.to_string());
             let mut corrupted = good.clone();
             let edits = 1 + usize::try_from(seed % 12).unwrap_or(0);
             scramble(seed, &mut corrupted, edits);
@@ -1850,7 +1926,7 @@ mod tests {
             // refuses, it must say the archive is wrong -- not that this
             // machine's state is unavailable, which would send whoever reads
             // the refusal to look at their disk. All 256 answered that way once.
-            match extract_gzip_tar(corrupted.as_slice(), &into, ROOMY) {
+            match extract_gzip_tar(corrupted.as_slice(), &destination, ROOMY) {
                 Ok(_) => {}
                 Err(error) => assert_eq!(
                     error.reason(),
@@ -1859,7 +1935,7 @@ mod tests {
                 ),
             }
             assert!(
-                !into.join("..").join("escaped").exists(),
+                !into.join("escaped").exists() && !into.join("..").join("escaped").exists(),
                 "seed {seed} wrote outside the destination"
             );
         }

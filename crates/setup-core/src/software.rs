@@ -16,6 +16,10 @@
 //! program can serve several targets, which a program living inside one of them
 //! could not.
 
+mod input;
+
+pub use input::VerifiedArtifact;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -453,37 +457,7 @@ impl Artifact {
     ///
     /// Refuses with `integrity_mismatch` when either disagrees.
     pub fn verify(&self, downloaded: &Path) -> Result<()> {
-        let found = fs::metadata(downloaded)
-            .map_err(|error| {
-                Error::new(
-                    ReasonCode::StateUnavailable,
-                    format!("downloaded artifact could not be read: {error}"),
-                )
-                .with_source(error)
-            })?
-            .len();
-        if found != self.bytes {
-            return Err(Error::new(
-                ReasonCode::IntegrityMismatch,
-                format!(
-                    "{} is {found} bytes; the plan named {}",
-                    downloaded.display(),
-                    self.bytes
-                ),
-            ));
-        }
-        let measured = digest::of_file(downloaded)?;
-        if measured != self.sha256 {
-            return Err(Error::new(
-                ReasonCode::IntegrityMismatch,
-                format!(
-                    "{} hashes to {measured}; the plan named {}",
-                    downloaded.display(),
-                    self.sha256
-                ),
-            ));
-        }
-        Ok(())
+        VerifiedArtifact::open(self, downloaded).map(|_| ())
     }
 
     /// How much this artifact is allowed to produce.
@@ -521,8 +495,24 @@ pub fn install(
     downloaded: &Path,
     root: &Path,
 ) -> Result<Installed> {
-    artifact.verify(downloaded)?;
+    let source = VerifiedArtifact::open(artifact, downloaded)?;
+    install_verified(software, artifact, source, root)
+}
 
+/// Install from the held artifact already verified before the writer lock.
+///
+/// The extraction stream is checked again before staged bytes can replace an
+/// installed version. No artifact path is reopened after verification.
+///
+/// # Errors
+/// Refuses changed artifact bytes, invalid archives, binding mismatches or I/O failures.
+pub fn install_verified(
+    software: &Software,
+    artifact: &Artifact,
+    mut source: VerifiedArtifact,
+    root: &Path,
+) -> Result<Installed> {
+    source.begin(artifact)?;
     let version_root = root.join(software.version);
 
     // **Staged beside the final path, never into it.** This used to clear
@@ -550,25 +540,17 @@ pub fn install(
         }
     }
 
-    let source = fs::File::open(downloaded).map_err(|error| {
-        Error::new(
-            ReasonCode::StateUnavailable,
-            format!("downloaded artifact could not be opened: {error}"),
-        )
-        .with_source(error)
-    })?;
-
     let (executable, files) = match artifact.shape {
         Shape::Raw => {
             let placed = staging.join(software.command);
-            archive::place_executable(source, &placed)?;
+            archive::place_executable(source.reader(), &placed)?;
             (placed, 1)
         }
         Shape::GzipTar | Shape::Zip => {
             let entries = if artifact.shape == Shape::Zip {
-                archive::extract_zip(source, &staging, artifact.limits())?
+                archive::extract_zip(source.reader(), &staging, artifact.limits())?
             } else {
-                archive::extract_gzip_tar(source, &staging, artifact.limits())?
+                archive::extract_gzip_tar(source.reader(), &staging, artifact.limits())?
             };
             let found = entries
                 .iter()
@@ -591,11 +573,12 @@ pub fn install(
         }
     };
 
-    // **Promote.** Two renames on one filesystem, in the order that leaves a
-    // complete tree at the final path at every moment a reader could look:
-    // the installed one until the second rename, the new one after it. A rename
-    // onto an existing directory is not portable -- Windows refuses it -- so the
-    // old tree steps aside first rather than being overwritten in place.
+    source.finish()?;
+
+    // Promote the fully checked staging tree. Moving the old version aside
+    // before the second rename leaves an interruption window; these renames
+    // alone do not establish durable operation recovery. Replacing a populated
+    // directory directly is not a portable operation.
     let replaced = version_root.exists();
     if replaced {
         fs::rename(&version_root, &quarantine).map_err(|error| {
@@ -2211,7 +2194,11 @@ mod tests {
     fn an_archive_installs_and_exposes_one_stable_command() {
         let (at, artifact) = staged("install", b"#!/bin/sh\necho hi\n", CODEX_MEMBER);
         let root = at.join("software");
-        let installed = install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
+        let path = at.join("artifact.tgz");
+        let source = VerifiedArtifact::open(&artifact, &path).unwrap();
+        fs::rename(&path, at.join("retained.tgz")).unwrap();
+        fs::write(&path, b"a different file at the original name").unwrap();
+        let installed = install_verified(&software(), &artifact, source, &root).unwrap();
 
         assert_eq!(installed.version, "1.2.3");
         assert_eq!(installed.files, 3);
@@ -2224,6 +2211,61 @@ mod tests {
             fs::read(&installed.executable).unwrap(),
             b"#!/bin/sh\necho hi\n"
         );
+        fs::remove_dir_all(&at).unwrap();
+    }
+
+    #[test]
+    fn held_input_checks_seeked_blocks_before_partial_bytes_can_be_promoted() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let (at, artifact) = staged("held-input", b"initial", CODEX_MEMBER);
+        let path = at.join("artifact.tgz");
+        let root = at.join("software");
+        let bytes: Vec<u8> = (0_u8..251).cycle().take(150_001).collect();
+        fs::write(&path, &bytes).unwrap();
+        let artifact = Artifact {
+            bytes: bytes.len() as u64,
+            sha256: Box::leak(digest::of_bytes(&bytes).into_boxed_str()),
+            shape: Shape::Raw,
+            member: "",
+            ..artifact
+        };
+        let mut source = VerifiedArtifact::open(&artifact, &path).unwrap();
+        source.reader().seek(SeekFrom::Start(65_532)).unwrap();
+        let mut crossing = [0; 16];
+        source.reader().read_exact(&mut crossing).unwrap();
+        assert_eq!(&crossing, &bytes[65_532..65_548]);
+        source.reader().seek(SeekFrom::End(-16)).unwrap();
+        source.reader().read_exact(&mut crossing).unwrap();
+        assert_eq!(&crossing, &bytes[bytes.len() - 16..]);
+        assert!(source.reader().seek(SeekFrom::Current(-200_000)).is_err());
+        // Installation resets the private reader after any internal inspection.
+        let installed = install_verified(&software(), &artifact, source, &root).unwrap();
+        assert_eq!(fs::read(&installed.executable).unwrap(), bytes);
+
+        let source = VerifiedArtifact::open(&artifact, &path).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut changed = bytes.clone();
+        changed[70_000] ^= 1;
+        fs::write(&path, changed).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        // Matching metadata cannot admit bytes different from a verified block.
+        let error = install_verified(&software(), &artifact, source, &root).unwrap_err();
+        assert_eq!(error.reason(), ReasonCode::StateUnavailable);
+        assert_eq!(fs::read(&installed.executable).unwrap(), bytes);
+        assert_eq!(
+            fs::metadata(root.join(".incoming-1.2.3/codex"))
+                .unwrap()
+                .len(),
+            65_536
+        );
+        assert!(!root.join(".replaced-1.2.3").exists());
         fs::remove_dir_all(&at).unwrap();
     }
 

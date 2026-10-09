@@ -127,9 +127,13 @@ def build(harness: str, out_root: Path, release: str) -> Path:
     for module, crate in MODULES.items():
         destination = out / "src" / module
         destination.mkdir()
-        for source in sorted((ROOT / "crates" / crate / "src").glob("*.rs")):
-            name = "mod.rs" if source.name == "lib.rs" else source.name
-            destination.joinpath(name).write_text(
+        source_directory = ROOT / "crates" / crate / "src"
+        for source in sorted(source_directory.rglob("*.rs")):
+            relative = source.relative_to(source_directory)
+            name = Path("mod.rs") if relative == Path("lib.rs") else relative
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
                 nested_source(source.read_text(encoding="utf-8"), module),
                 encoding="utf-8",
             )

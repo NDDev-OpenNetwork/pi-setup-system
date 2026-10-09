@@ -302,51 +302,14 @@ fn acquire_prefix(
     Ok(guard)
 }
 
-/// Apply one software operation under a lock, with no network open.
-///
-/// # Errors
-///
-/// Refuses a missing `--prefix`, a count of downloaded files that does not match
-/// what the plan named, bytes that are not the ones it named, or an archive that
-/// does not hold the member it named.
-pub(crate) fn apply(
-    harness: &Harness,
-    prefix: Option<&Path>,
+fn installation_input(
+    declared: &software::Software,
     operation: Operation,
-    planned_version: &str,
-    expected_software_digest: &str,
     planned_artifacts: &[SoftwareArtifact],
     downloaded: &[PathBuf],
-) -> Result<serde_json::Value> {
-    let declared = version_for(&declared(harness)?, Some(planned_version))?;
-    let root = program_directory(prefix, operation)?;
-
-    let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
-
-    // Recover only the content observed by this plan, after revalidation.
-    let recovered = setup_core::software::recover(&root)?;
-
-    if operation == Operation::SoftwareRemove {
-        if !downloaded.is_empty() {
-            return Err(Error::refuse(
-                WireReason::UnsupportedOperation,
-                "software_remove downloads nothing, so it takes no --software-artifact",
-            ));
-        }
-        let removed = software::remove(&declared, &root)?;
-        return Ok(serde_json::json!({
-            "state": "verified",
-            "recovered": recovered,
-            "operation": operation.as_str(),
-            "command": declared.command,
-            "version": declared.version,
-            "removed": removed,
-        }));
-    }
-
-    // One file per entry the plan named. This build's table names one, so a
-    // second file is a caller holding a plan from a different build -- which the
-    // plan digest already refuses, but saying which mismatch it is costs a line.
+) -> Result<(&'static software::Artifact, software::VerifiedArtifact)> {
+    // Artifact delivery requires one downloaded file and one exact compiled
+    // platform record before any prefix effect.
     let [path] = downloaded else {
         return Err(Error::refuse(
             WireReason::ProviderUnavailable,
@@ -367,6 +330,93 @@ pub(crate) fn apply(
         ));
     };
 
+    let (os, arch) = platform_of_this_host();
+    let artifact = declared.artifact_for(os, arch)?;
+    if artifact.sha256 != planned.sha256 {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            format!(
+                "this plan binds {} but names {}; {} publishes {}",
+                declared.version, planned.sha256, declared.command, artifact.sha256
+            ),
+        ));
+    }
+    if planned.platform != artifact.platform
+        || planned.url != artifact.url
+        || planned.byte_length != artifact.bytes
+        || planned.entry_point
+            != format!(
+                "bin/{}",
+                software::exposed_name(declared.command, artifact.member)
+            )
+    {
+        return Err(Error::refuse(
+            WireReason::DigestMismatch,
+            "the planned software artifact differs from this provider's exact platform artifact",
+        ));
+    }
+    let input = software::VerifiedArtifact::open(artifact, path).map_err(|error| {
+        Error::refuse(
+            WireReason::from(error.reason()),
+            format!(
+                "the artifact for {} must match {}: {}",
+                declared.version,
+                artifact.sha256,
+                error.detail()
+            ),
+        )
+    })?;
+    Ok((artifact, input))
+}
+
+/// Apply one software operation under a lock, with no network open.
+///
+/// # Errors
+///
+/// Refuses a missing `--prefix`, a count of downloaded files that does not match
+/// what the plan named, bytes that are not the ones it named, or an archive that
+/// does not hold the member it named.
+pub(crate) fn apply(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    operation: Operation,
+    planned_version: &str,
+    expected_software_digest: &str,
+    planned_artifacts: &[SoftwareArtifact],
+    downloaded: &[PathBuf],
+) -> Result<serde_json::Value> {
+    let declared = version_for(&declared(harness)?, Some(planned_version))?;
+    let root = program_directory(prefix, operation)?;
+
+    if operation == Operation::SoftwareRemove {
+        if !downloaded.is_empty() || !planned_artifacts.is_empty() {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                "software_remove downloads nothing, so it takes no --software-artifact",
+            ));
+        }
+        let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+        let recovered = setup_core::software::recover(&root)?;
+        let removed = software::remove(&declared, &root)?;
+        return Ok(serde_json::json!({
+            "state": "verified",
+            "recovered": recovered,
+            "operation": operation.as_str(),
+            "command": declared.command,
+            "version": declared.version,
+            "removed": removed,
+        }));
+    }
+
+    let (artifact, input) =
+        installation_input(&declared, operation, planned_artifacts, downloaded)?;
+
+    // Reject incomplete or incorrect inputs before creating prefix bookkeeping
+    // or recovering any previously observed staging. The kernel consumes this
+    // same held input and verifies the extraction stream before promotion.
+    // Operation-specific recovery ownership remains a separate boundary.
+    let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+
     // Re-checked here, not trusted from the plan: applying happens later, and
     // the prefix could have been emptied in between. The plan's digest binds
     // what was decided, not what the disk still holds.
@@ -386,32 +436,8 @@ pub(crate) fn apply(
         ));
     }
 
-    // The plan named both the version and the artifact. Bytes that belong to
-    // another pin this build publishes are still the wrong effect: they are
-    // not the bytes this plan authorised. Digest-of-file remains the
-    // observation; it no longer selects a neighbour release.
-    let digest = setup_core::digest::of_file(path)?;
-    if digest != planned.sha256 {
-        return Err(Error::refuse(
-            WireReason::DigestMismatch,
-            format!(
-                "the artifact given hashes to {digest}; this plan named {} for {planned_version}",
-                planned.sha256
-            ),
-        ));
-    }
-    let (os, arch) = platform_of_this_host();
-    let artifact = declared.artifact_for(os, arch)?;
-    if artifact.sha256 != planned.sha256 {
-        return Err(Error::refuse(
-            WireReason::DigestMismatch,
-            format!(
-                "this plan binds {planned_version} but names {}; {} publishes {}",
-                planned.sha256, declared.command, artifact.sha256
-            ),
-        ));
-    }
-    let installed = software::install(&declared, artifact, path, &root)?;
+    let recovered = setup_core::software::recover(&root)?;
+    let installed = software::install_verified(&declared, artifact, input, &root)?;
 
     Ok(serde_json::json!({
         "state": "verified",
