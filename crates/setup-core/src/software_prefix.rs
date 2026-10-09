@@ -5,6 +5,7 @@
 //! This observation establishes neither ownership nor permission to remove files.
 
 use std::{
+    collections::BTreeSet,
     io::Read,
     path::Path,
     time::{Duration, Instant},
@@ -12,6 +13,7 @@ use std::{
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::fs::{Dir, Metadata, OpenOptions};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{Error, ReasonCode, Result};
@@ -21,6 +23,118 @@ const MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_PATH_BYTES: usize = 8192;
 const DEADLINE: Duration = Duration::from_secs(20);
+
+/// Complete installation inventories are metadata, never copies of file data.
+pub(crate) const INVENTORY_LIMIT: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EntryKind {
+    Directory,
+    File,
+    Link,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Entry {
+    pub path: String,
+    pub kind: EntryKind,
+    pub mode: u32,
+    pub payload: String,
+}
+
+/// Reconstruct the exact stage seal from its recorded membership.
+pub(crate) fn inventory_digest(entries: &[Entry]) -> Result<String> {
+    if entries.is_empty() || entries.len() > MAX_ENTRIES + 1 {
+        return Err(invalid());
+    }
+    let mut paths = BTreeSet::new();
+    let mut directories = BTreeSet::new();
+    let mut hash = Sha256::new();
+    field(&mut hash, b"nddev:software-stage:v1");
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.path.len() > MAX_PATH_BYTES || entry.mode > 0o7777 || !paths.insert(&entry.path) {
+            return Err(invalid());
+        }
+        if index == 0 {
+            if !entry.path.is_empty() || entry.kind != EntryKind::Directory {
+                return Err(invalid());
+            }
+        } else {
+            let path = Path::new(&entry.path);
+            if entry.path.is_empty()
+                || entry.path.contains('\\')
+                || !path
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
+                || path.components().count() > MAX_DEPTH + 1
+                || path
+                    .iter()
+                    .map(|part| part.to_str().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("/")
+                    != entry.path
+                || !directories
+                    .contains(&entry.path.rsplit_once('/').map_or("", |(parent, _)| parent))
+            {
+                return Err(invalid());
+            }
+        }
+        let (kind, payload) = match entry.kind {
+            EntryKind::Directory => {
+                if !entry.payload.is_empty() {
+                    return Err(invalid());
+                }
+                directories.insert(entry.path.as_str());
+                (b"directory".as_slice(), Vec::new())
+            }
+            EntryKind::File => {
+                if entry.payload.len() != 64
+                    || !entry
+                        .payload
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
+                    return Err(invalid());
+                }
+                let bytes = entry
+                    .payload
+                    .as_bytes()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| {
+                        let digit = |b: u8| {
+                            if b.is_ascii_digit() {
+                                b - b'0'
+                            } else {
+                                b - b'a' + 10
+                            }
+                        };
+                        (digit(pair[0]) << 4) | digit(pair[1])
+                    })
+                    .collect();
+                (b"file".as_slice(), bytes)
+            }
+            EntryKind::Link => {
+                if entry.payload.len() > MAX_PATH_BYTES {
+                    return Err(invalid());
+                }
+                (b"link".as_slice(), entry.payload.as_bytes().to_vec())
+            }
+        };
+        for value in [
+            entry.path.as_bytes(),
+            kind,
+            &entry.mode.to_be_bytes(),
+            &payload,
+        ] {
+            field(&mut hash, value);
+        }
+    }
+    Ok(format!("sha256:{}", crate::digest::hex(&hash.finalize())))
+}
 
 /// The observed prefix state, excluding provider lock and journal bookkeeping.
 pub struct Observation {
@@ -92,6 +206,8 @@ struct Reading {
     entries: usize,
     bytes: u64,
     hash: Sha256,
+    inventory: Option<Vec<Entry>>,
+    inventory_bytes: usize,
 }
 
 impl Reading {
@@ -102,10 +218,34 @@ impl Reading {
         Ok(())
     }
 
-    fn record(&mut self, name: &str, kind: &[u8], mode: u32, payload: &[u8]) {
+    fn record(&mut self, name: &str, kind: &[u8], mode: u32, payload: &[u8]) -> Result<()> {
         for value in [name.as_bytes(), kind, &mode.to_be_bytes(), payload] {
             field(&mut self.hash, value);
         }
+        if let Some(entries) = &mut self.inventory {
+            let (kind, payload) = match kind {
+                b"directory" => (EntryKind::Directory, String::new()),
+                b"file" => (EntryKind::File, crate::digest::hex(payload)),
+                b"link" => (
+                    EntryKind::Link,
+                    std::str::from_utf8(payload)
+                        .map_err(|_| invalid())?
+                        .to_owned(),
+                ),
+                _ => return Err(invalid()),
+            };
+            self.inventory_bytes += name.len() + payload.len() + 128;
+            if self.inventory_bytes > INVENTORY_LIMIT {
+                return Err(invalid());
+            }
+            entries.push(Entry {
+                path: name.to_owned(),
+                kind,
+                mode,
+                payload,
+            });
+        }
+        Ok(())
     }
 
     fn walk(&mut self, dir: &Dir, relative: &str, depth: usize, control: &str) -> Result<()> {
@@ -117,7 +257,7 @@ impl Reading {
         if reparse(&before) {
             return Err(invalid());
         }
-        self.record(relative, b"directory", permissions(&before), b"");
+        self.record(relative, b"directory", permissions(&before), b"")?;
         let mut names = Vec::new();
         for entry in io(dir.entries())? {
             self.check()?;
@@ -147,7 +287,7 @@ impl Reading {
             if metadata.is_symlink() {
                 let target = io(dir.read_link_contents(&name))?;
                 let value = text(&target)?;
-                self.record(&path, b"link", permissions(&metadata), value.as_bytes());
+                self.record(&path, b"link", permissions(&metadata), value.as_bytes())?;
                 if io(dir.read_link_contents(&name))? != target {
                     return Err(invalid());
                 }
@@ -203,7 +343,7 @@ impl Reading {
         {
             return Err(invalid());
         }
-        self.record(path, b"file", permissions(&before), &content.finalize());
+        self.record(path, b"file", permissions(&before), &content.finalize())?;
         Ok(())
     }
 }
@@ -235,6 +375,8 @@ pub fn observe(root: &Path, control: &str) -> Result<Observation> {
         entries: 0,
         bytes: 0,
         hash: Sha256::new(),
+        inventory: None,
+        inventory_bytes: 0,
     };
     field(&mut reading.hash, b"nddev:software-prefix:v1");
     let present = match std::fs::symlink_metadata(root) {
@@ -273,6 +415,8 @@ pub(crate) fn digest_directory(directory: &Dir) -> Result<String> {
         entries: 0,
         bytes: 0,
         hash: Sha256::new(),
+        inventory: None,
+        inventory_bytes: 0,
     };
     field(&mut reading.hash, b"nddev:software-stage:v1");
     reading.walk(directory, "", 0, "")?;
@@ -280,6 +424,26 @@ pub(crate) fn digest_directory(directory: &Dir) -> Result<String> {
         "sha256:{}",
         crate::digest::hex(&reading.hash.finalize())
     ))
+}
+
+/// Record the same seal and all owned members in one bounded read.
+pub(crate) fn inventory_directory(directory: &Dir) -> Result<(String, Vec<Entry>)> {
+    let mut reading = Reading {
+        started: Instant::now(),
+        entries: 0,
+        bytes: 0,
+        hash: Sha256::new(),
+        inventory: Some(Vec::new()),
+        inventory_bytes: 0,
+    };
+    field(&mut reading.hash, b"nddev:software-stage:v1");
+    reading.walk(directory, "", 0, "")?;
+    let digest = format!("sha256:{}", crate::digest::hex(&reading.hash.finalize()));
+    let entries = reading.inventory.ok_or_else(invalid)?;
+    if inventory_digest(&entries)? != digest {
+        return Err(invalid());
+    }
+    Ok((digest, entries))
 }
 
 #[cfg(test)]
@@ -311,6 +475,18 @@ mod tests {
         assert_eq!(observe(&root, ".control").unwrap().digest, empty.digest);
         fs::write(root.join("cafe\u{301}"), b"payload").unwrap();
         let original = observe(&root, ".control").unwrap();
+        let held = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let (seal, entries) = inventory_directory(&held).unwrap();
+        assert_eq!(seal, digest_directory(&held).unwrap());
+        assert_eq!(seal, inventory_digest(&entries).unwrap());
+        assert!(entries.iter().any(|entry| entry.path == "cafe\u{301}"));
+        let mut changed_inventory = entries.clone();
+        changed_inventory.pop();
+        assert_ne!(seal, inventory_digest(&changed_inventory).unwrap());
+        let mut invalid_inventory = entries;
+        invalid_inventory[0].path = "..".to_owned();
+        assert!(inventory_digest(&invalid_inventory).is_err());
+        drop(held);
         fs::rename(root.join("cafe\u{301}"), root.join("cafe\u{301}-renamed")).unwrap();
         assert_ne!(original.digest, observe(&root, ".control").unwrap().digest);
         fs::rename(root.join("cafe\u{301}-renamed"), root.join("cafe\u{301}")).unwrap();

@@ -2071,6 +2071,13 @@ mod tests {
         fs::remove_file(&foreign).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert!(receipt.is_file());
+        let saved = fs::read(&receipt).unwrap();
+        let mut record: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        record["entries"].as_array_mut().unwrap().pop();
+        fs::write(&receipt, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(installed.executable.symlink_metadata().is_ok());
+        fs::write(&receipt, saved).unwrap();
 
         assert!(remove(&software(), &root).unwrap());
         assert!(!receipt.exists());

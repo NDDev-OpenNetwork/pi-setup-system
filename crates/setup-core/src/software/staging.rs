@@ -127,7 +127,7 @@ impl Staging {
             },
         };
         let journal = format!(".nddev-software-{command}.transaction.json");
-        let Some(record): Option<Record> = records::read(&root, &journal)? else {
+        let Some(record): Option<Record> = records::read(&root, &journal, 16 * 1024)? else {
             return Ok(None);
         };
         if record.schema_version != 1
@@ -161,7 +161,7 @@ impl Staging {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        records::write(&self.root, &self.journal, &self.record)
+        records::write(&self.root, &self.journal, &self.record, 16 * 1024)
     }
 
     fn check_root(&self) -> Result<()> {
