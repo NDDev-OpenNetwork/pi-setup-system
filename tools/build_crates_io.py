@@ -63,6 +63,13 @@ def nested_source(text: str, module: str) -> str:
 def cargo_toml(harness: str, release: str) -> str:
     package = f"{harness}-setup-system"
     product = PRODUCTS[harness]
+    # The standalone package embeds the workspace crates, so it needs their
+    # actual third-party declarations rather than a second dependency ledger.
+    source = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    block = source.split("[workspace.dependencies]", 1)[1].split("\n[", 1)[0]
+    dependencies = "\n".join(
+        line for line in block.strip().splitlines() if 'path = "crates/' not in line
+    )
     return f'''[package]
 name = "{package}"
 version = "{release}"
@@ -78,10 +85,7 @@ categories = ["command-line-utilities", "development-tools"]
 publish = ["crates-io"]
 
 [dependencies]
-serde = {{ version = "1", features = ["derive"] }}
-serde_json = {{ version = "1", features = ["preserve_order"] }}
-sha2 = "0.11"
-miniz_oxide = "0.9"
+{dependencies}
 
 [profile.release]
 lto = true

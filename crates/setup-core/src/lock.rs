@@ -24,10 +24,13 @@
 //! the same on every platform.
 
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_std::fs::{Dir, OpenOptions};
 
 use crate::error::{Error, ReasonCode, Result};
 
@@ -85,19 +88,44 @@ impl TargetLock {
         }
 
         let acquire_os_lock = || -> Result<File> {
-            let file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false)
-                .open(&path)
-                .map_err(|source| {
-                    Error::new(
-                        ReasonCode::StateUnavailable,
-                        format!("cannot open lock file {}", path.display()),
-                    )
-                    .with_source(source)
-                })?;
+            let open_lock = || -> std::io::Result<File> {
+                let parent = control_directory
+                    .parent()
+                    .ok_or_else(|| std::io::Error::other("control directory has no parent"))?;
+                let name = control_directory
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::other("control directory has no name"))?;
+                let parent = Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
+                let control = parent.open_dir_nofollow(name)?;
+                let mut options = OpenOptions::new();
+                options
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .truncate(false)
+                    .follow(FollowSymlinks::No)
+                    .nonblock(true);
+                let file = control.open_with(LOCK_FILE_NAME, &options)?;
+                let metadata = file.metadata()?;
+                #[cfg(windows)]
+                {
+                    use cap_std::fs::MetadataExt as _;
+                    if metadata.file_attributes() & 0x400 != 0 {
+                        return Err(std::io::Error::other("lock is a reparse point"));
+                    }
+                }
+                if !metadata.is_file() || metadata.nlink() != 1 {
+                    return Err(std::io::Error::other("lock is not a regular file"));
+                }
+                Ok(file.into_std())
+            };
+            let file = open_lock().map_err(|source| {
+                Error::new(
+                    ReasonCode::StateUnavailable,
+                    format!("cannot open lock file {}", path.display()),
+                )
+                .with_source(source)
+            })?;
             file.try_lock().map_err(|source| {
                 Error::new(
                     ReasonCode::LockUnavailable,
@@ -398,6 +426,21 @@ mod tests {
         drop(first);
         // If the refused attempts had leaked their claim, this would fail.
         assert!(TargetLock::acquire(&control).is_ok());
+        let lock = control.join(LOCK_FILE_NAME);
+        let other = control.join("unrelated");
+        fs::write(&other, b"leave unchanged").unwrap();
+        fs::remove_file(&lock).unwrap();
+        fs::hard_link(&other, &lock).unwrap();
+        assert!(TargetLock::acquire(&control).is_err());
+        fs::remove_file(&lock).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&other, &lock).unwrap();
+            assert!(TargetLock::acquire(&control).is_err());
+            fs::remove_file(&lock).unwrap();
+        }
+        assert!(TargetLock::acquire(&control).is_ok());
+        assert_eq!(fs::read(other).unwrap(), b"leave unchanged");
     }
 
     #[test]

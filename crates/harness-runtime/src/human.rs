@@ -1150,6 +1150,7 @@ fn mutate(
         // downloaded between planning and applying.
         software_artifacts: Vec::new(),
         software_prefix: None,
+        expected_software_digest: None,
         software_version: None,
         // The human surface removes whole and carries no bundle, so no path
         // has a second sentence.

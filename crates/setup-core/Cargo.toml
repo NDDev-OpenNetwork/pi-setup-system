@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
 miniz_oxide = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

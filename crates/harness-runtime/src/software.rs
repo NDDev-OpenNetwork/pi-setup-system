@@ -28,12 +28,10 @@
 //! ten backup slots on a capture nobody can use. Installing ten times would
 //! evict every configuration backup the target had.
 //!
-//! What it does keep is a lock, because two installs racing into one directory
-//! is a real failure. It needs nothing more, because the layout makes the
-//! operation atomic by construction: bytes land in a directory named for their
-//! version, and the entry point is pointed at them only once every byte is
-//! written. An interrupted install leaves a partial directory the next one
-//! replaces, and an entry point still naming the version that worked.
+//! Software operations hold a prefix lock and revalidate the plan's bounded
+//! content observation before recovery or effects. Install stages the version
+//! before exposing its entry point. Staging is not an operation receipt: exact
+//! recovery ownership and replay remain separate from this stale-plan guard.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -241,23 +239,44 @@ pub(crate) fn plan(
     ))
 }
 
-/// Apply one software operation under a lock, with no network open.
-///
-/// # Errors
-///
-/// Refuses a missing `--prefix`, a count of downloaded files that does not match
-/// what the plan named, bytes that are not the ones it named, or an archive that
-/// does not hold the member it named.
-pub(crate) fn apply(
+fn acquire_prefix(
     harness: &Harness,
-    prefix: Option<&Path>,
+    root: &Path,
     operation: Operation,
-    planned_version: &str,
-    planned_artifacts: &[SoftwareArtifact],
-    downloaded: &[PathBuf],
-) -> Result<serde_json::Value> {
-    let declared = version_for(&declared(harness)?, Some(planned_version))?;
-    let root = program_directory(prefix, operation)?;
+    expected_software_digest: &str,
+) -> Result<setup_core::lock::TargetLock> {
+    // A plan binds the bytes below this prefix, not just its absolute name.
+    // Check before creating bookkeeping, then again under the writer lock.
+    let before = setup_core::software_prefix::observe(root, harness.control_directory)?;
+    if before.digest != expected_software_digest {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the software prefix changed after planning; no software effect was made",
+        ));
+    }
+    let created = if before.present {
+        false
+    } else {
+        let parent = root.parent().ok_or_else(|| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                "software prefix has no parent",
+            )
+        })?;
+        fs::create_dir_all(parent).map_err(|_| {
+            Error::refuse(
+                WireReason::ProviderUnavailable,
+                "software prefix parent cannot be created",
+            )
+        })?;
+        fs::create_dir(root).map_err(|_| {
+            Error::refuse(
+                WireReason::Stale,
+                "software prefix appeared after observation",
+            )
+        })?;
+        true
+    };
 
     // The lock lives in this provider's own dotted directory inside the prefix,
     // not at its root. `acquire` takes a control directory, and a `target.lock`
@@ -271,19 +290,40 @@ pub(crate) fn apply(
         )
     })?;
     let mut guard = setup_core::lock::TargetLock::acquire(&control)?;
+    let after = setup_core::software_prefix::observe(root, harness.control_directory)?;
+    if after.digest != expected_software_digest && !(created && after.present && after.empty) {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the software prefix changed before its writer lock was acquired; no software effect was made",
+        ));
+    }
     guard.annotate(&format!("{} {operation}", harness.provider_id))?;
 
-    // **Under the lock, before anything reads the prefix.** An interrupted
-    // install leaves a staged tree, or a tree that stepped aside for a promote
-    // that did not land -- and the second reads as "nothing installed" to every
-    // other function here. Until this call the leftovers were cleared by
-    // whatever ran next, so the resolution was a side effect of the next
-    // operation rather than a decision, and an install could be planned against
-    // a prefix whose real state was a version in quarantine.
-    //
-    // Reported rather than done quietly: a person whose install was interrupted
-    // should be told what was found, and the answer is empty on every ordinary
-    // run.
+    Ok(guard)
+}
+
+/// Apply one software operation under a lock, with no network open.
+///
+/// # Errors
+///
+/// Refuses a missing `--prefix`, a count of downloaded files that does not match
+/// what the plan named, bytes that are not the ones it named, or an archive that
+/// does not hold the member it named.
+pub(crate) fn apply(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    operation: Operation,
+    planned_version: &str,
+    expected_software_digest: &str,
+    planned_artifacts: &[SoftwareArtifact],
+    downloaded: &[PathBuf],
+) -> Result<serde_json::Value> {
+    let declared = version_for(&declared(harness)?, Some(planned_version))?;
+    let root = program_directory(prefix, operation)?;
+
+    let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+
+    // Recover only the content observed by this plan, after revalidation.
     let recovered = setup_core::software::recover(&root)?;
 
     if operation == Operation::SoftwareRemove {
