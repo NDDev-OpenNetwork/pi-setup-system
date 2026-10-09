@@ -1,40 +1,16 @@
 //! A recorded staging transaction; directory names never establish ownership.
 
-use std::{
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::{Path, PathBuf};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_std::fs::{Dir, OpenOptions};
+use cap_fs_ext::DirExt;
+use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, ReasonCode, Result, archive::Destination};
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-struct Identity {
-    device: u64,
-    inode: u64,
-}
-
-impl Identity {
-    fn of(directory: &Dir) -> Result<Self> {
-        let metadata = io(directory.dir_metadata())?;
-        #[cfg(windows)]
-        {
-            use cap_std::fs::MetadataExt as _;
-            if metadata.file_attributes() & 0x400 != 0 {
-                return Err(refuse());
-            }
-        }
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-}
+use super::ownership;
+use super::records::{
+    self, Identity, io, leaf, member_valid, open_root, present, refuse, sync, unique,
+};
+use crate::{Result, archive::Destination};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,76 +32,11 @@ struct Record {
     root_identity: Identity,
     stage_identity: Identity,
     previous_identity: Option<Identity>,
+    previous_digest: Option<String>,
+    legacy: bool,
+    artifact_sha256: String,
     sealed_digest: Option<String>,
     phase: Phase,
-}
-
-fn refuse() -> Error {
-    Error::new(
-        ReasonCode::RecoveryRequired,
-        "software staging record or directory identity is inconsistent; recorded objects were preserved",
-    )
-}
-
-fn io<T>(result: std::io::Result<T>) -> Result<T> {
-    result.map_err(|error| refuse().with_source(error))
-}
-
-fn leaf(value: &str) -> bool {
-    let mut parts = Path::new(value).components();
-    matches!(parts.next(), Some(Component::Normal(_)))
-        && parts.next().is_none()
-        && !value.contains(['/', '\\', ':'])
-        && !value.ends_with(['.', ' '])
-}
-
-fn unique() -> Result<String> {
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| refuse())?
-        .as_nanos();
-    Ok(format!(
-        "{}-{time}-{}",
-        std::process::id(),
-        SERIAL.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-#[cfg_attr(
-    not(unix),
-    allow(
-        clippy::unnecessary_wraps,
-        reason = "Preserve the fallible Unix directory-sync interface."
-    )
-)]
-fn sync(directory: &Dir) -> Result<()> {
-    // Windows does not offer directory fsync through this interface. File
-    // contents are flushed on every platform; power-loss durability of directory
-    // entries is claimed only where this directory flush succeeds.
-    #[cfg(unix)]
-    io(io(directory.open("."))?.sync_all())?;
-    #[cfg(not(unix))]
-    let _ = directory;
-    Ok(())
-}
-
-fn open_root(path: &Path) -> Result<Dir> {
-    let parent = path.parent().ok_or_else(refuse)?;
-    let name = path.file_name().ok_or_else(refuse)?;
-    let parent = io(Dir::open_ambient_dir(parent, cap_std::ambient_authority()))?;
-    io(parent.open_dir_nofollow(name))
-}
-
-fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
-    match parent.open_dir_nofollow(name) {
-        Ok(directory) => {
-            Identity::of(&directory)?;
-            Ok(Some(directory))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(refuse().with_source(error)),
-    }
 }
 
 pub(super) struct Staging {
@@ -136,8 +47,18 @@ pub(super) struct Staging {
 }
 
 impl Staging {
-    pub(super) fn begin(root: &Path, command: &str, version: &str, member: &str) -> Result<Self> {
-        if !leaf(command) || !leaf(version) {
+    pub(super) fn begin(
+        root: &Path,
+        command: &str,
+        version: &str,
+        member: &str,
+        artifact_sha256: &str,
+    ) -> Result<Self> {
+        if !leaf(command)
+            || !leaf(version)
+            || !member_valid(member)
+            || !ownership::digest_valid(artifact_sha256)
+        {
             return Err(refuse());
         }
         io(std::fs::create_dir_all(root))?;
@@ -147,10 +68,23 @@ impl Staging {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             _ => return Err(refuse()),
         }
-        let previous_identity = present(&directory, version)?
-            .as_ref()
-            .map(Identity::of)
-            .transpose()?;
+        let previous = present(&directory, version)?;
+        let receipt = ownership::Receipt::read(&directory, command, version)?;
+        let previous_digest = if let Some(receipt) = &receipt {
+            Some(
+                receipt
+                    .verify(previous.as_ref().ok_or_else(refuse)?)?
+                    .to_owned(),
+            )
+        } else {
+            previous
+                .as_ref()
+                .map(crate::software_prefix::digest_directory)
+                .transpose()?
+        };
+        let legacy = previous.is_some() && receipt.is_none();
+        let previous_identity = previous.as_ref().map(Identity::of).transpose()?;
+        drop(previous);
         let nonce = unique()?;
         let stage = format!(".incoming-{command}-{nonce}");
         let quarantine = format!(".replaced-{command}-{nonce}");
@@ -167,6 +101,9 @@ impl Staging {
                 root_identity: Identity::of(&directory)?,
                 stage_identity,
                 previous_identity,
+                previous_digest,
+                legacy,
+                artifact_sha256: artifact_sha256.to_owned(),
                 sealed_digest: None,
                 phase: Phase::Extracting,
             },
@@ -190,29 +127,18 @@ impl Staging {
             },
         };
         let journal = format!(".nddev-software-{command}.transaction.json");
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let file = match root.open_with(&journal, &options) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(refuse().with_source(error)),
+        let Some(record): Option<Record> = records::read(&root, &journal)? else {
+            return Ok(None);
         };
-        let metadata = io(file.metadata())?;
-        #[cfg(windows)]
-        {
-            use cap_std::fs::MetadataExt as _;
-            if metadata.file_attributes() & 0x400 != 0 {
-                return Err(refuse());
-            }
-        }
-        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 16 * 1024 {
-            return Err(refuse());
-        }
-        let mut bytes = Vec::new();
-        io(file.take(16 * 1024 + 1).read_to_end(&mut bytes))?;
-        let record: Record = serde_json::from_slice(&bytes).map_err(|_| refuse())?;
         if record.schema_version != 1
             || record.command != command
+            || !ownership::digest_valid(&record.artifact_sha256)
+            || record.previous_identity.is_some() != record.previous_digest.is_some()
+            || record
+                .previous_digest
+                .as_deref()
+                .is_some_and(|d| !ownership::digest_valid(d))
+            || (record.legacy && record.previous_identity.is_none())
             || !leaf(&record.version)
             || !leaf(&record.stage)
             || !leaf(&record.quarantine)
@@ -220,11 +146,7 @@ impl Staging {
             || !record
                 .quarantine
                 .starts_with(&format!(".replaced-{command}-"))
-            || !Path::new(&record.member)
-                .components()
-                .all(|p| matches!(p, Component::Normal(_)))
-            || record.member.is_empty()
-            || record.member.contains(['\\', ':'])
+            || !member_valid(&record.member)
             || Identity::of(&root)? != record.root_identity
         {
             return Err(refuse());
@@ -239,19 +161,7 @@ impl Staging {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        let temporary = format!("{}.{}", self.journal, unique()?);
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        let mut file = io(self.root.open_with(&temporary, &options))?;
-        let bytes = serde_json::to_vec(&self.record).map_err(|_| refuse())?;
-        io(file.write_all(&bytes))?;
-        io(file.sync_all())?;
-        drop(file);
-        io(self.root.rename(&temporary, &self.root, &self.journal))?;
-        sync(&self.root)
+        records::write(&self.root, &self.journal, &self.record)
     }
 
     fn check_root(&self) -> Result<()> {
@@ -300,7 +210,17 @@ impl Staging {
         if current.as_ref().map(Identity::of).transpose()? != self.record.previous_identity {
             return Err(refuse());
         }
-        self.record.sealed_digest = Some(crate::software_prefix::digest_directory(&stage)?);
+        let sealed = crate::software_prefix::digest_directory(&stage)?;
+        let previous = current
+            .as_ref()
+            .map(crate::software_prefix::digest_directory)
+            .transpose()?;
+        if previous != self.record.previous_digest
+            || (self.record.legacy && previous.as_deref() != Some(sealed.as_str()))
+        {
+            return Err(refuse());
+        }
+        self.record.sealed_digest = Some(sealed);
         // Windows directory handles deny renaming their open directory. Keep
         // the verified identities and release these handles before the rename.
         drop(stage);
@@ -359,7 +279,12 @@ impl Staging {
         if self.record.phase == Phase::Promoted || stage.is_none() {
             return Err(refuse());
         }
-        if quarantine.is_some() {
+        if let Some(directory) = &quarantine {
+            if Some(crate::software_prefix::digest_directory(directory)?)
+                != self.record.previous_digest
+            {
+                return Err(refuse());
+            }
             if current.is_some() || self.record.phase != Phase::Promoting {
                 return Err(refuse());
             }
@@ -384,8 +309,20 @@ impl Staging {
     pub(super) fn complete(self) -> Result<()> {
         self.check_root()?;
         self.checked(&self.record.version, self.record.stage_identity)?;
+        ownership::record_installation(
+            &self.root,
+            &self.record.command,
+            &self.record.version,
+            &self.record.member,
+            &self.record.artifact_sha256,
+            self.record.sealed_digest.as_deref().ok_or_else(refuse)?,
+            self.record.stage_identity,
+        )?;
         if let Some(quarantine) = present(&self.root, &self.record.quarantine)? {
-            if Some(Identity::of(&quarantine)?) != self.record.previous_identity {
+            if Some(Identity::of(&quarantine)?) != self.record.previous_identity
+                || Some(crate::software_prefix::digest_directory(&quarantine)?)
+                    != self.record.previous_digest
+            {
                 return Err(refuse());
             }
             io(quarantine.remove_open_dir_all())?;
@@ -401,6 +338,9 @@ mod tests {
     use super::*;
     use crate::software::{self, Delivery, Software};
     use std::fs;
+
+    const ARTIFACT: &str =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
     #[test]
     fn recovery_changes_only_recorded_directories_across_interruption_windows() {
@@ -420,7 +360,7 @@ mod tests {
         fs::write(root.join("unrelated.incoming"), b"unrelated").unwrap();
         assert!(software::recover(&declared, &root).unwrap().is_empty());
 
-        let transaction = Staging::begin(&root, "codex", "1.2.3", "codex").unwrap();
+        let transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         let partial = transaction.stage_path();
         fs::write(partial.join("codex"), b"partial").unwrap();
         drop(transaction);
@@ -431,7 +371,7 @@ mod tests {
         // Interruption after moving the previous tree aside, before promotion.
         fs::create_dir(root.join("1.2.3")).unwrap();
         fs::write(root.join("1.2.3/codex"), b"previous").unwrap();
-        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex").unwrap();
+        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         fs::write(transaction.stage_path().join("codex"), b"new").unwrap();
         transaction.record.phase = Phase::Promoting;
         transaction.save().unwrap();
@@ -443,8 +383,26 @@ mod tests {
         software::recover(&declared, &root).unwrap();
         assert_eq!(fs::read(root.join("1.2.3/codex")).unwrap(), b"previous");
 
+        // The retained previous tree came from a completed installation.
+        let directory = open_root(&root).unwrap();
+        let previous = present(&directory, "1.2.3").unwrap().unwrap();
+        let sealed = crate::software_prefix::digest_directory(&previous).unwrap();
+        let previous_identity = Identity::of(&previous).unwrap();
+        drop(previous);
+        ownership::record_installation(
+            &directory,
+            "codex",
+            "1.2.3",
+            "codex",
+            ARTIFACT,
+            &sealed,
+            previous_identity,
+        )
+        .unwrap();
+        drop(directory);
+
         // Promotion landed, but its phase update and exposure did not.
-        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex").unwrap();
+        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         fs::write(transaction.stage_path().join("codex"), b"new").unwrap();
         transaction.promote().unwrap();
         transaction.record.phase = Phase::Promoting;
@@ -459,7 +417,7 @@ mod tests {
         assert!(software::recover(&declared, &root).unwrap().is_empty());
 
         // Matching names are insufficient when the actual directory moved.
-        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex").unwrap();
+        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         let original = transaction.stage_path();
         let moved = root.join("retained-stage");
         fs::write(original.join("codex"), b"recorded").unwrap();
