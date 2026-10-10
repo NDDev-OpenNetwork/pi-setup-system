@@ -239,7 +239,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "harness-runtime"
-version = "0.0.88"
+version = "0.0.89"
 dependencies = [
  "provider-v3",
  "serde",
@@ -414,7 +414,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "pi-setup-system"
-version = "0.0.88"
+version = "0.0.89"
 dependencies = [
  "harness-runtime",
  "provider-v3",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "provider-v3"
-version = "0.0.88"
+version = "0.0.89"
 dependencies = [
  "serde",
  "serde_json",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "setup-core"
-version = "0.0.88"
+version = "0.0.89"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
