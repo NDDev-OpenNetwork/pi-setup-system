@@ -1,7 +1,7 @@
 //! Bounded local software records and checked directory identities.
 
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::{Component, Path},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -164,23 +164,4 @@ pub(super) fn read_bytes(root: &Dir, name: &str, limit: usize) -> Result<Option<
         return Err(refuse());
     }
     Ok(Some(bytes))
-}
-
-pub(super) fn write<T: Serialize>(root: &Dir, name: &str, record: &T, limit: usize) -> Result<()> {
-    let bytes = serde_json::to_vec(record).map_err(|_| refuse())?;
-    if bytes.len() > limit {
-        return Err(refuse());
-    }
-    let temporary = format!("{name}.{}", unique()?);
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .follow(FollowSymlinks::No);
-    let mut file = io(root.open_with(&temporary, &options))?;
-    io(file.write_all(&bytes))?;
-    io(file.sync_all())?;
-    drop(file);
-    io(root.rename(&temporary, root, name))?;
-    sync(root)
 }

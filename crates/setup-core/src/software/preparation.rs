@@ -17,8 +17,8 @@ use records::{Identity, io, leaf, open_root, refuse, sync};
 const LIMIT: usize = 32 * 1024;
 const PAYLOAD_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
 
-pub(super) fn journal(command: &str) -> String {
-    format!(".nddev-software-{command}.exposure.json")
+pub(super) fn journal(command: &str) -> super::store::Key {
+    super::store::Key::Preparation(command.to_owned())
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -128,7 +128,7 @@ pub(super) struct Preparation<'a> {
     path: &'a Path,
     root: &'a Dir,
     bin: &'a Dir,
-    journal: String,
+    journal: super::store::Key,
     record: Record,
 }
 
@@ -149,7 +149,7 @@ impl<'a> Preparation<'a> {
             return Err(refuse());
         }
         let journal = journal(command);
-        let previous: Option<Record> = records::read(root, &journal, LIMIT)?;
+        let previous: Option<Record> = super::store::read(root, &journal, LIMIT)?;
         let created = previous.is_none();
         let record = if let Some(record) = previous {
             record
@@ -224,7 +224,7 @@ impl<'a> Preparation<'a> {
 
     fn save(&self) -> Result<()> {
         self.revalidate()?;
-        records::write(self.root, &self.journal, &self.record, LIMIT)
+        super::store::write(self.root, &self.journal, &self.record, LIMIT)
     }
 
     fn ready(&self, index: usize) -> Result<bool> {
@@ -449,7 +449,7 @@ impl<'a> Preparation<'a> {
                 return Err(refuse());
             }
         }
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(self.root, &self.journal)?;
         sync(self.root)
     }
 }
@@ -550,7 +550,7 @@ mod tests {
             preparation.bytes(index, value).unwrap();
         }
         preparation.commit(&predecessor).unwrap();
-        assert!(!path.join(journal("tool")).exists());
+        assert!(!super::super::store::exists(&root, &journal("tool")).unwrap());
         assert!(temporary.iter().all(|entry| !entry.exists()));
         for (name, value) in binding.names.iter().zip(values) {
             assert_eq!(fs::read(path.join("bin").join(name)).unwrap(), value);

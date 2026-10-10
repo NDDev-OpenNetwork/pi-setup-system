@@ -35,12 +35,12 @@ struct Record {
 pub(super) struct Removal {
     root: Dir,
     path: PathBuf,
-    journal: String,
+    journal: super::store::Key,
     record: Record,
 }
 
-pub(super) fn journal(command: &str) -> String {
-    format!(".nddev-software-{command}.removal.json")
+pub(super) fn journal(command: &str) -> super::store::Key {
+    super::store::Key::Removal(command.to_owned())
 }
 
 impl Removal {
@@ -84,7 +84,8 @@ impl Removal {
         let Some(root) = records::optional_root(path)? else {
             return Ok(None);
         };
-        let Some(record): Option<Record> = records::read(&root, &journal(command), RECORD_LIMIT)?
+        let Some(record): Option<Record> =
+            super::store::read(&root, &journal(command), RECORD_LIMIT)?
         else {
             return Ok(None);
         };
@@ -121,7 +122,7 @@ impl Removal {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        records::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
+        super::store::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
     }
 
     fn quarantine(&mut self) -> Result<()> {
@@ -203,7 +204,7 @@ impl Removal {
         }
         self.record.receipt.remove_record(&self.root)?;
         self.check_root()?;
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(&self.root, &self.journal)?;
         sync(&self.root)
     }
 }
@@ -311,9 +312,14 @@ mod tests {
             software::require_idle(&declared, &root).unwrap();
             assert!(!root.join("1.2.3").exists() && !quarantine.exists());
             assert!(
-                !root
-                    .join(".nddev-software-codex-1.2.3.installed.json")
-                    .exists()
+                !super::super::store::exists(
+                    &open_root(&root).unwrap(),
+                    &super::super::store::Key::Receipt {
+                        command: "codex".into(),
+                        version: "1.2.3".into()
+                    }
+                )
+                .unwrap()
             );
             assert_eq!(fs::read_dir(root.join("bin")).unwrap().count(), 0);
         }

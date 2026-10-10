@@ -2,8 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cap_fs_ext::{DirExt, MetadataExt};
-use cap_std::fs::Dir;
+use cap_fs_ext::DirExt;
 
 use super::{Artifact, Installed, Software, VerifiedArtifact, records};
 use crate::{Result, lock::TargetLock};
@@ -11,29 +10,7 @@ use records::{Identity, io, open_root, refuse, sync};
 
 pub(crate) const CONTROL: &str = ".nddev-software";
 
-pub(crate) fn validate_control(root: &Dir) -> Result<()> {
-    let Some(control) = records::present(root, CONTROL)? else {
-        return Ok(());
-    };
-    for entry in io(control.entries())? {
-        let name = io(entry)?.file_name();
-        if name != crate::lock::LOCK_FILE_NAME {
-            return Err(refuse());
-        }
-        let metadata = io(control.symlink_metadata(name))?;
-        if !metadata.is_file() || metadata.is_symlink() || metadata.nlink() != 1 {
-            return Err(refuse());
-        }
-        #[cfg(windows)]
-        {
-            use cap_std::fs::MetadataExt as _;
-            if metadata.file_attributes() & 0x400 != 0 {
-                return Err(refuse());
-            }
-        }
-    }
-    Ok(())
-}
+pub(crate) use super::store::validate_control;
 
 /// A prefix writer held across observation and all software effects.
 ///
@@ -61,8 +38,8 @@ impl Writer {
         };
         let control = io(directory.open_dir_nofollow(CONTROL))?;
         let control_identity = Identity::of(&control)?;
-        // Only the reserved lock entry is allowed. An empty directory left by
-        // interrupted initialization is valid and needs no ownership guesses.
+        // Only the shared lock and bounded metadata store are recognized.
+        // An empty control directory can resume interrupted initialization.
         if !created {
             validate_control(&directory)?;
         }
@@ -125,6 +102,7 @@ impl Writer {
     /// Refuses conflicting records, changed owned entries or I/O failures.
     pub fn recover(&self, software: &Software) -> Result<Vec<String>> {
         self.revalidate()?;
+        super::store::recover(&open_root(&self.root)?)?;
         super::recover_locked(software, &self.root)
     }
 
@@ -196,6 +174,13 @@ mod tests {
         );
         fs::remove_file(pending).unwrap();
         assert!(!writer.remove(&other).unwrap());
+        let held = open_root(&root).unwrap();
+        let pending = super::super::store::Key::Installation("first".into());
+        super::super::store::write(&held, &pending, &"generated pending operation", 1024).unwrap();
+        assert!(software::require_idle(&other, &root).is_err());
+        assert!(writer.remove(&other).is_err());
+        super::super::store::remove(&held, &pending).unwrap();
+        drop(held);
         #[cfg(unix)]
         {
             let lock = root.join(CONTROL).join(crate::lock::LOCK_FILE_NAME);

@@ -51,7 +51,7 @@ struct Record {
 pub(super) struct Staging {
     root: Dir,
     path: PathBuf,
-    journal: String,
+    journal: super::store::Key,
     record: Record,
 }
 
@@ -84,10 +84,9 @@ impl Staging {
         }
         io(std::fs::create_dir_all(root))?;
         let directory = open_root(root)?;
-        let journal = format!(".nddev-software-{command}.transaction.json");
-        match directory.symlink_metadata(&journal) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(refuse()),
+        let journal = super::store::Key::Installation(command.to_owned());
+        if super::store::exists(&directory, &journal)? {
+            return Err(refuse());
         }
         let previous = present(&directory, version)?;
         let receipt = ownership::Receipt::read(&directory, command, version)?;
@@ -166,8 +165,9 @@ impl Staging {
         let Some(root) = records::optional_root(path)? else {
             return Ok(None);
         };
-        let journal = format!(".nddev-software-{command}.transaction.json");
-        let Some(record): Option<Record> = records::read(&root, &journal, RECORD_LIMIT)? else {
+        let journal = super::store::Key::Installation(command.to_owned());
+        let Some(record): Option<Record> = super::store::read(&root, &journal, RECORD_LIMIT)?
+        else {
             return Ok(None);
         };
         if record.schema_version != 4
@@ -213,7 +213,7 @@ impl Staging {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        records::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
+        super::store::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
     }
 
     fn check_root(&self) -> Result<()> {
@@ -354,7 +354,7 @@ impl Staging {
                 io(stage.remove_open_dir())?;
                 sync(&self.root)?;
             }
-            io(self.root.remove_file(&self.journal))?;
+            super::store::remove(&self.root, &self.journal)?;
             sync(&self.root)?;
             return Ok(false);
         }
@@ -375,6 +375,27 @@ impl Staging {
             }
             self.check_predecessor()?;
             return Ok(true);
+        }
+        if self.record.phase == Phase::Extracting && stage.is_none() {
+            // Recovery may have removed the incomplete stage before its final
+            // record deletion committed. Extraction cannot promote a version:
+            // only the exact untouched predecessor permits finishing this cleanup.
+            if quarantine.is_some()
+                || current != self.record.previous_identity
+                || version
+                    .as_ref()
+                    .map(software_prefix::digest_directory)
+                    .transpose()?
+                    != self.record.previous_digest
+            {
+                return Err(refuse());
+            }
+            self.record
+                .launch
+                .revalidate(&self.path, &self.record.command, &self.record.member)?;
+            super::store::remove(&self.root, &self.journal)?;
+            sync(&self.root)?;
+            return Ok(false);
         }
         if self.record.phase == Phase::Promoted || stage.is_none() {
             return Err(refuse());
@@ -401,7 +422,7 @@ impl Staging {
             return Err(refuse());
         }
         io(stage.ok_or_else(refuse)?.remove_open_dir_all())?;
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(&self.root, &self.journal)?;
         sync(&self.root)?;
         Ok(false)
     }
@@ -442,7 +463,7 @@ impl Staging {
             io(quarantine.remove_open_dir())?;
             sync(&self.root)?;
         }
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(&self.root, &self.journal)?;
         sync(&self.root)
     }
 }
@@ -484,7 +505,7 @@ mod tests {
             let transaction = Staging::prepare(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
             let stage = transaction.stage_path();
             assert!(!stage.exists());
-            assert!(root.join(&transaction.journal).is_file());
+            assert!(super::super::store::exists(&transaction.root, &transaction.journal).unwrap());
             if created {
                 fs::create_dir(&stage).unwrap();
                 fs::write(stage.join("foreign"), b"preserve").unwrap();
@@ -514,6 +535,57 @@ mod tests {
         software::require_idle(&declared, &root).unwrap();
         assert!(!partial.exists());
         assert!(!root.join("1.2.3").exists());
+
+        // Cleanup itself can stop after rmdir, before deleting its record.
+        // Missing extraction output authorizes no change to the predecessor.
+        for previous in [false, true] {
+            let version = root.join("1.2.3");
+            if previous {
+                fs::create_dir(&version).unwrap();
+                fs::write(version.join("codex"), b"previous").unwrap();
+            }
+            let transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
+            let stage = transaction.stage_path();
+            let quarantine = root.join(&transaction.record.quarantine);
+            drop(transaction);
+            fs::remove_dir(&stage).unwrap();
+            fs::create_dir(&quarantine).unwrap();
+            fs::write(quarantine.join("foreign"), b"preserve").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(quarantine.join("foreign")).unwrap(), b"preserve");
+            fs::remove_file(quarantine.join("foreign")).unwrap();
+            fs::remove_dir(&quarantine).unwrap();
+            if !previous {
+                fs::create_dir(&version).unwrap();
+            }
+            fs::write(version.join("codex"), b"changed").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(version.join("codex")).unwrap(), b"changed");
+            if previous {
+                fs::write(version.join("codex"), b"previous").unwrap();
+            } else {
+                fs::remove_dir_all(&version).unwrap();
+            }
+            let entry = root.join("bin/codex");
+            fs::write(&entry, b"foreign launch").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(&entry).unwrap(), b"foreign launch");
+            fs::remove_file(entry).unwrap();
+            let mut recorded = Staging::load(&root, "codex").unwrap().unwrap();
+            recorded.record.phase = Phase::Promoting;
+            recorded.save().unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            recorded.record.phase = Phase::Extracting;
+            recorded.save().unwrap();
+            drop(recorded);
+            assert_eq!(software::recover(&declared, &root).unwrap().len(), 1);
+            assert!(software::recover(&declared, &root).unwrap().is_empty());
+            software::require_idle(&declared, &root).unwrap();
+            if previous {
+                assert_eq!(fs::read(version.join("codex")).unwrap(), b"previous");
+                fs::remove_dir_all(version).unwrap();
+            }
+        }
 
         // Interruption after moving the previous tree aside, before promotion.
         fs::create_dir(root.join("1.2.3")).unwrap();

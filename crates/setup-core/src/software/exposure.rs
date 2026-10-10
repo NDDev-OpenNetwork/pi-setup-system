@@ -178,7 +178,7 @@ pub(super) fn expose(
             Expected::bytes(&body),
         ],
     };
-    if records::read_bytes(&root, &super::preparation::journal(command), 32 * 1024)?.is_none() {
+    if !super::store::exists(&root, &super::preparation::journal(command))? {
         // Completion can precede deletion of the parent staging/switch record.
         // An already exact result needs no new temporary entries or publication.
         let current = binding

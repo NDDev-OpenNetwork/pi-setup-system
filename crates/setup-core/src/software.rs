@@ -25,6 +25,7 @@ mod preparation;
 mod records;
 mod removal;
 mod staging;
+mod store;
 mod switch;
 pub(crate) mod writer;
 
@@ -684,21 +685,13 @@ pub fn require_idle(software: &Software, root: &Path) -> Result<()> {
     if !records::leaf(software.command) {
         return Err(records::refuse());
     }
-    for journal in [
-        format!(".nddev-software-{}.transaction.json", software.command),
-        removal::journal(software.command),
-        switch::journal(software.command),
-        preparation::journal(software.command),
-    ] {
-        match fs::symlink_metadata(root.join(journal)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => {
-                return Err(Error::new(
-                    ReasonCode::RecoveryRequired,
-                    "a software operation is pending; a new plan cannot recover or replace its recorded operation",
-                ));
-            }
-        }
+    if let Some(root) = records::optional_root(root)?
+        && store::pending(&root)?
+    {
+        return Err(Error::new(
+            ReasonCode::RecoveryRequired,
+            "a software operation is pending; a new plan cannot recover or replace its recorded operation",
+        ));
     }
     Ok(())
 }
@@ -1220,13 +1213,19 @@ mod tests {
         assert!(rollback(&software(), &root, "1.2.3").is_err());
         assert!(remove(&software(), &root).is_err());
         assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
-        let receipt = root.join(".nddev-software-codex-1.2.2.installed.json");
-        let original = fs::read(&receipt).unwrap();
-        let mut changed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let limit = crate::software_prefix::INVENTORY_LIMIT;
+        let directory = records::open_root(&root).unwrap();
+        let receipt = store::Key::Receipt {
+            command: "codex".into(),
+            version: "1.2.2".into(),
+        };
+        let original: serde_json::Value =
+            store::read(&directory, &receipt, limit).unwrap().unwrap();
+        let mut changed = original.clone();
         changed["artifact_sha256"] = format!("sha256:{}", "0".repeat(64)).into();
-        fs::write(&receipt, serde_json::to_vec(&changed).unwrap()).unwrap();
+        store::write(&directory, &receipt, &changed, limit).unwrap();
         assert!(recover(&software(), &root).is_err());
-        fs::write(receipt, original).unwrap();
+        store::write(&directory, &receipt, &original, limit).unwrap();
         let marker = root.join("bin/.codex.version");
         fs::write(&marker, b"foreign marker").unwrap();
         let before = crate::software_prefix::observe(&root, ".codex-setup-system")
@@ -1253,7 +1252,14 @@ mod tests {
             Some("1.2.2")
         );
         assert!(root.join("1.2.3").join(CODEX_MEMBER).is_file());
-        assert!(!root.join(switch::journal("codex")).exists());
+        assert!(
+            !store::exists(
+                &records::open_root(&root).unwrap(),
+                &switch::journal("codex")
+            )
+            .unwrap()
+        );
+        drop(directory);
         fs::remove_dir_all(at).unwrap();
     }
 
@@ -1915,7 +1921,13 @@ mod tests {
         assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
         assert_eq!(fs::read(&entry).unwrap(), b"foreign launcher");
         assert!(!root.join("1.2.3").exists());
-        assert!(!root.join(".nddev-software-codex.transaction.json").exists());
+        assert!(
+            !store::exists(
+                &records::open_root(&root).unwrap(),
+                &store::Key::Installation("codex".into())
+            )
+            .unwrap()
+        );
         fs::remove_file(&entry).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         let stray = root.join("1.2.3/package/left-over");
@@ -2028,8 +2040,12 @@ mod tests {
         assert!(installed.executable.symlink_metadata().is_ok());
         fs::remove_file(&foreign).unwrap();
 
-        let receipt = root.join(".nddev-software-codex-1.2.3.installed.json");
-        fs::remove_file(&receipt).unwrap();
+        let directory = records::open_root(&root).unwrap();
+        let receipt = store::Key::Receipt {
+            command: "codex".into(),
+            version: "1.2.3".into(),
+        };
+        store::remove(&directory, &receipt).unwrap();
         assert!(remove(&software(), &root).is_err());
         assert!(root.join("1.2.3").is_dir());
         // Legacy adoption needs the exact archive and every installed byte.
@@ -2039,23 +2055,41 @@ mod tests {
         recover(&software(), &root).unwrap();
         fs::remove_file(&foreign).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
-        assert!(receipt.is_file());
-        let saved = fs::read(&receipt).unwrap();
-        let mut record: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        let saved: serde_json::Value = store::read(
+            &directory,
+            &receipt,
+            crate::software_prefix::INVENTORY_LIMIT,
+        )
+        .unwrap()
+        .unwrap();
+        let mut record = saved.clone();
         record["entries"].as_array_mut().unwrap().pop();
-        fs::write(&receipt, serde_json::to_vec(&record).unwrap()).unwrap();
+        store::write(
+            &directory,
+            &receipt,
+            &record,
+            crate::software_prefix::INVENTORY_LIMIT,
+        )
+        .unwrap();
         assert!(remove(&software(), &root).is_err());
         assert!(installed.executable.symlink_metadata().is_ok());
-        fs::write(&receipt, saved).unwrap();
+        store::write(
+            &directory,
+            &receipt,
+            &saved,
+            crate::software_prefix::INVENTORY_LIMIT,
+        )
+        .unwrap();
 
         assert!(remove(&software(), &root).unwrap());
-        assert!(!receipt.exists());
+        assert!(!store::exists(&directory, &receipt).unwrap());
         assert!(!root.join("1.2.3").exists());
         assert!(installed.executable.symlink_metadata().is_err());
         assert!(!Present::marker(&root, "codex").exists());
         assert!(!Manifest::path(&root, "codex").exists());
         // Removing what is already gone is not a failure, and says so.
         assert!(!remove(&software(), &root).unwrap());
+        drop(directory);
         fs::remove_dir_all(&at).unwrap();
     }
 

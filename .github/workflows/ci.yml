@@ -36,11 +36,12 @@ jobs:
       # The three-OS matrix is the evidence ADR-0113 asks for, and standard
       # hosted runners are free with unlimited minutes on a public repository.
       test_matrix_os: '["ubuntu-latest", "macos-latest", "windows-latest"]'
-      build_command: 'cargo build --locked --all-targets'
-      test_command: 'cargo test --locked --all-targets'
+      build_command: 'python tools/with_libclang.py cargo build --locked --all-targets'
+      test_command: 'python tools/with_libclang.py cargo test --locked --all-targets'
       fmt_command: 'cargo fmt --all --check'
-      clippy_command: 'cargo clippy --locked --all-targets -- -D warnings'
+      clippy_command: 'python tools/with_libclang.py cargo clippy --locked --all-targets -- -D warnings'
       msrv_toolchain: '1.89'
+      msrv_command: 'python tools/with_libclang.py cargo check --locked --all-targets'
 
   supply-chain:
     name: supply-chain
@@ -106,7 +107,7 @@ jobs:
           # about a cache rather than about this commit.
           cache: false
 
-      - run: cargo build --locked --release
+      - run: python tools/with_libclang.py cargo build --locked --release
 
       - name: The artifact does not link the network
         run: |
