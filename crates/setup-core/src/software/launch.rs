@@ -27,9 +27,12 @@ impl Stamp {
         length: u64,
         content: &str,
         link: bool,
-        mode: u32,
+        mode: Option<u32>,
     ) -> bool {
-        self.length == length && self.content == content && self.link == link && self.mode == mode
+        self.length == length
+            && self.content == content
+            && self.link == link
+            && mode.is_none_or(|expected| self.mode == expected)
     }
 
     pub(super) fn has_identity(&self, identity: (u64, u64)) -> bool {

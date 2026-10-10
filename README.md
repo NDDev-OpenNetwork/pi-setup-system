@@ -73,9 +73,12 @@ reads. `nddev-builder` keeps that posture and adds authoring knowledge; selectin
 the toolkit must not silently return development to an approval loop. Neither is
 an external execution profile and neither grants environment by itself.
 
-**A backup is captured before every change**, so `restore` always has something
-to return to. `restore` with no reference means the most recent backup that
-existed when you asked — not the one the restore itself just took.
+The existing configuration lifecycle captures a backup before changing the
+configuration, so `restore` can return its bytes. Software install, update and
+remove use their own ownership/recovery records and do not capture configuration
+backups. `restore` with no reference means the most recent backup that existed
+when you asked — not the one the restore itself just took. These compatibility
+effects do not authorize automatic backups in a new ai-stp workflow.
 
 **Selecting a setup reaches its complete state, not a merge.** If the setup you
 leave owned a file the one you choose does not, that file goes. A target is

@@ -27,7 +27,7 @@ pub(super) struct Expected {
     length: u64,
     content: String,
     link: bool,
-    mode: u32,
+    mode: Option<u32>,
 }
 
 impl Expected {
@@ -40,7 +40,7 @@ impl Expected {
             length,
             content,
             link: false,
-            mode: if cfg!(unix) { 0o600 } else { 0 },
+            mode: Some(if cfg!(unix) { 0o600 } else { 0 }),
         }
     }
 
@@ -51,7 +51,9 @@ impl Expected {
             length: content.len() as u64,
             content,
             link: true,
-            mode: 0o777,
+            // Symlink modes are chosen by the OS (and on BSD/macOS, umask).
+            // The actual mode is still retained in the immutable launch seal.
+            mode: None,
         })
     }
 
@@ -154,7 +156,7 @@ impl<'a> Preparation<'a> {
         } else {
             let nonce = records::unique()?;
             Record {
-                schema_version: 1,
+                schema_version: 2,
                 entries: std::array::from_fn(|index| Entry {
                     temporary: format!(".{command}.incoming-{nonce}-{index}"),
                     identity: None,
@@ -163,7 +165,7 @@ impl<'a> Preparation<'a> {
                 binding: binding.clone(),
             }
         };
-        if record.schema_version != 1 || &record.binding != binding {
+        if record.schema_version != 2 || &record.binding != binding {
             return Err(refuse());
         }
         for (index, entry) in record.entries.iter().enumerate() {
@@ -511,15 +513,15 @@ mod tests {
 
         // Reproduce a write interrupted after durable identity, then verify
         // both a missing pathname and changed retained bytes without effects.
-        fs::write(&temporary[1], b"").unwrap();
-        preparation.record.entries[1].identity = Some(
-            FileIdentity::of(
-                &bin.symlink_metadata(&preparation.record.entries[1].temporary)
-                    .unwrap(),
-            )
-            .unwrap(),
-        );
-        preparation.save().unwrap();
+        drop(preparation.open_partial(1, values[1].len() as u64).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temporary[1], fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(preparation.bytes(1, values[1]).is_err());
+            assert_eq!(fs::read(&temporary[1]).unwrap(), b"");
+            fs::set_permissions(&temporary[1], fs::Permissions::from_mode(0o600)).unwrap();
+        }
         fs::rename(&temporary[1], &retained).unwrap();
         assert!(preparation.bytes(1, values[1]).is_err());
         assert!(!temporary[1].exists());
