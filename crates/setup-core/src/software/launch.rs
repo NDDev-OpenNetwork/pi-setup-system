@@ -22,6 +22,19 @@ pub(super) struct Stamp {
 }
 
 impl Stamp {
+    pub(super) fn matches_payload(
+        &self,
+        length: u64,
+        content: &str,
+        link: bool,
+        mode: Option<u32>,
+    ) -> bool {
+        self.length == length
+            && self.content == content
+            && self.link == link
+            && mode.is_none_or(|expected| self.mode == expected)
+    }
+
     pub(super) fn has_identity(&self, identity: (u64, u64)) -> bool {
         (self.device, self.inode) == identity
     }

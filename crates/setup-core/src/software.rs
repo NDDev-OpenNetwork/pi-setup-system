@@ -21,6 +21,7 @@ mod exposure;
 mod input;
 mod launch;
 mod ownership;
+mod preparation;
 mod records;
 mod removal;
 mod staging;
@@ -654,6 +655,7 @@ fn recover_locked(software: &Software, root: &Path) -> Result<Vec<String>> {
         return Ok(vec![format!("completed the recorded removal of {version}")]);
     }
     let Some(transaction) = installation else {
+        require_idle(software, root)?;
         return Ok(Vec::new());
     };
     let version = transaction.version().to_owned();
@@ -686,6 +688,7 @@ pub fn require_idle(software: &Software, root: &Path) -> Result<()> {
         format!(".nddev-software-{}.transaction.json", software.command),
         removal::journal(software.command),
         switch::journal(software.command),
+        preparation::journal(software.command),
     ] {
         match fs::symlink_metadata(root.join(journal)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1236,8 +1239,11 @@ mod tests {
                 .digest,
             before
         );
-        // The new marker landed while the command and manifest still name the predecessor.
-        fs::write(marker, b"1.2.2").unwrap();
+        // Matching intended bytes alone do not establish a recorded rename.
+        // A partial switch must retain its sealed preparation record.
+        fs::write(&marker, b"1.2.2").unwrap();
+        assert!(recover(&software(), &root).is_err());
+        fs::write(marker, b"1.2.3").unwrap();
         assert_eq!(recover(&software(), &root).unwrap().len(), 1);
         assert!(recover(&software(), &root).unwrap().is_empty());
         assert_eq!(
@@ -1652,7 +1658,7 @@ mod tests {
     /// The exposed version is recorded, so it is readable where no link exists.
     ///
     /// This is the Windows defect written as a test that fails on Linux too.
-    /// `expose` makes a symlink on Unix and a hard link or a copy on Windows,
+    /// `expose` makes a symlink on Unix and a recorded copy on Windows,
     /// and the old reading resolved the link -- so on Windows the answer was
     /// always "nothing is exposed", on a prefix where something plainly was.
     ///

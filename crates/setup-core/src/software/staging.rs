@@ -570,11 +570,13 @@ mod tests {
         assert_eq!(fs::read(&entry).unwrap(), b"foreign after promotion");
         assert!(!root.join("bin/.codex.version").exists());
         fs::remove_file(&entry).unwrap();
-        // One of the three recorded activation renames completed before exit.
+        // A matching entry without a sealed preparation is not a recorded rename.
         #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("1.2.3/codex"), &entry).unwrap();
         #[cfg(not(unix))]
         fs::copy(root.join("1.2.3/codex"), &entry).unwrap();
+        assert!(software::recover(&declared, &root).is_err());
+        fs::remove_file(&entry).unwrap();
         software::recover(&declared, &root).unwrap();
         assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"new");
         assert!(software::recover(&declared, &root).unwrap().is_empty());

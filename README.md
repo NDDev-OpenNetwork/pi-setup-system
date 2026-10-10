@@ -1,5 +1,18 @@
 # pi-setup-system
 
+The ai-stp installation component for Pi Coding Agent.
+
+Use [ai-stp](https://github.com/ai-engineers-guild/ai-stp) as the product entry
+point. Its CLI owns selection, authenticated acquisition and lifecycle
+orchestration; this component owns the final harness files and recovery.
+This repository remains the public source and release boundary, with the
+existing package identity. It is part of ai-stp, not a separate user workflow.
+
+The isolated [Rust CLI preview](https://github.com/ai-engineers-guild/ai-stp/tree/dev/apps/cli-v2)
+reports its implemented capabilities through its executable registry. Native
+writable lifecycle and production cutover are separate acceptance steps;
+this component's commands below do not claim that the preview already installs.
+
 Installs, reselects, restores and removes a complete Pi harness configuration, and owns the program lifecycle.
 
 A *setup* here is the complete harness state — the system-prompt components and
@@ -7,7 +20,7 @@ the whole configuration — not a pointer to somewhere the content really lives.
 That is what makes restore mean something: it returns the
 instructions, skills, commands, plugins and settings together, in one step.
 
-> **Status: complete for the five core operations and the program lifecycle.**
+> **Status: implements the five core operations and the program lifecycle.**
 >
 > `install`, `replace`, `backup`, `restore` and `remove` all work, over the wire
 > and from the local catalog.
@@ -20,7 +33,10 @@ instructions, skills, commands, plugins and settings together, in one step.
 > found on `PATH`, and points the product at the target through the
 > environment variable its own documentation names.
 
-## Using it
+## Component maintenance and compatibility
+
+These direct entry points remain available for existing integrations and
+component development. New user workflows belong to the ai-stp CLI.
 
 ```bash
 pi-setup-system list
@@ -57,9 +73,12 @@ reads. `nddev-builder` keeps that posture and adds authoring knowledge; selectin
 the toolkit must not silently return development to an approval loop. Neither is
 an external execution profile and neither grants environment by itself.
 
-**A backup is captured before every change**, so `restore` always has something
-to return to. `restore` with no reference means the most recent backup that
-existed when you asked — not the one the restore itself just took.
+The existing configuration lifecycle captures a backup before changing the
+configuration, so `restore` can return its bytes. Software install, update and
+remove use their own ownership/recovery records and do not capture configuration
+backups. `restore` with no reference means the most recent backup that existed
+when you asked — not the one the restore itself just took. These compatibility
+effects do not authorize automatic backups in a new ai-stp workflow.
 
 **Selecting a setup reaches its complete state, not a merge.** If the setup you
 leave owned a file the one you choose does not, that file goes. A target is

@@ -1,4 +1,4 @@
-//! The provider command runtime every NDDev setup system shares.
+//! The isolated provider runtime shared by ai-stp installation components.
 //!
 //! Seven products, one set of commands. What differs between them is not
 //! behaviour but *facts*: which directory a product configures, which files
@@ -165,9 +165,7 @@ pub fn run(harness: &Harness, arguments: Vec<String>) -> ExitCode {
     }
 }
 
-fn print_help(harness: &Harness) {
-    println!("{} {}", harness.provider_id, harness.version);
-    println!();
+fn print_target(harness: &Harness) {
     println!(
         "Configures {} ({}) in a caller-named target directory.",
         harness.product, harness.vendor
@@ -194,6 +192,14 @@ fn print_help(harness: &Harness) {
         println!("Also honoured: {}", harness.config_home_note);
     }
     println!();
+}
+
+fn print_help(harness: &Harness) {
+    println!("{} {}", harness.provider_id, harness.version);
+    println!("An ai-stp installation component; use the ai-stp CLI for user workflows.");
+    println!("Direct commands below are provider integration and maintenance interfaces.");
+    println!();
+    print_target(harness);
     println!("Provider commands (ai-stp protocol v3):");
     println!("  provider-info");
     println!("  status            --target <dir> --json");
@@ -223,7 +229,7 @@ fn print_help(harness: &Harness) {
         println!("  apply-operation --prefix <dir> --software-artifact <file> ...");
         println!();
     }
-    println!("Your commands:");
+    println!("Maintenance and compatibility commands:");
     println!("  list");
     println!("  status    --target <dir>");
     println!("  install   <setup> --target <dir>");
