@@ -74,6 +74,15 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                     ));
                 }
                 validate_software_binding(harness, &target, &provider_release_digest, &artifact)?;
+                return apply_software(
+                    harness,
+                    &target,
+                    prefix.as_deref(),
+                    operation_of(&artifact)?,
+                    &plan_digest,
+                    &artifact,
+                    &software_artifacts,
+                );
             }
             apply(
                 harness,
@@ -82,7 +91,6 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                 &plan_digest,
                 bundle.as_ref(),
                 prefix.as_deref(),
-                &software_artifacts,
             )
         }
         Invocation::RecoverOperation { target } => recover(harness, &target),
@@ -1909,21 +1917,8 @@ fn scope_of(artifact: &serde_json::Value) -> Option<provider_v3::TargetScope> {
         .and_then(provider_v3::TargetScope::parse)
 }
 
-#[allow(clippy::too_many_lines)]
-fn apply(
-    harness: &Harness,
-    target: &Path,
-    artifact: serde_json::Value,
-    plan_digest: &str,
-    bundle: Option<&ArgvBundle>,
-    prefix: Option<&Path>,
-    // `downloaded`, not `artifacts`: the plan artifact is read into a local of
-    // a similar name a few lines below, and one of the two had to give way.
-    downloaded: &[std::path::PathBuf],
-) -> Result<serde_json::Value> {
-    let mut verified: Option<Bundle> = None;
-    let operation = operation_of(&artifact)?;
-    let expires_at = string_field(&artifact, "expires_at")?;
+fn validate_expiry(artifact: &serde_json::Value) -> Result<()> {
+    let expires_at = string_field(artifact, "expires_at")?;
     // Both refusals are `stale` and both are fail-closed, but they are not the
     // same problem, and saying "expired" to someone whose timestamp simply did
     // not parse sends them to look at a clock instead of at a format. Costing
@@ -1946,19 +1941,22 @@ fn apply(
         Some(_) => {}
     }
 
-    // The software lifecycle writes under the control directory and never
-    // touches the namespaces the effect machinery below exists to mutate, so it
-    // parts company here rather than pretending to be one of those effects.
-    if Operation::SOFTWARE.contains(&operation) {
-        return apply_software(
-            harness,
-            prefix,
-            operation,
-            plan_digest,
-            &artifact,
-            downloaded,
-        );
-    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn apply(
+    harness: &Harness,
+    target: &Path,
+    artifact: serde_json::Value,
+    plan_digest: &str,
+    bundle: Option<&ArgvBundle>,
+    prefix: Option<&Path>,
+) -> Result<serde_json::Value> {
+    let mut verified: Option<Bundle> = None;
+    let operation = operation_of(&artifact)?;
+    validate_expiry(&artifact)?;
+
     if let Some(named) = prefix {
         return Err(Error::refuse(
             WireReason::UnsupportedOperation,
@@ -2411,31 +2409,9 @@ pub(crate) fn perform(
     }))
 }
 
-/// The program lifecycle's answer, carrying the plan echo the wire owes.
-///
-/// The echo is added here rather than inside `software::apply`, because it is a
-/// fact about the wire call and not about the prefix: this layer is where the
-/// plan artifact and its digest exist, and `software::apply` deliberately knows
-/// about neither.
-///
-/// **It was missing from both of `software::apply`'s answer shapes, and the cost
-/// was carried by every one of the seven.** The consumer requires the echo for
-/// every operation, so `harness install`, `harness update` and `harness remove`
-/// through `ai-stp` refused *after* the program was installed -- the effect
-/// landed and the operation stayed `applied_unverified` over a prefix holding a
-/// working build. Reported by the consumer's own session on 2026-08-31 after
-/// running the released `0.0.48` through `harness install`, and confirmed here
-/// by reading both sites rather than by taking the report: the configuration
-/// answer carries `plan_digest`; neither software answer did.
-///
-/// Nothing on this side could have raised it. The producer tests asked whether
-/// the provider does what its own answer says, which it did, and the contract
-/// sentence saying the program lifecycle carries *"the same journal, backup and
-/// plan-digest"* was read as being about `plan-operation` alone. That is why the
-/// test beside it asserts the **wire** shape against the contract's list rather
-/// than against this function's output.
-/// Check the context the consumer approved before software can touch its prefix.
-/// The release argument is a consumer claim; authentication remains its owner.
+/// Validate immutable provider, release, target address, scope and platform
+/// binding before any historical lookup or software effect. First-admission
+/// target content and expiry are checked separately under the prefix writer.
 fn validate_software_binding(
     harness: &Harness,
     target: &Path,
@@ -2456,10 +2432,7 @@ fn validate_software_binding(
         _ => return Err(stale()),
     };
     let resolved = Target::resolve(target, harness.control_directory)?;
-    refuse_another_scopes_record(harness, &resolved, scope)?;
     let profile = harness.projection_profile_for(scope)?;
-    let owned = owned_here(harness, &resolved, scope)?;
-    let identity = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
     let expected = serde_json::json!({
         "format": provider_v3::PLAN_FORMAT,
         "protocol_version": provider_v3::PROTOCOL_VERSION,
@@ -2468,7 +2441,6 @@ fn validate_software_binding(
         "provider_build_digest": harness.build_digest()?,
         "provider_release_digest": release_digest,
         "canonical_target": resolved.root().to_string_lossy(),
-        "expected_target_digest": identity,
         "projection_profile_digest": profile.digest,
         "platform": provider_v3::platform::echo(),
         "bundle": null, "backup_ref": null, "restore_target_digest": null,
@@ -2488,8 +2460,28 @@ fn validate_software_binding(
     Ok(())
 }
 
+fn validate_software_preconditions(
+    harness: &Harness,
+    target: &Path,
+    plan: &serde_json::Value,
+) -> Result<()> {
+    let scope = scope_of(plan);
+    let resolved = Target::resolve(target, harness.control_directory)?;
+    refuse_another_scopes_record(harness, &resolved, scope)?;
+    let owned = owned_here(harness, &resolved, scope)?;
+    let observed = resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?;
+    if observed != string_field(plan, "expected_target_digest")? {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the target changed before software operation admission; no software effect was made",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_software(
     harness: &Harness,
+    target: &Path,
     prefix: Option<&Path>,
     operation: Operation,
     plan_digest: &str,
@@ -2498,6 +2490,7 @@ fn apply_software(
 ) -> Result<serde_json::Value> {
     let planned_prefix = string_field(plan, "software_prefix")?;
     let planned_version = string_field(plan, "software_version")?;
+    let operation_id = string_field(plan, "operation_id")?;
     let expected_software_digest = string_field(plan, "expected_software_digest")?;
     let argv_prefix = prefix.ok_or_else(|| {
         Error::refuse(
@@ -2522,11 +2515,19 @@ fn apply_software(
     let mut answer = software::apply(
         harness,
         prefix,
-        operation,
-        &planned_version,
-        &expected_software_digest,
-        &planned_artifacts,
+        &software::Request {
+            operation,
+            version: &planned_version,
+            prefix_digest: &expected_software_digest,
+            artifacts: &planned_artifacts,
+            operation_id: &operation_id,
+            plan_digest,
+        },
         downloaded,
+        || {
+            validate_expiry(plan)?;
+            validate_software_preconditions(harness, target, plan)
+        },
     )?;
     if let Some(fields) = answer.as_object_mut() {
         fields.insert(
@@ -2576,6 +2577,49 @@ fn record_bundle_provenance(applied: &mut Applied, named: &ArgvBundle, ready: &B
     }
 }
 
+/// Verify the durable result before a committed journal may be discarded.
+fn committed_result(
+    harness: &Harness,
+    resolved: &Target,
+    journal: &Journal,
+    scope: Option<provider_v3::TargetScope>,
+    owned: &[String],
+) -> Result<String> {
+    // The state record is durable before the journal commits. Bind it
+    // back to that exact operation and verify its recorded result before
+    // discarding evidence; current content alone is not verification.
+    let mismatch = || {
+        Error::refuse(
+            WireReason::RecoveryRequired,
+            "the committed configuration result differs from its recorded operation; the journal was preserved",
+        )
+    };
+    let StateReading::Current(state) = ProviderState::read(resolved.root(), harness.state_file)?
+    else {
+        return Err(mismatch());
+    };
+    let after = resolved.identity_of_owned(&as_paths(owned), &harness.not_our_identity())?;
+    if state.protocol_version != provider_v3::PROTOCOL_VERSION
+        || state.provider_id != harness.provider_id
+        || state.harness_id != harness.harness_id
+        || state.canonical_target != resolved.root().to_string_lossy()
+        || state.operation_id != journal.operation_id
+        || state.provider_plan_digest.as_deref() != Some(journal.plan_digest.as_str())
+        || state.target_precondition_digest != journal.target_precondition_digest
+        || state.backup_ref != journal.backup_ref
+        || state.target_identity_digest != after
+        || !state
+            .native_ownership
+            .iter()
+            .map(String::as_str)
+            .eq(harness.owned_projection(scope).iter().copied())
+        || scope_recorded_at(harness, resolved)? != scope
+    {
+        return Err(mismatch());
+    }
+    Ok(after)
+}
+
 /// Resolve an interrupted operation from its journal.
 fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let (resolved, control, pool) = open(harness, target)?;
@@ -2598,7 +2642,15 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
     let scope = journal
         .target_scope
         .as_deref()
-        .and_then(provider_v3::TargetScope::parse);
+        .map(|value| {
+            provider_v3::TargetScope::parse(value).ok_or_else(|| {
+                Error::refuse(
+                    WireReason::RecoveryRequired,
+                    "the recorded recovery scope is invalid",
+                )
+            })
+        })
+        .transpose()?;
     let owned = owned_here(harness, &resolved, scope)?;
 
     match journal.phase {
@@ -2672,14 +2724,14 @@ fn recover(harness: &Harness, target: &Path) -> Result<serde_json::Value> {
             }))
         }
         Phase::Committed => {
-            // The effect is complete. Verify and clear the tails only.
+            let after = committed_result(harness, &resolved, &journal, scope, &owned)?;
             Journal::clear(&control)?;
             Ok(serde_json::json!({
                 "state": "verified",
                 "recovered": true,
                 "phase": Phase::Committed.as_str(),
-                "target_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
-                "target_identity_digest": resolved.identity_of_owned(&as_paths(&owned), &harness.not_our_identity())?,
+                "target_digest": after,
+                "target_identity_digest": after,
             }))
         }
     }
@@ -4099,13 +4151,26 @@ mod tests {
     }
 
     fn args(command: &str, target: &Path, extra: &[&str]) -> Vec<String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SOFTWARE_REQUEST: AtomicU64 = AtomicU64::new(0);
         let mut tokens = vec![
             command.to_owned(),
             "--target".to_owned(),
             target.to_string_lossy().into_owned(),
             "--json".to_owned(),
         ];
-        tokens.extend(extra.iter().map(|s| (*s).to_owned()));
+        tokens.extend(extra.iter().map(|s| {
+            // A new fixture plan has a new caller request. Replaying a saved
+            // plan retains the identifier serialized inside that plan.
+            if command == "plan-operation" && *s == "operation_01SOFT" {
+                format!(
+                    "operation_SOFT_{}",
+                    SOFTWARE_REQUEST.fetch_add(1, Ordering::Relaxed)
+                )
+            } else {
+                (*s).to_owned()
+            }
+        }));
         tokens
     }
 
@@ -6469,6 +6534,90 @@ mod tests {
     }
 
     #[test]
+    fn committed_recovery_requires_its_recorded_result_before_clearing_evidence() {
+        let target = seeded("recover-committed-result");
+        plan_then_apply(&target, "backup", &[]);
+        plan_then_apply(&target, "restore", &[]);
+        let control = target.join(TEST.control_directory);
+        let state_path = target.join(TEST.state_file);
+        let state_bytes = fs::read(&state_path).unwrap();
+        let StateReading::Current(state) = ProviderState::read(&target, TEST.state_file).unwrap()
+        else {
+            panic!("state missing");
+        };
+        assert!(state.written_paths.iter().any(|path| path == "AGENTS.md"));
+        let original = fs::read(target.join("AGENTS.md")).unwrap();
+        for changed in [
+            "content",
+            "operation_id",
+            "provider_plan_digest",
+            "target_precondition_digest",
+            "canonical_target",
+            "provider_id",
+            "harness_id",
+            "backup_ref",
+            "scope",
+            "invalid_scope",
+            "missing_state",
+        ] {
+            Journal {
+                schema_version: JOURNAL_SCHEMA,
+                phase: Phase::Prepared,
+                operation_id: state.operation_id.clone(),
+                operation: "restore".to_owned(),
+                plan_digest: state.provider_plan_digest.clone().unwrap(),
+                target_precondition_digest: state.target_precondition_digest.clone(),
+                backup_ref: state.backup_ref.clone(),
+                target_scope: match changed {
+                    "scope" => Some("project".to_owned()),
+                    "invalid_scope" => Some("unknown".to_owned()),
+                    _ => None,
+                },
+            }
+            .publish_prepared(&control)
+            .unwrap()
+            .promote_to_committed(&control)
+            .unwrap();
+            let journal = fs::read(Journal::path(&control)).unwrap();
+            if changed == "content" {
+                fs::write(target.join("AGENTS.md"), b"foreign change").unwrap();
+            } else if changed == "missing_state" {
+                fs::remove_file(&state_path).unwrap();
+            } else if !matches!(changed, "scope" | "invalid_scope") {
+                let mut altered = serde_json::to_value(&state).unwrap();
+                altered[changed] = if changed == "backup_ref" {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!("foreign")
+                };
+                fs::write(&state_path, serde_json::to_vec(&altered).unwrap()).unwrap();
+            }
+            let before_state = fs::read(&state_path).ok();
+            let before_content = fs::read(target.join("AGENTS.md")).unwrap();
+            let error = refuse(args("recover-operation", &target, &[]));
+            assert_eq!(
+                error.reason(),
+                Some(WireReason::RecoveryRequired),
+                "{changed}: {error}"
+            );
+            assert_eq!(fs::read(Journal::path(&control)).unwrap(), journal);
+            assert_eq!(fs::read(&state_path).ok(), before_state);
+            assert_eq!(fs::read(target.join("AGENTS.md")).unwrap(), before_content);
+            fs::write(&state_path, &state_bytes).unwrap();
+            fs::write(target.join("AGENTS.md"), &original).unwrap();
+            if matches!(changed, "scope" | "invalid_scope") {
+                let mut repaired = Journal::read(&control).unwrap().unwrap();
+                repaired.target_scope = None;
+                repaired.promote_to_committed(&control).unwrap();
+            }
+            let recovered = run(args("recover-operation", &target, &[]));
+            assert_eq!(recovered["state"], "verified");
+            assert_eq!(recovered["target_digest"], state.target_identity_digest);
+            assert!(!Journal::path(&control).exists());
+        }
+    }
+
+    #[test]
     fn recovery_from_prepared_returns_the_exact_pre_operation_target() {
         let target = seeded("recover");
         plan_then_apply(&target, "backup", &[]);
@@ -8815,6 +8964,11 @@ mod tests {
     #[test]
     fn installing_places_a_command_and_leaves_the_configuration_alone() {
         let target = seeded("software-install");
+        install_global(
+            &target,
+            "software-existing-configuration",
+            &[("AGENTS.md", "# first\n", 0o644)],
+        );
         let before = run(args("status", &target, &[]))["target_identity_digest"].clone();
 
         let file = downloaded(&target, TEST_PAYLOAD);
@@ -8850,6 +9004,77 @@ mod tests {
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             "# first\n"
         );
+
+        // A fresh expired request is refused. A durable matching admission
+        // represents a request accepted before expiry; no real-time sleep is
+        // needed to exercise the wire's distinction between those states.
+        let prefix = ready_prefix(&target);
+        let mut planned = software_plan(&target, "software_install");
+        planned["plan"]["expires_at"] = "2000-01-01T00:00:00.000Z".into();
+        planned["plan_digest"] =
+            digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &planned["plan"])
+                .unwrap()
+                .into();
+        let extra = apply_args(&target, &prefix, "software_install", &planned, Some(&file));
+        let borrowed: Vec<_> = extra.iter().map(String::as_str).collect();
+        assert_eq!(
+            refuse(args("apply-operation", &target, &borrowed)).reason(),
+            Some(WireReason::Stale)
+        );
+        let declared = TEST.software.unwrap();
+        let intent = setup_core::software::operation::Intent::new(
+            planned["plan"]["operation_id"].as_str().unwrap(),
+            planned["plan_digest"].as_str().unwrap(),
+            &declared,
+            setup_core::software::operation::Kind::Install,
+        )
+        .unwrap();
+        let writer = setup_core::software::Writer::acquire(Path::new(&prefix)).unwrap();
+        writer
+            .admit_operation(
+                &intent,
+                &declared,
+                TEST.control_directory,
+                planned["plan"]["expected_software_digest"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(writer);
+        fs::write(target.join("AGENTS.md"), b"changed after admission").unwrap();
+        assert_ne!(
+            run(args("status", &target, &[]))["target_digest"],
+            planned["plan"]["expected_target_digest"],
+            "the target drift control must change the actual plan precondition"
+        );
+        let resumed = apply_planned(&target, &prefix, "software_install", &planned, Some(&file));
+        assert_eq!(resumed["state"], "verified");
+        assert_eq!(
+            fs::read(target.join("AGENTS.md")).unwrap(),
+            b"changed after admission"
+        );
+        plan_then_install(&target, "software_remove", None);
+        fs::remove_file(&file).unwrap();
+        let after =
+            setup_core::software_prefix::observe(Path::new(&prefix), TEST.control_directory)
+                .unwrap()
+                .digest;
+        let replay = apply_planned(&target, &prefix, "software_install", &planned, None);
+        assert_eq!(replay, resumed);
+        assert_eq!(
+            setup_core::software_prefix::observe(Path::new(&prefix), TEST.control_directory)
+                .unwrap()
+                .digest,
+            after
+        );
+        assert!(!Path::new(&prefix).join("1.2.3").exists());
+        let metadata = Path::new(&prefix).join(".nddev-software/records.sqlite3");
+        let original = fs::read(&metadata).unwrap();
+        assert_eq!(
+            apply_planned(&target, &prefix, "software_install", &planned, None),
+            resumed
+        );
+        assert_eq!(fs::read(metadata).unwrap(), original);
     }
 
     /// Run something that was just written, tolerating a fork that has not
@@ -9109,6 +9334,21 @@ mod tests {
                 serde_json::Value::String(digest),
                 "{operation} answered without the plan echo the wire owes: {applied}"
             );
+            if operation == "software_remove" {
+                let metadata = Path::new(&prefix).join(".nddev-software/records.sqlite3");
+                let before = fs::read(&metadata).unwrap();
+                let invalid = apply_args(&target, &prefix, operation, &planned, Some(&file));
+                let borrowed: Vec<_> = invalid.iter().map(String::as_str).collect();
+                assert_eq!(
+                    refuse(args("apply-operation", &target, &borrowed)).reason(),
+                    Some(WireReason::UnsupportedOperation)
+                );
+                assert_eq!(fs::read(metadata).unwrap(), before);
+                assert_eq!(
+                    apply_planned(&target, &prefix, operation, &planned, None),
+                    applied
+                );
+            }
         }
     }
 

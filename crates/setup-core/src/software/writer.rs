@@ -17,7 +17,7 @@ pub(crate) use super::store::validate_control;
 /// Every harness uses the same lock. A caller with a plan must revalidate its
 /// prefix precondition after acquiring this writer and before invoking a method.
 pub struct Writer {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     identity: Identity,
     control_identity: Identity,
     lock: TargetLock,
@@ -62,7 +62,7 @@ impl Writer {
         })
     }
 
-    fn revalidate(&self) -> Result<()> {
+    pub(super) fn revalidate(&self) -> Result<()> {
         let root = open_root(&self.root)?;
         if Identity::of(&root)? != self.identity
             || Identity::of(&io(root.open_dir_nofollow(CONTROL))?)? != self.control_identity
@@ -103,6 +103,7 @@ impl Writer {
     pub fn recover(&self, software: &Software) -> Result<Vec<String>> {
         self.revalidate()?;
         super::store::recover(&open_root(&self.root)?)?;
+        super::store::check_active(&open_root(&self.root)?, None)?;
         super::recover_locked(software, &self.root)
     }
 

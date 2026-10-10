@@ -208,6 +208,9 @@ struct Reading {
     hash: Sha256,
     inventory: Option<Vec<Entry>>,
     inventory_bytes: usize,
+    omitted: BTreeSet<String>,
+    physical_directories: bool,
+    omit_bin_node: bool,
 }
 
 impl Reading {
@@ -257,7 +260,13 @@ impl Reading {
         if reparse(&before) {
             return Err(invalid());
         }
-        self.record(relative, b"directory", permissions(&before), b"")?;
+        if !(self.omit_bin_node && relative == "bin") {
+            self.record(relative, b"directory", permissions(&before), b"")?;
+            if self.physical_directories {
+                field(&mut self.hash, &before.dev().to_be_bytes());
+                field(&mut self.hash, &before.ino().to_be_bytes());
+            }
+        }
         let mut names = Vec::new();
         for entry in io(dir.entries())? {
             self.check()?;
@@ -285,6 +294,9 @@ impl Reading {
             };
             if path.len() > MAX_PATH_BYTES {
                 return Err(invalid());
+            }
+            if self.omitted.contains(&path) {
+                continue;
             }
             let metadata = io(dir.symlink_metadata(&name))?;
             if metadata.is_symlink() {
@@ -380,6 +392,9 @@ pub fn observe(root: &Path, control: &str) -> Result<Observation> {
         hash: Sha256::new(),
         inventory: None,
         inventory_bytes: 0,
+        omitted: BTreeSet::new(),
+        physical_directories: false,
+        omit_bin_node: false,
     };
     field(&mut reading.hash, b"nddev:software-prefix:v1");
     let present = match std::fs::symlink_metadata(root) {
@@ -421,6 +436,9 @@ pub(crate) fn digest_directory(directory: &Dir) -> Result<String> {
         hash: Sha256::new(),
         inventory: None,
         inventory_bytes: 0,
+        omitted: BTreeSet::new(),
+        physical_directories: false,
+        omit_bin_node: false,
     };
     field(&mut reading.hash, b"nddev:software-stage:v1");
     reading.walk(directory, "", 0, "")?;
@@ -439,6 +457,9 @@ pub(crate) fn inventory_directory(directory: &Dir) -> Result<(String, Vec<Entry>
         hash: Sha256::new(),
         inventory: Some(Vec::new()),
         inventory_bytes: 0,
+        omitted: BTreeSet::new(),
+        physical_directories: false,
+        omit_bin_node: false,
     };
     field(&mut reading.hash, b"nddev:software-stage:v1");
     reading.walk(directory, "", 0, "")?;
@@ -448,6 +469,34 @@ pub(crate) fn inventory_directory(directory: &Dir) -> Result<(String, Vec<Entry>
         return Err(invalid());
     }
     Ok((digest, entries))
+}
+
+/// Bind all paths outside exact recorded effects, including directory identity.
+/// An initially absent bin may become an empty directory; its children are
+/// still observed. This private digest does not change the public prefix format.
+pub(crate) fn resume_digest(
+    directory: &Dir,
+    control: &str,
+    omitted: &[String],
+    bin_was_absent: bool,
+) -> Result<String> {
+    let mut reading = Reading {
+        started: Instant::now(),
+        entries: 0,
+        bytes: 0,
+        hash: Sha256::new(),
+        inventory: None,
+        inventory_bytes: 0,
+        omitted: omitted.iter().cloned().collect(),
+        physical_directories: true,
+        omit_bin_node: bin_was_absent,
+    };
+    field(&mut reading.hash, b"nddev:software-operation-scope:v1");
+    reading.walk(directory, "", 0, control)?;
+    Ok(format!(
+        "sha256:{}",
+        crate::digest::hex(&reading.hash.finalize())
+    ))
 }
 
 #[cfg(test)]
