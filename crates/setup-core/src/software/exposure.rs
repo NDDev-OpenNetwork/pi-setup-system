@@ -8,7 +8,7 @@ use std::{
 };
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_std::fs::{Dir, File, OpenOptions};
+use cap_std::fs::{Dir, File, Metadata, OpenOptions};
 use sha2::{Digest, Sha256};
 
 use super::{Manifest, launch};
@@ -65,10 +65,45 @@ fn temporary(name: &str) -> io::Result<String> {
 struct Prepared<'a> {
     directory: &'a Dir,
     name: String,
+    identity: (u64, u64),
+    stamp: Option<launch::Stamp>,
     pending: bool,
 }
 
 impl<'a> Prepared<'a> {
+    fn created(directory: &'a Dir, name: String, metadata: &Metadata) -> Self {
+        Self {
+            directory,
+            name,
+            identity: (metadata.dev(), metadata.ino()),
+            stamp: None,
+            pending: true,
+        }
+    }
+
+    fn seal(mut self) -> io::Result<Self> {
+        let stamp = launch::stamp(self.directory, &self.name, 8 * 1024 * 1024 * 1024)
+            .map_err(|_| invalid())?
+            .ok_or_else(invalid)?;
+        if !stamp.has_identity(self.identity) {
+            return Err(invalid());
+        }
+        self.stamp = Some(stamp);
+        Ok(self)
+    }
+
+    fn unchanged(&self) -> io::Result<bool> {
+        let Some(expected) = &self.stamp else {
+            return Ok(false);
+        };
+        Ok(
+            launch::stamp(self.directory, &self.name, 8 * 1024 * 1024 * 1024)
+                .map_err(|_| invalid())?
+                .as_ref()
+                == Some(expected),
+        )
+    }
+
     fn bytes(directory: &'a Dir, name: &str, bytes: &[u8]) -> io::Result<Self> {
         let name = temporary(name)?;
         let mut options = OpenOptions::new();
@@ -77,17 +112,16 @@ impl<'a> Prepared<'a> {
             .create_new(true)
             .follow(FollowSymlinks::No);
         let mut file = directory.open_with(&name, &options)?;
-        let prepared = Self {
-            directory,
-            name,
-            pending: true,
-        };
+        let prepared = Self::created(directory, name, &file.metadata()?);
         file.write_all(bytes)?;
         file.sync_all()?;
-        Ok(prepared)
+        prepared.seal()
     }
 
     fn commit(mut self, name: &str) -> io::Result<()> {
+        if !self.unchanged()? {
+            return Err(invalid());
+        }
         self.directory.rename(&self.name, self.directory, name)?;
         self.pending = false;
         sync(self.directory)
@@ -96,8 +130,8 @@ impl<'a> Prepared<'a> {
 
 impl Drop for Prepared<'_> {
     fn drop(&mut self) {
-        if self.pending {
-            // This exact temporary entry was exclusively created by this call.
+        if self.pending && self.unchanged().unwrap_or(false) {
+            // Exclusive creation does not authorize deleting a later replacement.
             let _ = self.directory.remove_file(&self.name);
         }
     }
@@ -269,11 +303,7 @@ pub(super) fn expose(
         ];
         let replacements = prepared
             .iter()
-            .map(|(entry, _)| {
-                launch::stamp(&bin, &entry.name, 8 * 1024 * 1024 * 1024)
-                    .map_err(|_| invalid())?
-                    .ok_or_else(invalid)
-            })
+            .map(|(entry, _)| entry.stamp.clone().ok_or_else(invalid))
             .collect::<io::Result<Vec<_>>>()?;
         // Refuse every foreign entry before replacing any member. During a
         // recorded recovery, a member may already contain this exact result.
@@ -334,40 +364,86 @@ fn prepare_entry<'a>(
                         .create_new(true)
                         .follow(FollowSymlinks::No);
                     let mut file = bin.open_with(&temporary, &options)?;
-                    let prepared = Prepared {
-                        directory: bin,
-                        name: temporary,
-                        pending: true,
-                    };
+                    let prepared = Prepared::created(bin, temporary, &file.metadata()?);
                     let expected = source.metadata()?.len();
                     if io::copy(&mut source.take(expected + 1), &mut file)? != expected {
                         return Err(invalid());
                     }
                     file.sync_all()?;
-                    return Ok(prepared);
+                    return prepared.seal();
                 }
-                let prepared = Prepared {
-                    directory: bin,
-                    name: temporary,
-                    pending: true,
-                };
                 let expected = source.metadata()?;
+                let prepared = Prepared::created(bin, temporary, &expected);
                 let mut options = OpenOptions::new();
                 options.read(true).follow(FollowSymlinks::No).nonblock(true);
                 let linked = bin.open_with(&prepared.name, &options)?.metadata()?;
                 if expected.dev() != linked.dev() || expected.ino() != linked.ino() {
                     return Err(invalid());
                 }
-                Ok(prepared)
+                prepared.seal()
             }
         }
     }
     #[cfg(unix)]
     {
-        Ok(Prepared {
-            directory: bin,
-            name: temporary,
-            pending: true,
-        })
+        let metadata = bin.symlink_metadata(&temporary)?;
+        if bin.read_link_contents(&temporary)? != executable {
+            return Err(invalid());
+        }
+        Prepared::created(bin, temporary, &metadata).seal()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn temporary_replacement_neither_commits_nor_deletes_a_substituted_entry() {
+        let path = std::env::temp_dir().join(format!(
+            "software-prepared-{}",
+            super::super::records::unique().unwrap()
+        ));
+        fs::create_dir(&path).unwrap();
+        let directory = Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap();
+        let prepared = Prepared::bytes(&directory, ".tool.version", b"1.2.3").unwrap();
+        let name = prepared.name.clone();
+        fs::rename(path.join(&name), path.join("retained-first")).unwrap();
+        fs::write(path.join(&name), b"foreign temporary entry").unwrap();
+        drop(prepared);
+        assert_eq!(
+            fs::read(path.join(&name)).unwrap(),
+            b"foreign temporary entry"
+        );
+
+        let prepared = Prepared::bytes(&directory, ".tool.version", b"1.2.3").unwrap();
+        let name = prepared.name.clone();
+        fs::rename(path.join(&name), path.join("retained-second")).unwrap();
+        fs::write(path.join(&name), b"foreign replacement").unwrap();
+        fs::write(path.join(".tool.version"), b"previous").unwrap();
+        assert!(prepared.commit(".tool.version").is_err());
+        assert_eq!(fs::read(path.join(&name)).unwrap(), b"foreign replacement");
+        assert_eq!(fs::read(path.join(".tool.version")).unwrap(), b"previous");
+        let prepared = Prepared::bytes(&directory, ".tool.version", b"1.2.3").unwrap();
+        let name = prepared.name.clone();
+        fs::write(path.join(&name), b"changed in place").unwrap();
+        assert!(prepared.commit(".tool.version").is_err());
+        assert_eq!(fs::read(path.join(&name)).unwrap(), b"changed in place");
+        assert_eq!(fs::read(path.join(".tool.version")).unwrap(), b"previous");
+
+        let prepared = Prepared::bytes(&directory, ".tool.version", b"1.2.3").unwrap();
+        let name = prepared.name.clone();
+        drop(prepared);
+        assert!(!path.join(name).exists());
+        Prepared::bytes(&directory, ".tool.version", b"1.2.3")
+            .unwrap()
+            .commit(".tool.version")
+            .unwrap();
+        assert_eq!(fs::read(path.join(".tool.version")).unwrap(), b"1.2.3");
+        drop(directory);
+        fs::remove_dir_all(path).unwrap();
     }
 }
