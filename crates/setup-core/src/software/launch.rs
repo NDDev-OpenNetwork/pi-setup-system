@@ -21,6 +21,12 @@ pub(super) struct Stamp {
     content: String,
 }
 
+impl Stamp {
+    pub(super) fn has_identity(&self, identity: (u64, u64)) -> bool {
+        (self.device, self.inode) == identity
+    }
+}
+
 pub(super) fn stamp(bin: &Dir, name: &str, limit: u64) -> Result<Option<Stamp>> {
     let before = match bin.symlink_metadata(name) {
         Ok(metadata) => metadata,
