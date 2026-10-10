@@ -29,9 +29,9 @@
 //! evict every configuration backup the target had.
 //!
 //! Software operations hold a prefix lock and revalidate the plan's bounded
-//! content observation before recovery or effects. Install stages the version
-//! before exposing its entry point. A per-command journal owns staging recovery;
-//! installed-version ownership and exact-plan replay remain separate boundaries.
+//! content observation before effects. Install stages the version before exposing
+//! its entry point. A pending per-command journal refuses new operations; implicit
+//! recovery would perform effects that the new plan did not authorize.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -244,7 +244,7 @@ fn acquire_prefix(
     root: &Path,
     operation: Operation,
     expected_software_digest: &str,
-) -> Result<setup_core::lock::TargetLock> {
+) -> Result<(setup_core::lock::TargetLock, software::Writer)> {
     // A plan binds the bytes below this prefix, not just its absolute name.
     // Check before creating bookkeeping, then again under the writer lock.
     let before = setup_core::software_prefix::observe(root, harness.control_directory)?;
@@ -278,6 +278,10 @@ fn acquire_prefix(
         true
     };
 
+    // Contention must refuse before this provider creates any bookkeeping that
+    // another command's prefix observation would include as an unrelated change.
+    let writer = software::Writer::acquire(root)?;
+
     // The lock lives in this provider's own dotted directory inside the prefix,
     // not at its root. `acquire` takes a control directory, and a `target.lock`
     // sitting beside `bin/` in a program directory would be both misnamed and
@@ -299,7 +303,7 @@ fn acquire_prefix(
     }
     guard.annotate(&format!("{} {operation}", harness.provider_id))?;
 
-    Ok(guard)
+    Ok((guard, writer))
 }
 
 fn installation_input(
@@ -395,12 +399,13 @@ pub(crate) fn apply(
                 "software_remove downloads nothing, so it takes no --software-artifact",
             ));
         }
-        let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
-        let recovered = setup_core::software::recover(&declared, &root)?;
-        let removed = software::remove(&declared, &root)?;
+        software::require_idle(&declared, &root)?;
+        let (_guard, writer) = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+        software::require_idle(&declared, &root)?;
+        let removed = writer.remove(&declared)?;
         return Ok(serde_json::json!({
             "state": "verified",
-            "recovered": recovered,
+            "recovered": [],
             "operation": operation.as_str(),
             "command": declared.command,
             "version": declared.version,
@@ -411,11 +416,11 @@ pub(crate) fn apply(
     let (artifact, input) =
         installation_input(&declared, operation, planned_artifacts, downloaded)?;
 
-    // Reject incomplete or incorrect inputs before creating prefix bookkeeping
-    // or recovering any previously observed staging. The kernel consumes this
-    // same held input and verifies the extraction stream before promotion.
-    // Recovery only touches physical directories named by its staging journal.
-    let _guard = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+    // Validate the held input before any bookkeeping. A pending transaction
+    // refuses before the lock and again under it; a new plan owns no recovery.
+    software::require_idle(&declared, &root)?;
+    let (_guard, writer) = acquire_prefix(harness, &root, operation, expected_software_digest)?;
+    software::require_idle(&declared, &root)?;
 
     // Re-checked here, not trusted from the plan: applying happens later, and
     // the prefix could have been emptied in between. The plan's digest binds
@@ -436,12 +441,11 @@ pub(crate) fn apply(
         ));
     }
 
-    let recovered = setup_core::software::recover(&declared, &root)?;
-    let installed = software::install_verified(&declared, artifact, input, &root)?;
+    let installed = writer.install_verified(&declared, artifact, input)?;
 
     Ok(serde_json::json!({
         "state": "verified",
-        "recovered": recovered,
+        "recovered": [],
         "operation": operation.as_str(),
         "command": declared.command,
         "version": installed.version,

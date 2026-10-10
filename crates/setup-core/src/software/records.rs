@@ -101,6 +101,16 @@ pub(super) fn open_root(path: &Path) -> Result<Dir> {
     io(parent.open_dir_nofollow(name))
 }
 
+pub(super) fn optional_root(path: &Path) -> Result<Option<Dir>> {
+    match open_root(path) {
+        Ok(root) => Ok(Some(root)),
+        Err(error) => match std::fs::symlink_metadata(path) {
+            Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            _ => Err(error),
+        },
+    }
+}
+
 pub(super) fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
     match parent.open_dir_nofollow(name) {
         Ok(directory) => {
@@ -113,6 +123,12 @@ pub(super) fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
 }
 
 pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str, limit: usize) -> Result<Option<T>> {
+    read_bytes(root, name, limit)?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| refuse()))
+        .transpose()
+}
+
+pub(super) fn read_bytes(root: &Dir, name: &str, limit: usize) -> Result<Option<Vec<u8>>> {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let mut file = match root.open_with(name, &options) {
@@ -147,9 +163,7 @@ pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str, limit: usize) ->
     {
         return Err(refuse());
     }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| refuse())
+    Ok(Some(bytes))
 }
 
 pub(super) fn write<T: Serialize>(root: &Dir, name: &str, record: &T, limit: usize) -> Result<()> {

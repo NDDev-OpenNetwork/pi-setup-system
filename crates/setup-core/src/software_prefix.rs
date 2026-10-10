@@ -1,6 +1,6 @@
 //! Bounded, lossless software-prefix observations for plan preconditions.
 //!
-//! Only the provider's top-level control directory is excluded. Links contribute
+//! Only validated shared writer metadata and the provider control directory are excluded. Links contribute
 //! their literal destinations; no link or special file is opened for content.
 //! This observation establishes neither ownership nor permission to remove files.
 
@@ -262,7 +262,10 @@ impl Reading {
         for entry in io(dir.entries())? {
             self.check()?;
             let name = io(entry)?.file_name();
-            if depth == 0 && name == control {
+            if depth == 0
+                && (name == control
+                    || (!control.is_empty() && name == crate::software::writer::CONTROL))
+            {
                 continue;
             }
             self.entries += 1;
@@ -395,6 +398,7 @@ pub fn observe(root: &Path, control: &str) -> Result<Observation> {
         ))?;
         let name = root.file_name().ok_or_else(invalid)?;
         let dir = io(parent.open_dir_nofollow(name))?;
+        crate::software::writer::validate_control(&dir)?;
         reading.walk(&dir, "", 0, control)?;
         let reopened = io(parent.open_dir_nofollow(name))?;
         if !same(&io(dir.dir_metadata())?, &io(reopened.dir_metadata())?) {
@@ -536,9 +540,25 @@ mod tests {
                 assert!(observe(&root, ".control").is_err());
                 fs::remove_file(invalid).unwrap();
             }
-            let socket = UnixListener::bind(root.join("socket")).unwrap();
-            assert!(observe(&root, ".control").is_err());
+            // macOS's user temporary directory can exceed sockaddr_un's
+            // pathname budget. Keep this negative control in an exclusively
+            // created short directory; never change the process-wide cwd.
+            let socket_root = Path::new("/tmp").join(format!(
+                "nddev-socket-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir(&socket_root).unwrap();
+            assert!(observe(&socket_root, ".control").is_ok());
+            let socket = UnixListener::bind(socket_root.join("socket")).unwrap();
+            assert!(observe(&socket_root, ".control").is_err());
             drop(socket);
+            fs::remove_file(socket_root.join("socket")).unwrap();
+            assert!(observe(&socket_root, ".control").is_ok());
+            fs::remove_dir(socket_root).unwrap();
         }
         fs::remove_dir_all(parent).unwrap();
     }
