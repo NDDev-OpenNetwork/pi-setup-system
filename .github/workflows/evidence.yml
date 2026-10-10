@@ -79,7 +79,7 @@ jobs:
           test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
           echo "native $EVIDENCE_PLATFORM on $EVIDENCE_RUNNER ($RUNNER_ARCH)"
 
-      - run: cargo build --locked --release
+      - run: python tools/with_libclang.py cargo build --locked --release
 
       - name: The whole software lifecycle, against the vendor's own bytes
         run: |

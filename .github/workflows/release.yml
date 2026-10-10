@@ -100,7 +100,7 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --locked --bin pi-setup-system
+        run: python tools/with_libclang.py cargo build --release --locked --bin pi-setup-system
 
       - name: Name the artifact after what it runs on
         env:

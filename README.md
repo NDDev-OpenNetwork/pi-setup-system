@@ -224,7 +224,10 @@ by `build-essential` and `libclang-dev`; macOS uses Xcode Command Line Tools;
 Windows uses MSVC Build Tools and LLVM. If libclang is outside the loader's
 search paths, set `LIBCLANG_PATH` to its library directory. These are build-time
 requirements; the shipped binary needs no SQLite server or libclang installation.
-CI runs the same commands on Linux, macOS and Windows.
+CI runs these commands through `python tools/with_libclang.py` on Linux, macOS
+and Windows. The helper supplies a hash-pinned temporary Linux library, exposes
+the selected Xcode library and C headers on macOS, and uses the installed
+LLVM/MSVC SDK on Windows. It changes no system packages or runtime requirements.
 
 ## Licence
 

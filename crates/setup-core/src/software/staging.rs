@@ -376,6 +376,27 @@ impl Staging {
             self.check_predecessor()?;
             return Ok(true);
         }
+        if self.record.phase == Phase::Extracting && stage.is_none() {
+            // Recovery may have removed the incomplete stage before its final
+            // record deletion committed. Extraction cannot promote a version:
+            // only the exact untouched predecessor permits finishing this cleanup.
+            if quarantine.is_some()
+                || current != self.record.previous_identity
+                || version
+                    .as_ref()
+                    .map(software_prefix::digest_directory)
+                    .transpose()?
+                    != self.record.previous_digest
+            {
+                return Err(refuse());
+            }
+            self.record
+                .launch
+                .revalidate(&self.path, &self.record.command, &self.record.member)?;
+            super::store::remove(&self.root, &self.journal)?;
+            sync(&self.root)?;
+            return Ok(false);
+        }
         if self.record.phase == Phase::Promoted || stage.is_none() {
             return Err(refuse());
         }
@@ -514,6 +535,57 @@ mod tests {
         software::require_idle(&declared, &root).unwrap();
         assert!(!partial.exists());
         assert!(!root.join("1.2.3").exists());
+
+        // Cleanup itself can stop after rmdir, before deleting its record.
+        // Missing extraction output authorizes no change to the predecessor.
+        for previous in [false, true] {
+            let version = root.join("1.2.3");
+            if previous {
+                fs::create_dir(&version).unwrap();
+                fs::write(version.join("codex"), b"previous").unwrap();
+            }
+            let transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
+            let stage = transaction.stage_path();
+            let quarantine = root.join(&transaction.record.quarantine);
+            drop(transaction);
+            fs::remove_dir(&stage).unwrap();
+            fs::create_dir(&quarantine).unwrap();
+            fs::write(quarantine.join("foreign"), b"preserve").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(quarantine.join("foreign")).unwrap(), b"preserve");
+            fs::remove_file(quarantine.join("foreign")).unwrap();
+            fs::remove_dir(&quarantine).unwrap();
+            if !previous {
+                fs::create_dir(&version).unwrap();
+            }
+            fs::write(version.join("codex"), b"changed").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(version.join("codex")).unwrap(), b"changed");
+            if previous {
+                fs::write(version.join("codex"), b"previous").unwrap();
+            } else {
+                fs::remove_dir_all(&version).unwrap();
+            }
+            let entry = root.join("bin/codex");
+            fs::write(&entry, b"foreign launch").unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            assert_eq!(fs::read(&entry).unwrap(), b"foreign launch");
+            fs::remove_file(entry).unwrap();
+            let mut recorded = Staging::load(&root, "codex").unwrap().unwrap();
+            recorded.record.phase = Phase::Promoting;
+            recorded.save().unwrap();
+            assert!(software::recover(&declared, &root).is_err());
+            recorded.record.phase = Phase::Extracting;
+            recorded.save().unwrap();
+            drop(recorded);
+            assert_eq!(software::recover(&declared, &root).unwrap().len(), 1);
+            assert!(software::recover(&declared, &root).unwrap().is_empty());
+            software::require_idle(&declared, &root).unwrap();
+            if previous {
+                assert_eq!(fs::read(version.join("codex")).unwrap(), b"previous");
+                fs::remove_dir_all(version).unwrap();
+            }
+        }
 
         // Interruption after moving the previous tree aside, before promotion.
         fs::create_dir(root.join("1.2.3")).unwrap();

@@ -1259,6 +1259,7 @@ mod tests {
             )
             .unwrap()
         );
+        drop(directory);
         fs::remove_dir_all(at).unwrap();
     }
 
@@ -2088,6 +2089,7 @@ mod tests {
         assert!(!Manifest::path(&root, "codex").exists());
         // Removing what is already gone is not a failure, and says so.
         assert!(!remove(&software(), &root).unwrap());
+        drop(directory);
         fs::remove_dir_all(&at).unwrap();
     }
 
