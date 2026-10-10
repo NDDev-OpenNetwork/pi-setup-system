@@ -6,11 +6,17 @@ use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 
-use super::ownership;
 use super::records::{
     self, Identity, io, leaf, member_valid, open_root, present, refuse, sync, unique,
 };
-use crate::{Result, archive::Destination};
+use super::{cleanup, launch, ownership};
+use crate::{
+    Result,
+    archive::Destination,
+    software_prefix::{self, Entry, INVENTORY_LIMIT},
+};
+
+const RECORD_LIMIT: usize = INVENTORY_LIMIT + 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,10 +39,12 @@ struct Record {
     stage_identity: Identity,
     previous_identity: Option<Identity>,
     previous_digest: Option<String>,
+    previous_entries: Option<Vec<Entry>>,
     legacy: bool,
     artifact_sha256: String,
     sealed_digest: Option<String>,
     phase: Phase,
+    launch: launch::Snapshot,
 }
 
 pub(super) struct Staging {
@@ -70,21 +78,27 @@ impl Staging {
         }
         let previous = present(&directory, version)?;
         let receipt = ownership::Receipt::read(&directory, command, version)?;
-        let previous_digest = if let Some(receipt) = &receipt {
-            Some(
+        let previous_inventory = if let Some(receipt) = &receipt {
+            Some((
                 receipt
                     .verify(previous.as_ref().ok_or_else(refuse)?)?
                     .to_owned(),
-            )
+                receipt.entries().to_vec(),
+            ))
         } else {
             previous
                 .as_ref()
-                .map(crate::software_prefix::digest_directory)
+                .map(software_prefix::inventory_directory)
                 .transpose()?
+        };
+        let (previous_digest, previous_entries) = match previous_inventory {
+            Some((digest, entries)) => (Some(digest), Some(entries)),
+            None => (None, None),
         };
         let legacy = previous.is_some() && receipt.is_none();
         let previous_identity = previous.as_ref().map(Identity::of).transpose()?;
         drop(previous);
+        let launch = launch::Snapshot::prepare(root, command, member)?;
         let nonce = unique()?;
         let stage = format!(".incoming-{command}-{nonce}");
         let quarantine = format!(".replaced-{command}-{nonce}");
@@ -92,7 +106,7 @@ impl Staging {
         let stage_identity = Identity::of(&io(directory.open_dir_nofollow(&stage))?)?;
         let transaction = Self {
             record: Record {
-                schema_version: 1,
+                schema_version: 3,
                 command: command.to_owned(),
                 version: version.to_owned(),
                 member: member.to_owned(),
@@ -102,10 +116,12 @@ impl Staging {
                 stage_identity,
                 previous_identity,
                 previous_digest,
+                previous_entries,
                 legacy,
                 artifact_sha256: artifact_sha256.to_owned(),
                 sealed_digest: None,
                 phase: Phase::Extracting,
+                launch,
             },
             root: directory,
             path: root.to_owned(),
@@ -119,21 +135,18 @@ impl Staging {
         if !leaf(command) {
             return Err(refuse());
         }
-        let root = match open_root(path) {
-            Ok(root) => root,
-            Err(error) => match std::fs::symlink_metadata(path) {
-                Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                _ => return Err(error),
-            },
-        };
-        let journal = format!(".nddev-software-{command}.transaction.json");
-        let Some(record): Option<Record> = records::read(&root, &journal)? else {
+        let Some(root) = records::optional_root(path)? else {
             return Ok(None);
         };
-        if record.schema_version != 1
+        let journal = format!(".nddev-software-{command}.transaction.json");
+        let Some(record): Option<Record> = records::read(&root, &journal, RECORD_LIMIT)? else {
+            return Ok(None);
+        };
+        if record.schema_version != 3
             || record.command != command
             || !ownership::digest_valid(&record.artifact_sha256)
             || record.previous_identity.is_some() != record.previous_digest.is_some()
+            || record.previous_identity.is_some() != record.previous_entries.is_some()
             || record
                 .previous_digest
                 .as_deref()
@@ -151,6 +164,16 @@ impl Staging {
         {
             return Err(refuse());
         }
+        if record
+            .previous_entries
+            .as_deref()
+            .map(software_prefix::inventory_digest)
+            .transpose()?
+            != record.previous_digest
+        {
+            return Err(refuse());
+        }
+        record.launch.validate(path, command, &record.member)?;
         Ok(Some(Self {
             root,
             path: path.to_owned(),
@@ -161,7 +184,7 @@ impl Staging {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        records::write(&self.root, &self.journal, &self.record)
+        records::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
     }
 
     fn check_root(&self) -> Result<()> {
@@ -200,8 +223,26 @@ impl Staging {
             .join(&self.record.member)
     }
 
+    pub(super) fn expose(&self) -> Result<()> {
+        let executable = self.executable();
+        let exposed = self.path.join("bin").join(super::exposed_name(
+            &self.record.command,
+            &self.record.member,
+        ));
+        super::exposure::expose(
+            &executable,
+            &exposed,
+            &self.record.version,
+            &self.record.command,
+            &self.record.launch,
+        )
+    }
+
     pub(super) fn promote(&mut self) -> Result<()> {
         self.check_root()?;
+        self.record
+            .launch
+            .revalidate(&self.path, &self.record.command, &self.record.member)?;
         let stage = self.checked(&self.record.stage, self.record.stage_identity)?;
         if present(&self.root, &self.record.quarantine)?.is_some() {
             return Err(refuse());
@@ -274,6 +315,7 @@ impl Staging {
             if self.record.sealed_digest.as_deref() != Some(digest.as_str()) {
                 return Err(refuse());
             }
+            self.check_predecessor()?;
             return Ok(true);
         }
         if self.record.phase == Phase::Promoted || stage.is_none() {
@@ -306,9 +348,24 @@ impl Staging {
         Ok(false)
     }
 
+    fn check_predecessor(&self) -> Result<Option<Dir>> {
+        let remaining = present(&self.root, &self.record.quarantine)?;
+        if let Some(directory) = &remaining {
+            if Some(Identity::of(directory)?) != self.record.previous_identity {
+                return Err(refuse());
+            }
+            cleanup::inspect_remaining(
+                directory,
+                self.record.previous_entries.as_deref().ok_or_else(refuse)?,
+            )?;
+        }
+        Ok(remaining)
+    }
+
     pub(super) fn complete(self) -> Result<()> {
         self.check_root()?;
         self.checked(&self.record.version, self.record.stage_identity)?;
+        let predecessor = self.check_predecessor()?;
         ownership::record_installation(
             &self.root,
             &self.record.command,
@@ -318,14 +375,14 @@ impl Staging {
             self.record.sealed_digest.as_deref().ok_or_else(refuse)?,
             self.record.stage_identity,
         )?;
-        if let Some(quarantine) = present(&self.root, &self.record.quarantine)? {
-            if Some(Identity::of(&quarantine)?) != self.record.previous_identity
-                || Some(crate::software_prefix::digest_directory(&quarantine)?)
-                    != self.record.previous_digest
-            {
-                return Err(refuse());
-            }
-            io(quarantine.remove_open_dir_all())?;
+        if let Some(quarantine) = predecessor {
+            cleanup::remaining(
+                &quarantine,
+                self.record.previous_entries.as_deref().ok_or_else(refuse)?,
+            )?;
+            self.check_root()?;
+            io(quarantine.remove_open_dir())?;
+            sync(&self.root)?;
         }
         io(self.root.remove_file(&self.journal))?;
         sync(&self.root)
@@ -343,6 +400,10 @@ mod tests {
         "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One persisted lifecycle drives the interruption and foreign-entry controls."
+    )]
     fn recovery_changes_only_recorded_directories_across_interruption_windows() {
         let root = std::env::temp_dir().join(format!("software-staging-{}", unique().unwrap()));
         fs::create_dir(&root).unwrap();
@@ -359,12 +420,22 @@ mod tests {
         fs::create_dir(root.join(".replaced-unrelated")).unwrap();
         fs::write(root.join("unrelated.incoming"), b"unrelated").unwrap();
         assert!(software::recover(&declared, &root).unwrap().is_empty());
+        software::require_idle(&declared, &root).unwrap();
 
         let transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         let partial = transaction.stage_path();
         fs::write(partial.join("codex"), b"partial").unwrap();
         drop(transaction);
+        assert_eq!(
+            software::require_idle(&declared, &root)
+                .unwrap_err()
+                .reason(),
+            crate::ReasonCode::RecoveryRequired
+        );
+        assert!(software::remove(&declared, &root).is_err());
+        assert_eq!(fs::read(partial.join("codex")).unwrap(), b"partial");
         assert_eq!(software::recover(&declared, &root).unwrap().len(), 1);
+        software::require_idle(&declared, &root).unwrap();
         assert!(!partial.exists());
         assert!(!root.join("1.2.3").exists());
 
@@ -404,6 +475,12 @@ mod tests {
         // Promotion landed, but its phase update and exposure did not.
         let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         fs::write(transaction.stage_path().join("codex"), b"new").unwrap();
+        let entry = root.join("bin/codex");
+        fs::write(&entry, b"foreign during extraction").unwrap();
+        assert!(transaction.promote().is_err());
+        assert_eq!(fs::read(root.join("1.2.3/codex")).unwrap(), b"previous");
+        assert_eq!(fs::read(&entry).unwrap(), b"foreign during extraction");
+        fs::remove_file(&entry).unwrap();
         transaction.promote().unwrap();
         transaction.record.phase = Phase::Promoting;
         transaction.save().unwrap();
@@ -412,8 +489,53 @@ mod tests {
         assert!(software::recover(&declared, &root).is_err());
         assert!(!root.join("bin/codex").exists());
         fs::write(root.join("1.2.3/codex"), b"new").unwrap();
+        fs::write(&entry, b"foreign after promotion").unwrap();
+        assert!(software::recover(&declared, &root).is_err());
+        assert_eq!(fs::read(&entry).unwrap(), b"foreign after promotion");
+        assert!(!root.join("bin/.codex.version").exists());
+        fs::remove_file(&entry).unwrap();
+        // One of the three recorded activation renames completed before exit.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("1.2.3/codex"), &entry).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(root.join("1.2.3/codex"), &entry).unwrap();
         software::recover(&declared, &root).unwrap();
         assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"new");
+        assert!(software::recover(&declared, &root).unwrap().is_empty());
+
+        // Predecessor cleanup was interrupted after deleting a recorded member.
+        let mut transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
+        fs::write(transaction.stage_path().join("codex"), b"newer").unwrap();
+        transaction.promote().unwrap();
+        transaction.expose().unwrap();
+        let quarantine = root.join(&transaction.record.quarantine);
+        fs::remove_file(quarantine.join("codex")).unwrap();
+        let foreign = quarantine.join("foreign");
+        fs::write(&foreign, b"preserve").unwrap();
+        drop(transaction);
+        let before = crate::software_prefix::observe(&root, ".unused")
+            .unwrap()
+            .digest;
+        let launch_before =
+            serde_json::to_value(launch::Snapshot::prepare(&root, "codex", "codex").unwrap())
+                .unwrap();
+        assert!(software::recover(&declared, &root).is_err());
+        assert_eq!(
+            before,
+            crate::software_prefix::observe(&root, ".unused")
+                .unwrap()
+                .digest
+        );
+        assert_eq!(
+            launch_before,
+            serde_json::to_value(launch::Snapshot::prepare(&root, "codex", "codex").unwrap(),)
+                .unwrap()
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        fs::remove_file(foreign).unwrap();
+        assert_eq!(software::recover(&declared, &root).unwrap().len(), 1);
+        assert!(!quarantine.exists());
+        assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"newer");
         assert!(software::recover(&declared, &root).unwrap().is_empty());
 
         // Matching names are insufficient when the actual directory moved.
@@ -429,7 +551,7 @@ mod tests {
         assert!(software::recover(&declared, &root).is_err());
         assert_eq!(fs::read(original.join("foreign")).unwrap(), b"foreign");
         assert_eq!(fs::read(moved.join("codex")).unwrap(), b"recorded");
-        assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"new");
+        assert_eq!(fs::read(root.join("bin/codex")).unwrap(), b"newer");
         assert_eq!(fs::read(&unrelated).unwrap(), b"unrelated");
         assert!(root.join(".replaced-unrelated").is_dir());
         assert_eq!(

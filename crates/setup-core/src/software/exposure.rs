@@ -11,7 +11,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, Open
 use cap_std::fs::{Dir, File, OpenOptions};
 use sha2::{Digest, Sha256};
 
-use super::Manifest;
+use super::{Manifest, launch};
 use crate::{Error, ReasonCode, Result, digest};
 
 fn invalid() -> io::Error {
@@ -103,7 +103,7 @@ impl Drop for Prepared<'_> {
     }
 }
 
-fn payload(root: &Dir, relative: &Path) -> io::Result<(Dir, File, String)> {
+pub(super) fn payload(root: &Dir, relative: &Path) -> io::Result<(Dir, File, String)> {
     let mut parent = root.try_clone()?;
     for part in relative.parent().ok_or_else(invalid)?.components() {
         let Component::Normal(name) = part else {
@@ -164,6 +164,20 @@ fn payload(root: &Dir, relative: &Path) -> io::Result<(Dir, File, String)> {
     ))
 }
 
+#[cfg(not(unix))]
+pub(super) fn wrapper(executable: &Path) -> io::Result<Option<Vec<u8>>> {
+    use super::{MemberKind, member_kind};
+    let path = executable.to_str().ok_or_else(invalid)?;
+    let invocation = match member_kind(path, true) {
+        MemberKind::JavaScript => "node",
+        MemberKind::CommandScript => "call",
+        MemberKind::Native => return Ok(None),
+    };
+    Ok(Some(
+        format!("@{invocation} \"{path}\" %*\r\n").into_bytes(),
+    ))
+}
+
 fn metadata_destination(directory: &Dir, name: &str) -> io::Result<()> {
     match directory.symlink_metadata(name) {
         Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {
@@ -186,6 +200,7 @@ pub(super) fn expose(
     exposed: &Path,
     version: &str,
     command: &str,
+    predecessor: &launch::Snapshot,
 ) -> Result<()> {
     let perform = || -> io::Result<()> {
         let root_path = exposed
@@ -199,6 +214,14 @@ pub(super) fn expose(
         let root = parent.open_dir_nofollow(root_path.file_name().ok_or_else(invalid)?)?;
         plain(&root)?;
         let relative = executable.strip_prefix(root_path).map_err(|_| invalid())?;
+        let member = relative
+            .strip_prefix(version)
+            .map_err(|_| invalid())?
+            .to_str()
+            .ok_or_else(invalid)?;
+        predecessor
+            .validate(root_path, command, member)
+            .map_err(|_| invalid())?;
         let (source_parent, source, sha256) = payload(&root, relative)?;
         let manifest = Manifest {
             schema_version: 1,
@@ -208,11 +231,6 @@ pub(super) fn expose(
         };
         let body = serde_json::to_vec(&manifest).map_err(io::Error::other)?;
 
-        match root.create_dir("bin") {
-            Ok(()) => sync(&root)?,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
         let bin = root.open_dir_nofollow("bin")?;
         plain(&bin)?;
         let name = exposed
@@ -244,11 +262,33 @@ pub(super) fn expose(
             Ok(())
         };
         check_identity()?;
-        // Readers may observe a mixed generation until all three renames land.
-        // The staging journal stays present and can finish these writes again.
-        entry.commit(name)?;
-        marker.commit(&marker_name)?;
-        manifest.commit(&manifest_name)?;
+        let prepared = [
+            (entry, name),
+            (marker, marker_name.as_str()),
+            (manifest, manifest_name.as_str()),
+        ];
+        let replacements = prepared
+            .iter()
+            .map(|(entry, _)| {
+                launch::stamp(&bin, &entry.name, 8 * 1024 * 1024 * 1024)
+                    .map_err(|_| invalid())?
+                    .ok_or_else(invalid)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        // Refuse every foreign entry before replacing any member. During a
+        // recorded recovery, a member may already contain this exact result.
+        for (index, replacement) in replacements.iter().enumerate() {
+            predecessor
+                .check_replacement(&bin, index, replacement)
+                .map_err(|_| invalid())?;
+        }
+        for (index, (entry, name)) in prepared.into_iter().enumerate() {
+            check_identity()?;
+            predecessor
+                .check_replacement(&bin, index, &replacements[index])
+                .map_err(|_| invalid())?;
+            entry.commit(name)?;
+        }
         check_identity()
     };
     perform().map_err(|error| {
@@ -278,17 +318,7 @@ fn prepare_entry<'a>(
         use super::{MemberKind, member_kind};
         match member_kind(&executable.to_string_lossy(), true) {
             MemberKind::JavaScript | MemberKind::CommandScript => {
-                let invocation =
-                    if member_kind(&executable.to_string_lossy(), true) == MemberKind::JavaScript {
-                        "node"
-                    } else {
-                        "call"
-                    };
-                Prepared::bytes(
-                    bin,
-                    name,
-                    format!("@{invocation} \"{}\" %*\r\n", executable.display()).as_bytes(),
-                )
+                Prepared::bytes(bin, name, &wrapper(executable)?.ok_or_else(invalid)?)
             }
             MemberKind::Native => {
                 let source_name = executable.file_name().ok_or_else(invalid)?;

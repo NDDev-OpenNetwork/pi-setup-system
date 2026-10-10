@@ -614,21 +614,13 @@ fn rollback(harness: &Harness, prefix: &Path, to: Option<&str>) -> Result<()> {
         }));
     };
 
-    if present.exposed.as_deref() == Some(version) {
-        println!(
-            "{} already runs {version}; nothing to do.",
-            declared.command
-        );
-        return Ok(());
-    }
-
     let rolled = setup_core::software::rollback(&declared, prefix, version)?;
     println!(
         "{} now runs {}.",
         rolled.executable.display(),
         rolled.version
     );
-    if let Some(previous) = present.exposed {
+    if let Some(previous) = present.exposed.filter(|previous| previous != version) {
         println!("  it ran {previous} before this, and that tree is still here");
     }
     Ok(())

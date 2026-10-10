@@ -101,6 +101,16 @@ pub(super) fn open_root(path: &Path) -> Result<Dir> {
     io(parent.open_dir_nofollow(name))
 }
 
+pub(super) fn optional_root(path: &Path) -> Result<Option<Dir>> {
+    match open_root(path) {
+        Ok(root) => Ok(Some(root)),
+        Err(error) => match std::fs::symlink_metadata(path) {
+            Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            _ => Err(error),
+        },
+    }
+}
+
 pub(super) fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
     match parent.open_dir_nofollow(name) {
         Ok(directory) => {
@@ -112,7 +122,13 @@ pub(super) fn present(parent: &Dir, name: &str) -> Result<Option<Dir>> {
     }
 }
 
-pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str) -> Result<Option<T>> {
+pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str, limit: usize) -> Result<Option<T>> {
+    read_bytes(root, name, limit)?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| refuse()))
+        .transpose()
+}
+
+pub(super) fn read_bytes(root: &Dir, name: &str, limit: usize) -> Result<Option<Vec<u8>>> {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let mut file = match root.open_with(name, &options) {
@@ -128,12 +144,12 @@ pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str) -> Result<Option
             return Err(refuse());
         }
     }
-    if !before.is_file() || before.nlink() != 1 || before.len() > 16 * 1024 {
+    if !before.is_file() || before.nlink() != 1 || before.len() > limit as u64 {
         return Err(refuse());
     }
     let mut bytes = Vec::new();
     io(Read::by_ref(&mut file)
-        .take(16 * 1024 + 1)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes))?;
     let after = io(file.metadata())?;
     let named = io(root.symlink_metadata(name))?;
@@ -147,14 +163,12 @@ pub(super) fn read<T: DeserializeOwned>(root: &Dir, name: &str) -> Result<Option
     {
         return Err(refuse());
     }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| refuse())
+    Ok(Some(bytes))
 }
 
-pub(super) fn write<T: Serialize>(root: &Dir, name: &str, record: &T) -> Result<()> {
+pub(super) fn write<T: Serialize>(root: &Dir, name: &str, record: &T, limit: usize) -> Result<()> {
     let bytes = serde_json::to_vec(record).map_err(|_| refuse())?;
-    if bytes.len() > 16 * 1024 {
+    if bytes.len() > limit {
         return Err(refuse());
     }
     let temporary = format!("{name}.{}", unique()?);

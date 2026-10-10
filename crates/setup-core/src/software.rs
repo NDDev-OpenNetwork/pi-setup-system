@@ -16,14 +16,21 @@
 //! program can serve several targets, which a program living inside one of them
 //! could not.
 
+mod cleanup;
 mod exposure;
 mod input;
+mod launch;
 mod ownership;
 mod records;
+mod removal;
 mod staging;
+mod switch;
+pub(crate) mod writer;
 
 pub use input::VerifiedArtifact;
+pub use writer::Writer;
 
+#[cfg(test)]
 use exposure::expose;
 
 use std::fs;
@@ -519,6 +526,19 @@ pub fn install_verified(
     mut source: VerifiedArtifact,
     root: &Path,
 ) -> Result<Installed> {
+    require_idle(software, root)?;
+    source.begin(artifact)?;
+    records::io(fs::create_dir_all(root))?;
+    Writer::acquire(root)?.install_verified(software, artifact, source)
+}
+
+fn install_locked(
+    software: &Software,
+    artifact: &Artifact,
+    mut source: VerifiedArtifact,
+    root: &Path,
+) -> Result<Installed> {
+    require_idle(software, root)?;
     source.begin(artifact)?;
     let version_root = root.join(software.version);
 
@@ -537,11 +557,10 @@ pub fn install_verified(
     let staging = transaction.stage_path();
     let output = transaction.destination()?;
 
-    let (executable, files) = match artifact.shape {
+    let files = match artifact.shape {
         Shape::Raw => {
-            let placed = staging.join(software.command);
             archive::place_executable_into(source.reader(), Path::new(software.command), &output)?;
-            (placed, 1)
+            1
         }
         Shape::GzipTar | Shape::Zip => {
             let entries = if artifact.shape == Shape::Zip {
@@ -568,7 +587,7 @@ pub fn install_verified(
                     ),
                 ));
             }
-            (staging.join(artifact.member), entries.len())
+            entries.len()
         }
     };
 
@@ -578,16 +597,10 @@ pub fn install_verified(
 
     transaction.promote()?;
 
-    let executable = version_root.join(
-        executable
-            .strip_prefix(&staging)
-            .unwrap_or_else(|_| Path::new(software.command)),
-    );
-
     let exposed = root
         .join("bin")
         .join(exposed_name(software.command, artifact.member));
-    expose(&executable, &exposed, software.version, software.command)?;
+    transaction.expose()?;
     transaction.complete()?;
 
     Ok(Installed {
@@ -608,17 +621,44 @@ pub fn install_verified(
 /// # Errors
 /// Refuses malformed journals, changed identities and unavailable filesystem operations.
 pub fn recover(software: &Software, root: &Path) -> Result<Vec<String>> {
-    let Some(transaction) = staging::Staging::load(root, software.command)? else {
+    if !records::leaf(software.command) {
+        return Err(records::refuse());
+    }
+    if require_idle(software, root).is_ok() {
+        return Ok(Vec::new());
+    }
+    Writer::acquire(root)?.recover(software)
+}
+
+fn recover_locked(software: &Software, root: &Path) -> Result<Vec<String>> {
+    let installation = staging::Staging::load(root, software.command)?;
+    let removal = removal::Removal::load(root, software.command)?;
+    let switch = switch::Switch::load(root, software.command)?;
+    if usize::from(installation.is_some())
+        + usize::from(removal.is_some())
+        + usize::from(switch.is_some())
+        > 1
+    {
+        return Err(records::refuse());
+    }
+    if let Some(switch) = switch {
+        let version = switch.version().to_owned();
+        switch.complete()?;
+        return Ok(vec![format!(
+            "completed the recorded launch switch to {version}"
+        )]);
+    }
+    if let Some(removal) = removal {
+        let version = removal.version().to_owned();
+        removal.complete()?;
+        return Ok(vec![format!("completed the recorded removal of {version}")]);
+    }
+    let Some(transaction) = installation else {
         return Ok(Vec::new());
     };
     let version = transaction.version().to_owned();
     if transaction.recover()? {
-        let executable = transaction.executable();
-        let exposed = root.join("bin").join(exposed_name(
-            software.command,
-            &executable.to_string_lossy(),
-        ));
-        expose(&executable, &exposed, &version, software.command)?;
+        transaction.expose()?;
         transaction.complete()?;
         Ok(vec![format!(
             "completed the recorded installation of {version}"
@@ -630,119 +670,56 @@ pub fn recover(software: &Software, root: &Path) -> Result<Vec<String>> {
     }
 }
 
+/// Refuse a new operation while an install, removal or launch switch is pending.
+///
+/// A different plan cannot authorize recovery of an earlier installation. This
+/// check reads only the journal entry; malformed records also remain untouched.
+/// The caller must repeat it under the prefix lock before making any effect.
+///
+/// # Errors
+/// Returns `RecoveryRequired` for an existing or inaccessible journal.
+pub fn require_idle(software: &Software, root: &Path) -> Result<()> {
+    if !records::leaf(software.command) {
+        return Err(records::refuse());
+    }
+    for journal in [
+        format!(".nddev-software-{}.transaction.json", software.command),
+        removal::journal(software.command),
+        switch::journal(software.command),
+    ] {
+        match fs::symlink_metadata(root.join(journal)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(Error::new(
+                    ReasonCode::RecoveryRequired,
+                    "a software operation is pending; a new plan cannot recover or replace its recorded operation",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Remove one installed version, and the exposed command if it pointed at it.
 ///
 /// # Errors
 ///
 /// Refuses an unrecorded or modified tree, or a filesystem failure during removal.
 pub fn remove(software: &Software, root: &Path) -> Result<bool> {
-    let version_root = root.join(software.version);
-    if !version_root.exists() {
+    require_idle(software, root)?;
+    if fs::symlink_metadata(root).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
         return Ok(false);
     }
-
-    // Asked **before** the tree goes, and that ordering is the whole fix.
-    // `exposed` resolves the command into the version directory it points at,
-    // and a directory that has just been removed resolves to nothing -- so
-    // reading afterwards cannot tell "it named this one" from "it named another
-    // one" and the answer would always be the same.
-    //
-    // The sentence above this function has said *"and the exposed command if it
-    // pointed at it"* since it was written. The code took the command whenever
-    // the tree existed. So the ordinary sequence after a bad release -- install,
-    // update, roll back, take the bad one off -- deleted the command that was
-    // running the good one and left a complete version tree nothing could start.
-    let exposed_version =
-        Present::under_named(root, software.command, software.member_here()).exposed;
-
-    if !ownership::remove(root, software.command, software.version)? {
-        return Ok(false);
-    }
-
-    // Some(this one)  -- the command named what was just taken; it goes too.
-    // Some(another)   -- the command names a version still installed; it stays.
-    // None            -- nothing usable was exposed, so anything left behind is
-    //                    a leftover rather than somebody's entry point.
-    let ours = exposed_version.as_deref() == Some(software.version);
-    if !ours && exposed_version.is_some() {
-        return Ok(true);
-    }
-
-    let exposed = root
-        .join("bin")
-        .join(exposed_name(software.command, software.member_here()));
-    if exposed.symlink_metadata().is_ok() {
-        crate::lock::remove_file(&exposed).map_err(|error| {
-            Error::new(
-                ReasonCode::StateUnavailable,
-                format!("{} could not be removed: {error}", exposed.display()),
-            )
-            .with_source(error)
-        })?;
-    }
-    // The record goes with the command it described. A marker outliving it
-    // would name a version nothing runs.
-    let remove_record = |path: &Path| -> Result<()> {
-        match crate::lock::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(Error::new(
-                ReasonCode::StateUnavailable,
-                "software launch record could not be removed",
-            )
-            .with_source(error)),
-        }
-    };
-    remove_record(&Present::marker(root, software.command))?;
-    if Manifest::read(root, software.command)
-        .is_some_and(|record| record.version == software.version)
-    {
-        remove_record(&Manifest::path(root, software.command))?;
-    }
-    Ok(true)
+    Writer::acquire(root)?.remove(software)
 }
 
-/// Where a version tree can hold its executable, most specific first.
-///
-/// Looked for rather than assumed. This build pins one version and knows where
-/// *its* executable sits inside the archive; an older tree was written by an
-/// older build, whose artifact table this one does not carry. Every shape it
-/// could have used is tried, and none is guessed at: if the file is not there,
-/// the refusal says where it looked.
-///
-/// **The platform is a parameter and not a `cfg!`**, for the same reason
-/// [`exposed_name_on`] takes one. That is not hypothetical here.
-/// [`Software::member_hint`] answers with the *first* artifact's member
-/// whatever host is asking, the tables in this repository list Linux first, and
-/// so a Windows rollback looked for `package/bin/opencode` while the file on
-/// disk was `package/bin/opencode.exe`. Ubuntu and macOS passed; only the
-/// evidence run on Windows failed, and a `cfg!` here would have left the fix
-/// unprovable from the machine that wrote it.
-fn executable_candidates(
-    software: &Software,
-    version_root: &Path,
-    os: &str,
-    arch: &str,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    let mut push = |relative: &str| {
-        let path = version_root.join(relative);
-        if !candidates.contains(&path) {
-            candidates.push(path);
-        }
+fn remove_locked(software: &Software, root: &Path) -> Result<bool> {
+    require_idle(software, root)?;
+    let Some(removal) = removal::Removal::begin(root, software)? else {
+        return Ok(false);
     };
-    // This host's own member first: it is the only one that is right by
-    // construction rather than by the table happening to be ordered well.
-    if let Ok(artifact) = software.artifact_for(os, arch) {
-        push(artifact.member);
-    }
-    // Then the shapes an older build could have written.
-    push(software.member_hint());
-    push(software.command);
-    if os == "windows" {
-        push(&format!("{}.exe", software.command));
-    }
-    candidates
+    removal.complete()?;
+    Ok(true)
 }
 
 /// Point the exposed command back at a version that is already on disk.
@@ -769,6 +746,11 @@ fn executable_candidates(
 /// Refuses a version that is not installed, naming the ones that are, and a
 /// version tree that holds no executable this build can find.
 pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed> {
+    require_idle(software, root)?;
+    Writer::acquire(root)?.rollback(software, to)
+}
+
+fn rollback_locked(software: &Software, root: &Path, to: &str) -> Result<Installed> {
     let present = Present::under_named(root, software.command, software.member_here());
     if !present.versions.iter().any(|found| found == to) {
         return Err(Error::new(
@@ -789,31 +771,12 @@ pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed>
         ));
     }
 
-    let version_root = root.join(to);
-    let (os, arch) = crate::platform_of_this_host();
-    let candidates = executable_candidates(software, &version_root, os, arch);
-    let Some(executable) = candidates.iter().find(|path| path.is_file()) else {
-        return Err(Error::new(
-            ReasonCode::StateUnavailable,
-            format!(
-                "the {to} tree holds no {} executable; looked at {}",
-                software.command,
-                candidates
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" and ")
-            ),
-        ));
-    };
-
-    let exposed = root
-        .join("bin")
-        .join(exposed_name(software.command, software.member_here()));
-    expose(executable, &exposed, to, software.command)?;
+    let switch = switch::Switch::begin(root, software.command, to)?;
+    let exposed = switch.executable();
+    switch.complete()?;
     Ok(Installed {
         version: to.to_owned(),
-        root: version_root,
+        root: root.join(to),
         executable: exposed,
         files: 0,
     })
@@ -937,34 +900,31 @@ impl Manifest {
         root.join("bin").join(format!(".{command}.manifest.json"))
     }
 
-    /// The record, or `None` where there is not one to read.
-    ///
-    /// Absent is a real state and not a failure: a prefix written before this
-    /// existed has no record, and calling that tampering would refuse every
-    /// installation made by an earlier release of this provider. Unparseable is
-    /// also `None` -- a record that cannot be read cannot accuse anything.
+    /// Distinguish absence from an unreadable, malformed or unsupported record.
     #[must_use]
-    pub fn read(root: &Path, command: &str) -> Option<Self> {
-        match Self::inspect(root, command) {
-            ManifestState::Present(found) => Some(found),
-            ManifestState::Missing
-            | ManifestState::Unreadable
-            | ManifestState::Malformed
-            | ManifestState::Unsupported { .. } => None,
-        }
-    }
-
-    /// Distinguish a missing legacy record from a corrupt or unsupported one.
-    ///
-    /// [`Manifest::read`] collapsed every failure into `None`, so a truncated
-    /// JSON file disabled verification the same way an older prefix with no
-    /// record did. Launch has to treat those as different states.
-    #[must_use]
-    pub fn inspect(root: &Path, command: &str) -> ManifestState {
-        match fs::read_to_string(Self::path(root, command)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ManifestState::Missing,
+    pub fn inspect(path: &Path, command: &str) -> ManifestState {
+        let read = || -> Result<Option<Vec<u8>>> {
+            if !records::leaf(command) {
+                return Err(records::refuse());
+            }
+            let root = match records::open_root(path) {
+                Ok(root) => root,
+                Err(error) => match fs::symlink_metadata(path) {
+                    Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    _ => return Err(error),
+                },
+            };
+            let Some(bin) = records::present(&root, "bin")? else {
+                return Ok(None);
+            };
+            records::read_bytes(&bin, &format!(".{command}.manifest.json"), 16 * 1024)
+        };
+        match read() {
+            Ok(None) => ManifestState::Missing,
             Err(_) => ManifestState::Unreadable,
-            Ok(raw) => match serde_json::from_str::<Self>(&raw) {
+            Ok(Some(raw)) => match serde_json::from_slice::<Self>(&raw) {
                 Err(_) => ManifestState::Malformed,
                 Ok(found) if found.schema_version != 1 => ManifestState::Unsupported {
                     schema_version: found.schema_version,
@@ -1212,14 +1172,27 @@ mod tests {
     fn rollback_points_the_command_at_a_version_already_on_disk() {
         let (at, artifact) = staged("rollback", b"#!/bin/sh\necho new\n", CODEX_MEMBER);
         let root = at.join("prefix");
+        let previous = Software {
+            version: "1.2.2",
+            ..software()
+        };
+        install(&previous, &artifact, &at.join("artifact.tgz"), &root).unwrap();
         let installed = install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert_eq!(installed.version, "1.2.3");
 
-        // What an update leaves behind: the previous tree, untouched.
-        let older = root.join("1.2.2");
-        fs::create_dir_all(older.join("package/vendor/x86_64-unknown-linux-musl/bin")).unwrap();
-        fs::write(older.join(CODEX_MEMBER), b"#!/bin/sh\necho old\n").unwrap();
-
+        let entry = root.join("bin/codex");
+        let retained = at.join("retained-launcher");
+        fs::rename(&entry, &retained).unwrap();
+        fs::write(&entry, b"foreign launcher").unwrap();
+        assert!(rollback(&software(), &root, "1.2.2").is_err());
+        assert_eq!(fs::read(&entry).unwrap(), b"foreign launcher");
+        fs::remove_file(&entry).unwrap();
+        fs::rename(retained, entry).unwrap();
+        let older = root.join("1.2.2").join(CODEX_MEMBER);
+        fs::write(&older, b"changed retained version").unwrap();
+        assert!(rollback(&software(), &root, "1.2.2").is_err());
+        assert_eq!(fs::read(&older).unwrap(), b"changed retained version");
+        fs::write(older, b"#!/bin/sh\necho new\n").unwrap();
         let rolled = rollback(&software(), &root, "1.2.2").unwrap();
         assert_eq!(rolled.version, "1.2.2");
 
@@ -1239,6 +1212,43 @@ mod tests {
                 .as_deref(),
             Some("1.2.3")
         );
+        // A real durable switch record survives exit before its launch renames.
+        drop(switch::Switch::begin(&root, "codex", "1.2.2").unwrap());
+        assert!(rollback(&software(), &root, "1.2.3").is_err());
+        assert!(remove(&software(), &root).is_err());
+        assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
+        let receipt = root.join(".nddev-software-codex-1.2.2.installed.json");
+        let original = fs::read(&receipt).unwrap();
+        let mut changed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        changed["artifact_sha256"] = format!("sha256:{}", "0".repeat(64)).into();
+        fs::write(&receipt, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(recover(&software(), &root).is_err());
+        fs::write(receipt, original).unwrap();
+        let marker = root.join("bin/.codex.version");
+        fs::write(&marker, b"foreign marker").unwrap();
+        let before = crate::software_prefix::observe(&root, ".codex-setup-system")
+            .unwrap()
+            .digest;
+        assert!(recover(&software(), &root).is_err());
+        assert_eq!(
+            crate::software_prefix::observe(&root, ".codex-setup-system")
+                .unwrap()
+                .digest,
+            before
+        );
+        // The new marker landed while the command and manifest still name the predecessor.
+        fs::write(marker, b"1.2.2").unwrap();
+        assert_eq!(recover(&software(), &root).unwrap().len(), 1);
+        assert!(recover(&software(), &root).unwrap().is_empty());
+        assert_eq!(
+            Present::under_named(&root, "codex", CODEX_MEMBER)
+                .exposed
+                .as_deref(),
+            Some("1.2.2")
+        );
+        assert!(root.join("1.2.3").join(CODEX_MEMBER).is_file());
+        assert!(!root.join(switch::journal("codex")).exists());
+        fs::remove_dir_all(at).unwrap();
     }
 
     /// Removing a version nobody is running leaves the running one runnable.
@@ -1258,12 +1268,13 @@ mod tests {
     fn removing_an_inactive_version_leaves_the_active_one_exposed() {
         let (at, artifact) = staged("remove-inactive", b"#!/bin/sh\necho new\n", CODEX_MEMBER);
         let root = at.join("prefix");
+        let previous = Software {
+            version: "1.2.2",
+            ..software()
+        };
+        install(&previous, &artifact, &at.join("artifact.tgz"), &root).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
 
-        // The version an update left behind, and the one a rollback selects.
-        let older = root.join("1.2.2");
-        fs::create_dir_all(older.join("package/vendor/x86_64-unknown-linux-musl/bin")).unwrap();
-        fs::write(older.join(CODEX_MEMBER), b"#!/bin/sh\necho old\n").unwrap();
         rollback(&software(), &root, "1.2.2").unwrap();
         assert_eq!(
             Present::under_named(&root, "codex", CODEX_MEMBER)
@@ -1465,6 +1476,7 @@ mod tests {
         fs::write(&marker, "1.2.3").unwrap();
         let staging = marker.with_extension("version.incoming");
         fs::write(&staging, b"unrelated temporary file").unwrap();
+        let predecessor = launch::Snapshot::prepare(&root, "codex", CODEX_MEMBER).unwrap();
         let manifest = Manifest::path(&root, "codex");
         fs::remove_file(&manifest).unwrap();
         fs::create_dir(&manifest).unwrap(); // the destination is not a metadata file
@@ -1473,6 +1485,7 @@ mod tests {
             &root.join("bin").join("codex"),
             "1.2",
             "codex",
+            &predecessor,
         );
         assert!(
             refused.is_err(),
@@ -1706,114 +1719,23 @@ mod tests {
         );
     }
 
-    /// A tree an older build wrote may not put the executable where this
-    /// build's artifacts do. Both shapes are tried and neither is guessed at:
-    /// if the file is not there, the refusal says where it looked.
+    /// A directory name is not evidence that a provider installed the tree.
     #[test]
-    fn a_version_tree_with_no_executable_is_refused_naming_where_it_looked() {
+    fn rollback_refuses_an_unrecorded_version_without_changing_the_launcher() {
         let (at, artifact) = staged("rollback-empty", b"x", CODEX_MEMBER);
         let root = at.join("prefix");
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         fs::create_dir_all(root.join("1.2.2")).unwrap();
 
         let error = rollback(&software(), &root, "1.2.2").unwrap_err();
-        assert!(error.detail().contains("1.2.2"), "{}", error.detail());
-        assert!(error.detail().contains("looked at"), "{}", error.detail());
+        assert_eq!(error.reason(), ReasonCode::RecoveryRequired);
+        assert!(root.join("1.2.2").is_dir());
         assert_eq!(
             Present::under_named(&root, "codex", CODEX_MEMBER)
                 .exposed
                 .as_deref(),
             Some("1.2.3")
         );
-    }
-
-    /// Two platforms whose executables are named differently inside the
-    /// archive, which is the ordinary case and not an exotic one: every
-    /// `windows/*` artifact in this repository ends in `.exe` and no other
-    /// does.
-    const CROSS_ARTIFACTS: &[Artifact] = &[
-        Artifact {
-            platform: "linux/x86_64",
-            url: "https://example.invalid/linux.tgz",
-            bytes: 0,
-            sha256: "sha256:0",
-            shape: Shape::GzipTar,
-            member: "package/bin/tool",
-        },
-        Artifact {
-            platform: "windows/x86_64",
-            url: "https://example.invalid/windows.tgz",
-            bytes: 0,
-            sha256: "sha256:0",
-            shape: Shape::GzipTar,
-            member: "package/bin/tool.exe",
-        },
-    ];
-
-    fn cross() -> Software {
-        Software {
-            version: "1.2.3",
-            command: "tool",
-            delivery: Delivery::Artifacts(CROSS_ARTIFACTS),
-            unsupported: &[],
-            previous: None,
-        }
-    }
-
-    /// A rollback on Windows looked for the Linux member and refused a tree
-    /// that held the executable all along.
-    ///
-    /// `member_hint` answers with the *first* artifact's member whatever host
-    /// asks, and every table here lists Linux first. The evidence run caught it
-    /// on `windows-latest` while Ubuntu and macOS passed, which is exactly the
-    /// shape a `cfg!` would have made unprovable from the machine that fixes
-    /// it -- so the platform is a parameter and this runs everywhere.
-    #[test]
-    fn the_candidate_list_is_this_hosts_member_and_not_the_tables_first() {
-        let root = Path::new("/prefix/1.2.2");
-
-        let windows = executable_candidates(&cross(), root, "windows", "x86_64");
-        assert_eq!(
-            windows.first(),
-            Some(&root.join("package/bin/tool.exe")),
-            "this host's own member comes first: {windows:?}"
-        );
-        assert!(
-            windows.contains(&root.join("tool.exe")),
-            "the bare command with its extension is a shape an older tree may \
-             have used: {windows:?}"
-        );
-
-        let linux = executable_candidates(&cross(), root, "linux", "x86_64");
-        assert_eq!(
-            linux.first(),
-            Some(&root.join("package/bin/tool")),
-            "{linux:?}"
-        );
-        assert!(
-            !linux.contains(&root.join("tool.exe")),
-            "the Windows shape is not offered to a platform that cannot run it: {linux:?}"
-        );
-
-        // The defect, stated as the thing that must not come back: the hint is
-        // the Linux member on both hosts, so a list built from it alone sends a
-        // Windows rollback to a file that is not there.
-        assert_eq!(cross().member_hint(), "package/bin/tool");
-        assert_ne!(
-            windows.first(),
-            Some(&root.join(cross().member_hint())),
-            "a Windows candidate list must not start at the hint"
-        );
-    }
-
-    /// An unsupported platform still gets a usable list rather than an empty
-    /// one: the tree may have been written by a build that supported it.
-    #[test]
-    fn a_platform_with_no_artifact_still_offers_the_older_shapes() {
-        let root = Path::new("/prefix/1.2.2");
-        let found = executable_candidates(&software(), root, "windows", "x86_64");
-        assert!(!found.is_empty(), "{found:?}");
-        assert!(found.contains(&root.join("codex.exe")), "{found:?}");
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -1972,6 +1894,8 @@ mod tests {
             65_536
         );
         assert_eq!(recover(&software(), &root).unwrap().len(), 1);
+        assert!(remove(&software(), &root).unwrap());
+        assert!(!root.join("1.2.3").exists());
         fs::remove_dir_all(&at).unwrap();
     }
 
@@ -1979,6 +1903,14 @@ mod tests {
     fn reinstallation_preserves_modified_trees_and_replaces_unchanged_ones() {
         let (at, artifact) = staged("twice", b"first", CODEX_MEMBER);
         let root = at.join("software");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let entry = root.join("bin/codex");
+        fs::write(&entry, b"foreign launcher").unwrap();
+        assert!(install(&software(), &artifact, &at.join("artifact.tgz"), &root).is_err());
+        assert_eq!(fs::read(&entry).unwrap(), b"foreign launcher");
+        assert!(!root.join("1.2.3").exists());
+        assert!(!root.join(".nddev-software-codex.transaction.json").exists());
+        fs::remove_file(&entry).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         let stray = root.join("1.2.3/package/left-over");
         fs::write(&stray, b"unrecorded content").unwrap();
@@ -2050,6 +1982,37 @@ mod tests {
         let installed = install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert!(installed.executable.symlink_metadata().is_ok());
 
+        let retained_entry = at.join("retained-entry");
+        fs::rename(&installed.executable, &retained_entry).unwrap();
+        fs::write(&installed.executable, b"foreign launcher").unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert_eq!(
+            fs::read(&installed.executable).unwrap(),
+            b"foreign launcher"
+        );
+        assert!(root.join("1.2.3").is_dir());
+        fs::remove_file(&installed.executable).unwrap();
+        fs::rename(&retained_entry, &installed.executable).unwrap();
+
+        let marker = Present::marker(&root, "codex");
+        fs::write(&marker, b"another-version").unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(root.join("1.2.3").is_dir());
+        fs::write(&marker, b"1.2.3").unwrap();
+        let manifest = Manifest::path(&root, "codex");
+        let manifest_bytes = fs::read(&manifest).unwrap();
+        fs::write(&manifest, b"{").unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(root.join("1.2.3").is_dir());
+        fs::write(&manifest, &manifest_bytes).unwrap();
+
+        let linked_manifest = at.join("manifest-link");
+        fs::hard_link(&manifest, &linked_manifest).unwrap();
+        assert_eq!(Manifest::inspect(&root, "codex"), ManifestState::Unreadable);
+        assert!(remove(&software(), &root).is_err());
+        assert!(root.join("1.2.3").is_dir());
+        fs::remove_file(&linked_manifest).unwrap();
+
         // A receipt does not authorize deleting files added after installation.
         let foreign = root.join("1.2.3/personal-file");
         fs::write(&foreign, b"preserve").unwrap();
@@ -2071,6 +2034,13 @@ mod tests {
         fs::remove_file(&foreign).unwrap();
         install(&software(), &artifact, &at.join("artifact.tgz"), &root).unwrap();
         assert!(receipt.is_file());
+        let saved = fs::read(&receipt).unwrap();
+        let mut record: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        record["entries"].as_array_mut().unwrap().pop();
+        fs::write(&receipt, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(remove(&software(), &root).is_err());
+        assert!(installed.executable.symlink_metadata().is_ok());
+        fs::write(&receipt, saved).unwrap();
 
         assert!(remove(&software(), &root).unwrap());
         assert!(!receipt.exists());

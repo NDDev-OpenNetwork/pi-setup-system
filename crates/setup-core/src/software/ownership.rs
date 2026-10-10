@@ -1,12 +1,13 @@
 //! Installation receipts bind a version tree, never just its directory name.
 
-use std::path::Path;
-
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 
-use super::records::{self, Identity, io, leaf, member_valid, open_root, present, refuse, sync};
-use crate::Result;
+use super::records::{self, Identity, io, leaf, member_valid, present, refuse, sync};
+use crate::{
+    Result,
+    software_prefix::{self, Entry, INVENTORY_LIMIT},
+};
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +18,7 @@ pub(super) struct Receipt {
     member: String,
     artifact_sha256: String,
     tree_digest: String,
+    entries: Vec<Entry>,
     root_identity: Identity,
     tree_identity: Identity,
 }
@@ -40,21 +42,60 @@ fn name(command: &str, version: &str) -> Result<String> {
 }
 
 impl Receipt {
+    pub(super) fn digest(&self) -> Result<String> {
+        crate::digest::of_domain_canonical_json(
+            "nddev-software-receipt/1",
+            &serde_json::to_value(self).map_err(|_| refuse())?,
+        )
+    }
+
+    pub(super) fn member(&self) -> &str {
+        &self.member
+    }
+
+    pub(super) fn tree_identity(&self) -> Identity {
+        self.tree_identity
+    }
+
+    pub(super) fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    pub(super) fn remove_record(&self, root: &Dir) -> Result<()> {
+        match Self::read(root, &self.command, &self.version)? {
+            Some(ref current) if current == self => {
+                io(root.remove_file(name(&self.command, &self.version)?))?;
+                sync(root)
+            }
+            None => Ok(()),
+            _ => Err(refuse()),
+        }
+    }
+
     pub(super) fn read(root: &Dir, command: &str, version: &str) -> Result<Option<Self>> {
-        let Some(record): Option<Self> = records::read(root, &name(command, version)?)? else {
+        let Some(record): Option<Self> =
+            records::read(root, &name(command, version)?, INVENTORY_LIMIT)?
+        else {
             return Ok(None);
         };
-        if record.schema_version != 1
-            || record.command != command
-            || record.version != version
-            || record.root_identity != Identity::of(root)?
-            || !digest_valid(&record.artifact_sha256)
-            || !digest_valid(&record.tree_digest)
-            || !member_valid(&record.member)
+        record.validate(root, command, version)?;
+        Ok(Some(record))
+    }
+
+    pub(super) fn validate(&self, root: &Dir, command: &str, version: &str) -> Result<()> {
+        if self.schema_version != 1
+            || self.command != command
+            || self.version != version
+            || self.root_identity != Identity::of(root)?
+            || !digest_valid(&self.artifact_sha256)
+            || !digest_valid(&self.tree_digest)
+            || !member_valid(&self.member)
+            || software_prefix::inventory_digest(&self.entries).map_err(|_| refuse())?
+                != self.tree_digest
         {
             return Err(refuse());
         }
-        Ok(Some(record))
+        Ok(())
     }
 
     pub(super) fn verify(&self, directory: &Dir) -> Result<&str> {
@@ -77,9 +118,10 @@ pub(super) fn record_installation(
     tree_identity: Identity,
 ) -> Result<()> {
     let directory = present(root, version)?.ok_or_else(refuse)?;
+    let (observed_digest, entries) = software_prefix::inventory_directory(&directory)?;
     if Identity::of(&directory)? != tree_identity
         || !digest_valid(artifact_sha256)
-        || crate::software_prefix::digest_directory(&directory)? != tree_digest
+        || observed_digest != tree_digest
     {
         return Err(refuse());
     }
@@ -90,34 +132,9 @@ pub(super) fn record_installation(
         member: member.to_owned(),
         artifact_sha256: artifact_sha256.to_owned(),
         tree_digest: tree_digest.to_owned(),
+        entries,
         root_identity: Identity::of(root)?,
         tree_identity,
     };
-    records::write(root, &name(command, version)?, &record)
-}
-
-/// Refuse unknown or modified trees before deleting any version content.
-pub(super) fn remove(root_path: &Path, command: &str, version: &str) -> Result<bool> {
-    let root = open_root(root_path)?;
-    let Some(directory) = present(&root, version)? else {
-        return Ok(false);
-    };
-    let record = Receipt::read(&root, command, version)?.ok_or_else(|| {
-        crate::Error::new(
-            crate::ReasonCode::RecoveryRequired,
-            "software version has no installation receipt; reinstall its exact artifact to adopt unchanged legacy bytes",
-        )
-    })?;
-    record.verify(&directory)?;
-    if Identity::of(&open_root(root_path)?)? != record.root_identity {
-        return Err(refuse());
-    }
-    // Consume the held directory, so a changed name cannot select another tree.
-    io(directory.remove_open_dir_all())?;
-    if Receipt::read(&root, command, version)?.as_ref() != Some(&record) {
-        return Err(refuse());
-    }
-    io(root.remove_file(name(command, version)?))?;
-    sync(&root)?;
-    Ok(true)
+    records::write(root, &name(command, version)?, &record, INVENTORY_LIMIT)
 }

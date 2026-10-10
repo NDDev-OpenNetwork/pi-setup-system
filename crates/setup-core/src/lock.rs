@@ -68,6 +68,7 @@ fn release_in_process(path: &Path) {
 pub struct TargetLock {
     file: File,
     path: PathBuf,
+    identity: (u64, u64),
 }
 
 impl TargetLock {
@@ -87,8 +88,8 @@ impl TargetLock {
             ));
         }
 
-        let acquire_os_lock = || -> Result<File> {
-            let open_lock = || -> std::io::Result<File> {
+        let acquire_os_lock = || -> Result<(File, (u64, u64))> {
+            let open_lock = || -> std::io::Result<(File, (u64, u64))> {
                 let parent = control_directory
                     .parent()
                     .ok_or_else(|| std::io::Error::other("control directory has no parent"))?;
@@ -117,9 +118,9 @@ impl TargetLock {
                 if !metadata.is_file() || metadata.nlink() != 1 {
                     return Err(std::io::Error::other("lock is not a regular file"));
                 }
-                Ok(file.into_std())
+                Ok((file.into_std(), (metadata.dev(), metadata.ino())))
             };
-            let file = open_lock().map_err(|source| {
+            let (file, identity) = open_lock().map_err(|source| {
                 Error::new(
                     ReasonCode::StateUnavailable,
                     format!("cannot open lock file {}", path.display()),
@@ -133,11 +134,15 @@ impl TargetLock {
                 )
                 .with_source(source)
             })?;
-            Ok(file)
+            Ok((file, identity))
         };
 
         match acquire_os_lock() {
-            Ok(file) => Ok(Self { file, path }),
+            Ok((file, identity)) => Ok(Self {
+                file,
+                path,
+                identity,
+            }),
             Err(error) => {
                 // The in-process claim must not outlive a failed acquisition, or
                 // the next attempt would be refused by this process forever.
@@ -151,6 +156,43 @@ impl TargetLock {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Verify that the named lock still refers to this held regular file.
+    ///
+    /// # Errors
+    /// Refuses an inaccessible, replaced, linked or aliased lock entry.
+    pub fn revalidate(&self) -> Result<()> {
+        let check = || -> std::io::Result<()> {
+            let parent = self
+                .path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("lock has no parent"))?;
+            let directory = Dir::open_ambient_dir(parent, cap_std::ambient_authority())?;
+            let named = directory.symlink_metadata(LOCK_FILE_NAME)?;
+            if !named.is_file()
+                || named.is_symlink()
+                || named.nlink() != 1
+                || (named.dev(), named.ino()) != self.identity
+            {
+                return Err(std::io::Error::other("the held lock entry changed"));
+            }
+            #[cfg(windows)]
+            {
+                use cap_std::fs::MetadataExt as _;
+                if named.file_attributes() & 0x400 != 0 {
+                    return Err(std::io::Error::other("the lock is a reparse point"));
+                }
+            }
+            Ok(())
+        };
+        check().map_err(|source| {
+            Error::new(
+                ReasonCode::StateUnavailable,
+                "the prefix writer lock was replaced",
+            )
+            .with_source(source)
+        })
     }
 
     /// Record a non-secret owner note inside the lock file.

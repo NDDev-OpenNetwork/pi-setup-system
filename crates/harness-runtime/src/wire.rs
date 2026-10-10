@@ -9119,7 +9119,19 @@ mod tests {
         // took of the thing this provider actually owns.
         let target = seeded("software-slots");
         let file = downloaded(&target, TEST_PAYLOAD);
-        plan_then_install(&target, "software_install", Some(&file));
+        let prefix = ready_prefix(&target);
+        let writer = setup_core::software::Writer::acquire(Path::new(&prefix)).unwrap();
+        let planned = software_plan(&target, "software_install");
+        let extra = apply_args(&target, &prefix, "software_install", &planned, Some(&file));
+        let borrowed: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let error = refuse(args("apply-operation", &target, &borrowed));
+        assert_eq!(error.reason(), Some(WireReason::ProviderUnavailable));
+        assert!(!Path::new(&prefix).join(TEST.control_directory).exists());
+        drop(writer);
+        assert_eq!(
+            apply_planned(&target, &prefix, "software_install", &planned, Some(&file))["state"],
+            "verified"
+        );
 
         let slots = target.join(TEST.control_directory).join("backups");
         let taken = fs::read_dir(&slots).map_or(0, Iterator::count);
@@ -9127,6 +9139,21 @@ mod tests {
             taken, 0,
             "a software install captured a configuration backup"
         );
+
+        // A matching version marker must not hide a foreign human rollback launcher.
+        let exposed = Path::new(&prefix).join("bin/test-harness");
+        fs::remove_file(&exposed).unwrap();
+        fs::write(&exposed, b"foreign launcher").unwrap();
+        let error = crate::human::run(
+            &TEST,
+            crate::human::Command::Rollback {
+                prefix: PathBuf::from(&prefix),
+                to: Some(TEST.software.unwrap().version.to_owned()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.reason(), Some(WireReason::RecoveryRequired));
+        assert_eq!(fs::read(exposed).unwrap(), b"foreign launcher");
     }
 
     #[test]
