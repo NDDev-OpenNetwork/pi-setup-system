@@ -15,6 +15,34 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.89] - 2026-10-10
+
+Installation components now present one ai-stp workflow while retaining
+existing repositories, package names and publisher identities. The software
+kernel uses shared locking and held-directory SQLite metadata for caller-bound
+admission, interruption recovery and immutable terminal results. Retry keeps the
+original operation ID and full plan digest; completed history does not repeat
+an effect or require the original archive. Missing-prefix allocation refuses
+foreign destinations and never creates ancestors. Extraction, launch exposure,
+removal and rollback validate recorded ownership through held filesystem inputs.
+Metadata locks are explicitly released when the final SQLite scope closes, even
+when a concurrent fork temporarily retains a duplicate file description.
+
+Private software metadata has changed. Unknown schemas and incompatible loose
+records are preserved and refused rather than guessed or silently converted.
+Older binaries do not honor the new shared lock; changing the installed writer
+requires a coordinated consumer transition. Configuration capture/restore remains
+a separate compatibility path. Committed configuration recovery checks the
+recorded operation, target, scope and owned-content result before clearing its
+journal; mismatches preserve recovery evidence. No new ai-stp workflow may add
+automatic owner-data backups. Native writable CLI isolation and production cutover are
+separate acceptance steps, not consequences of this component release.
+
+Public builds retain the renderer-owned SQLite/libclang helper and conditional
+platform dependencies. Current lifecycle and integration guidance replaces stale
+release narratives. Provider protocol v3, kit identity and current harness
+software pins are unchanged.
+
 ## [0.0.88] - 2026-10-03
 
 A routine pin refresh: all seven vendors moved since 0.0.87 was

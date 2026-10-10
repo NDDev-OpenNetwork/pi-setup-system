@@ -1,19 +1,10 @@
 //! The whole documented round trip, driven against a built binary.
 //!
-//! The three-OS matrix has always proved that this code compiles on ubuntu,
-//! macos and windows and that its unit tests pass there. It has never proved
-//! that a *target* survives a round trip on those systems — every lifecycle run
-//! against a real directory happened on Linux, and `docs/PLAN.md` said so under
-//! open risks for four releases.
+//! Build checks establish compilation; this probe executes the binary and
+//! independently reads its generated target after each lifecycle operation.
+//! Native platform jobs must run it on the executable they actually built.
 //!
-//! The difference is not academic. Both Windows defects this project has
-//! shipped lived in the joint between two correct halves and were invisible to
-//! a unit test: `expose` answering "no version is installed" on a system with
-//! no symbolic links, and a fixture that was absolute on two systems out of
-//! three. A test that runs the binary and then *looks at the directory* is the
-//! only shape that catches those.
-//!
-//! So this drives the real executable through `list`, `install`, `status`,
+//! This drives the real executable through `list`, `install`, `status`,
 //! `select`, `backups`, `hold`, `restore`, `restore --backup`, `release`,
 //! `remove` and `recover-operation`, and reads the target after each one. It
 //! takes the executable as an argument, so each setup system runs it against
