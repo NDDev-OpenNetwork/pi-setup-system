@@ -21,6 +21,7 @@ const RECORD_LIMIT: usize = INVENTORY_LIMIT + 64 * 1024;
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Phase {
+    Preparing,
     Extracting,
     Promoting,
     Promoted,
@@ -36,7 +37,7 @@ struct Record {
     stage: String,
     quarantine: String,
     root_identity: Identity,
-    stage_identity: Identity,
+    stage_identity: Option<Identity>,
     previous_identity: Option<Identity>,
     previous_digest: Option<String>,
     previous_entries: Option<Vec<Entry>>,
@@ -56,6 +57,18 @@ pub(super) struct Staging {
 
 impl Staging {
     pub(super) fn begin(
+        root: &Path,
+        command: &str,
+        version: &str,
+        member: &str,
+        artifact_sha256: &str,
+    ) -> Result<Self> {
+        let mut transaction = Self::prepare(root, command, version, member, artifact_sha256)?;
+        transaction.create_stage()?;
+        Ok(transaction)
+    }
+
+    fn prepare(
         root: &Path,
         command: &str,
         version: &str,
@@ -102,25 +115,23 @@ impl Staging {
         let nonce = unique()?;
         let stage = format!(".incoming-{command}-{nonce}");
         let quarantine = format!(".replaced-{command}-{nonce}");
-        io(directory.create_dir(&stage))?;
-        let stage_identity = Identity::of(&io(directory.open_dir_nofollow(&stage))?)?;
         let transaction = Self {
             record: Record {
-                schema_version: 3,
+                schema_version: 4,
                 command: command.to_owned(),
                 version: version.to_owned(),
                 member: member.to_owned(),
                 stage,
                 quarantine,
                 root_identity: Identity::of(&directory)?,
-                stage_identity,
+                stage_identity: None,
                 previous_identity,
                 previous_digest,
                 previous_entries,
                 legacy,
                 artifact_sha256: artifact_sha256.to_owned(),
                 sealed_digest: None,
-                phase: Phase::Extracting,
+                phase: Phase::Preparing,
                 launch,
             },
             root: directory,
@@ -129,6 +140,23 @@ impl Staging {
         };
         transaction.save()?;
         Ok(transaction)
+    }
+
+    fn create_stage(&mut self) -> Result<()> {
+        self.check_root()?;
+        // The durable name precedes mkdir. No artifact byte is written until
+        // the created physical directory is durably bound to that record.
+        io(self.root.create_dir(&self.record.stage))?;
+        let stage = io(self.root.open_dir_nofollow(&self.record.stage))?;
+        self.record.stage_identity = Some(Identity::of(&stage)?);
+        sync(&stage)?;
+        sync(&self.root)?;
+        self.record.phase = Phase::Extracting;
+        self.save()
+    }
+
+    fn stage_identity(&self) -> Result<Identity> {
+        self.record.stage_identity.ok_or_else(refuse)
     }
 
     pub(super) fn load(path: &Path, command: &str) -> Result<Option<Self>> {
@@ -142,7 +170,8 @@ impl Staging {
         let Some(record): Option<Record> = records::read(&root, &journal, RECORD_LIMIT)? else {
             return Ok(None);
         };
-        if record.schema_version != 3
+        if record.schema_version != 4
+            || (record.phase == Phase::Preparing) != record.stage_identity.is_none()
             || record.command != command
             || !ownership::digest_valid(&record.artifact_sha256)
             || record.previous_identity.is_some() != record.previous_digest.is_some()
@@ -205,7 +234,7 @@ impl Staging {
     pub(super) fn destination(&self) -> Result<Destination> {
         self.check_root()?;
         Ok(Destination::from_directory(
-            self.checked(&self.record.stage, self.record.stage_identity)?,
+            self.checked(&self.record.stage, self.stage_identity()?)?,
         ))
     }
 
@@ -243,7 +272,7 @@ impl Staging {
         self.record
             .launch
             .revalidate(&self.path, &self.record.command, &self.record.member)?;
-        let stage = self.checked(&self.record.stage, self.record.stage_identity)?;
+        let stage = self.checked(&self.record.stage, self.stage_identity()?)?;
         if present(&self.root, &self.record.quarantine)?.is_some() {
             return Err(refuse());
         }
@@ -281,7 +310,7 @@ impl Staging {
         io(self
             .root
             .rename(&self.record.stage, &self.root, &self.record.version))?;
-        let promoted = self.checked(&self.record.version, self.record.stage_identity)?;
+        let promoted = self.checked(&self.record.version, self.stage_identity()?)?;
         let digest = crate::software_prefix::digest_directory(&promoted)?;
         if self.record.sealed_digest.as_deref() != Some(digest.as_str()) {
             return Err(refuse());
@@ -300,14 +329,43 @@ impl Staging {
         let version = present(&self.root, &self.record.version)?;
         let quarantine = present(&self.root, &self.record.quarantine)?;
         let identify = |dir: &Option<Dir>| dir.as_ref().map(Identity::of).transpose();
-        if identify(&stage)?.is_some_and(|id| id != self.record.stage_identity)
+        if self.record.phase == Phase::Preparing {
+            // Only an absent or empty plain stage can precede its identity.
+            // A nonempty or substituted shape remains untouched for inspection.
+            self.record
+                .launch
+                .revalidate(&self.path, &self.record.command, &self.record.member)?;
+            if quarantine.is_some()
+                || identify(&version)? != self.record.previous_identity
+                || version
+                    .as_ref()
+                    .map(software_prefix::digest_directory)
+                    .transpose()?
+                    != self.record.previous_digest
+            {
+                return Err(refuse());
+            }
+            if let Some(stage) = stage {
+                if io(stage.entries())?.next().is_some() {
+                    return Err(refuse());
+                }
+                // This operation can remove only an empty directory; a later
+                // added entry causes removal to refuse without deleting it.
+                io(stage.remove_open_dir())?;
+                sync(&self.root)?;
+            }
+            io(self.root.remove_file(&self.journal))?;
+            sync(&self.root)?;
+            return Ok(false);
+        }
+        if identify(&stage)?.is_some_and(|id| Some(id) != self.record.stage_identity)
             || identify(&quarantine)?.is_some_and(|id| Some(id) != self.record.previous_identity)
         {
             return Err(refuse());
         }
         let current = identify(&version)?;
         if stage.is_none()
-            && current == Some(self.record.stage_identity)
+            && current == self.record.stage_identity
             && self.record.phase != Phase::Extracting
         {
             let digest =
@@ -364,7 +422,7 @@ impl Staging {
 
     pub(super) fn complete(self) -> Result<()> {
         self.check_root()?;
-        self.checked(&self.record.version, self.record.stage_identity)?;
+        self.checked(&self.record.version, self.stage_identity()?)?;
         let predecessor = self.check_predecessor()?;
         ownership::record_installation(
             &self.root,
@@ -373,7 +431,7 @@ impl Staging {
             &self.record.member,
             &self.record.artifact_sha256,
             self.record.sealed_digest.as_deref().ok_or_else(refuse)?,
-            self.record.stage_identity,
+            self.stage_identity()?,
         )?;
         if let Some(quarantine) = predecessor {
             cleanup::remaining(
@@ -421,6 +479,24 @@ mod tests {
         fs::write(root.join("unrelated.incoming"), b"unrelated").unwrap();
         assert!(software::recover(&declared, &root).unwrap().is_empty());
         software::require_idle(&declared, &root).unwrap();
+
+        for created in [false, true] {
+            let transaction = Staging::prepare(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
+            let stage = transaction.stage_path();
+            assert!(!stage.exists());
+            assert!(root.join(&transaction.journal).is_file());
+            if created {
+                fs::create_dir(&stage).unwrap();
+                fs::write(stage.join("foreign"), b"preserve").unwrap();
+                assert!(software::recover(&declared, &root).is_err());
+                assert_eq!(fs::read(stage.join("foreign")).unwrap(), b"preserve");
+                fs::remove_file(stage.join("foreign")).unwrap();
+            }
+            drop(transaction);
+            assert_eq!(software::recover(&declared, &root).unwrap().len(), 1);
+            assert!(!stage.exists());
+            software::require_idle(&declared, &root).unwrap();
+        }
 
         let transaction = Staging::begin(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
         let partial = transaction.stage_path();
