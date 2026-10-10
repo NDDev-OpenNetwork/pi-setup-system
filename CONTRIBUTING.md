@@ -9,7 +9,8 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-CI runs exactly these, on Linux, macOS and Windows.
+CI runs exactly these, on Linux, macOS and Windows. The README's Building
+section lists the C compiler and libclang prerequisites.
 
 ## The toolchain, and one way it goes wrong quietly
 

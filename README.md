@@ -217,8 +217,14 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs the same commands on
-Linux, macOS and Windows.
+The toolchain is pinned in `rust-toolchain.toml`. Building also requires a C
+compiler and libclang development library: SQLite is compiled into the binary,
+and its capability VFS bindings use bindgen. On Debian/Ubuntu these are supplied
+by `build-essential` and `libclang-dev`; macOS uses Xcode Command Line Tools;
+Windows uses MSVC Build Tools and LLVM. If libclang is outside the loader's
+search paths, set `LIBCLANG_PATH` to its library directory. These are build-time
+requirements; the shipped binary needs no SQLite server or libclang installation.
+CI runs the same commands on Linux, macOS and Windows.
 
 ## Licence
 

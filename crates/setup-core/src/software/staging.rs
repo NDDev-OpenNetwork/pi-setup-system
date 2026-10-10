@@ -51,7 +51,7 @@ struct Record {
 pub(super) struct Staging {
     root: Dir,
     path: PathBuf,
-    journal: String,
+    journal: super::store::Key,
     record: Record,
 }
 
@@ -84,10 +84,9 @@ impl Staging {
         }
         io(std::fs::create_dir_all(root))?;
         let directory = open_root(root)?;
-        let journal = format!(".nddev-software-{command}.transaction.json");
-        match directory.symlink_metadata(&journal) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(refuse()),
+        let journal = super::store::Key::Installation(command.to_owned());
+        if super::store::exists(&directory, &journal)? {
+            return Err(refuse());
         }
         let previous = present(&directory, version)?;
         let receipt = ownership::Receipt::read(&directory, command, version)?;
@@ -166,8 +165,9 @@ impl Staging {
         let Some(root) = records::optional_root(path)? else {
             return Ok(None);
         };
-        let journal = format!(".nddev-software-{command}.transaction.json");
-        let Some(record): Option<Record> = records::read(&root, &journal, RECORD_LIMIT)? else {
+        let journal = super::store::Key::Installation(command.to_owned());
+        let Some(record): Option<Record> = super::store::read(&root, &journal, RECORD_LIMIT)?
+        else {
             return Ok(None);
         };
         if record.schema_version != 4
@@ -213,7 +213,7 @@ impl Staging {
 
     fn save(&self) -> Result<()> {
         self.check_root()?;
-        records::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
+        super::store::write(&self.root, &self.journal, &self.record, RECORD_LIMIT)
     }
 
     fn check_root(&self) -> Result<()> {
@@ -354,7 +354,7 @@ impl Staging {
                 io(stage.remove_open_dir())?;
                 sync(&self.root)?;
             }
-            io(self.root.remove_file(&self.journal))?;
+            super::store::remove(&self.root, &self.journal)?;
             sync(&self.root)?;
             return Ok(false);
         }
@@ -401,7 +401,7 @@ impl Staging {
             return Err(refuse());
         }
         io(stage.ok_or_else(refuse)?.remove_open_dir_all())?;
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(&self.root, &self.journal)?;
         sync(&self.root)?;
         Ok(false)
     }
@@ -442,7 +442,7 @@ impl Staging {
             io(quarantine.remove_open_dir())?;
             sync(&self.root)?;
         }
-        io(self.root.remove_file(&self.journal))?;
+        super::store::remove(&self.root, &self.journal)?;
         sync(&self.root)
     }
 }
@@ -484,7 +484,7 @@ mod tests {
             let transaction = Staging::prepare(&root, "codex", "1.2.3", "codex", ARTIFACT).unwrap();
             let stage = transaction.stage_path();
             assert!(!stage.exists());
-            assert!(root.join(&transaction.journal).is_file());
+            assert!(super::super::store::exists(&transaction.root, &transaction.journal).unwrap());
             if created {
                 fs::create_dir(&stage).unwrap();
                 fs::write(stage.join("foreign"), b"preserve").unwrap();

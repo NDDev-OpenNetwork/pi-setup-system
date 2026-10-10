@@ -3,7 +3,7 @@
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 
-use super::records::{self, Identity, io, leaf, member_valid, present, refuse, sync};
+use super::records::{Identity, leaf, member_valid, present, refuse, sync};
 use crate::{
     Result,
     software_prefix::{self, Entry, INVENTORY_LIMIT},
@@ -32,13 +32,14 @@ pub(super) fn digest_valid(value: &str) -> bool {
     })
 }
 
-fn name(command: &str, version: &str) -> Result<String> {
+fn name(command: &str, version: &str) -> Result<super::store::Key> {
     if !leaf(command) || !leaf(version) {
         return Err(refuse());
     }
-    Ok(format!(
-        ".nddev-software-{command}-{version}.installed.json"
-    ))
+    Ok(super::store::Key::Receipt {
+        command: command.to_owned(),
+        version: version.to_owned(),
+    })
 }
 
 impl Receipt {
@@ -64,7 +65,7 @@ impl Receipt {
     pub(super) fn remove_record(&self, root: &Dir) -> Result<()> {
         match Self::read(root, &self.command, &self.version)? {
             Some(ref current) if current == self => {
-                io(root.remove_file(name(&self.command, &self.version)?))?;
+                super::store::remove(root, &name(&self.command, &self.version)?)?;
                 sync(root)
             }
             None => Ok(()),
@@ -74,7 +75,7 @@ impl Receipt {
 
     pub(super) fn read(root: &Dir, command: &str, version: &str) -> Result<Option<Self>> {
         let Some(record): Option<Self> =
-            records::read(root, &name(command, version)?, INVENTORY_LIMIT)?
+            super::store::read(root, &name(command, version)?, INVENTORY_LIMIT)?
         else {
             return Ok(None);
         };
@@ -136,5 +137,5 @@ pub(super) fn record_installation(
         root_identity: Identity::of(root)?,
         tree_identity,
     };
-    records::write(root, &name(command, version)?, &record, INVENTORY_LIMIT)
+    super::store::write(root, &name(command, version)?, &record, INVENTORY_LIMIT)
 }

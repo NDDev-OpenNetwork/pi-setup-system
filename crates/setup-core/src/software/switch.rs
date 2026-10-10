@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{exposure, launch, ownership::Receipt, records};
 use crate::Result;
-use records::{Identity, io, leaf, open_root, present, refuse, sync};
+use records::{Identity, leaf, open_root, present, refuse, sync};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -26,8 +26,8 @@ pub(super) struct Switch {
     record: Record,
 }
 
-pub(super) fn journal(command: &str) -> String {
-    format!(".nddev-software-{command}.switch.json")
+pub(super) fn journal(command: &str) -> super::store::Key {
+    super::store::Key::Switch(command.to_owned())
 }
 
 impl Switch {
@@ -36,9 +36,8 @@ impl Switch {
             return Err(refuse());
         }
         let root = open_root(path)?;
-        match root.symlink_metadata(journal(command)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(refuse()),
+        if super::store::exists(&root, &journal(command))? {
+            return Err(refuse());
         }
         let receipt = Receipt::read(&root, command, version)?.ok_or_else(refuse)?;
         let predecessor = launch::Snapshot::prepare(path, command, receipt.member())?;
@@ -55,7 +54,7 @@ impl Switch {
             path: path.to_owned(),
         };
         switch.verify()?;
-        records::write(&switch.root, &journal(command), &switch.record, 16 * 1024)?;
+        super::store::write(&switch.root, &journal(command), &switch.record, 16 * 1024)?;
         Ok(switch)
     }
 
@@ -66,7 +65,7 @@ impl Switch {
         let Some(root) = records::optional_root(path)? else {
             return Ok(None);
         };
-        let Some(record): Option<Record> = records::read(&root, &journal(command), 16 * 1024)?
+        let Some(record): Option<Record> = super::store::read(&root, &journal(command), 16 * 1024)?
         else {
             return Ok(None);
         };
@@ -131,7 +130,7 @@ impl Switch {
             &self.record.predecessor,
         )?;
         self.verify()?;
-        io(self.root.remove_file(journal(&self.record.command)))?;
+        super::store::remove(&self.root, &journal(&self.record.command))?;
         sync(&self.root)
     }
 }
