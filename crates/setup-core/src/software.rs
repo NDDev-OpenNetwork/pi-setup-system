@@ -16,10 +16,12 @@
 //! program can serve several targets, which a program living inside one of them
 //! could not.
 
+pub mod allocation;
 mod cleanup;
 mod exposure;
 mod input;
 mod launch;
+pub mod operation;
 mod ownership;
 mod preparation;
 mod records;
@@ -110,21 +112,9 @@ pub enum Delivery {
 
 /// The version this build pinned before the current one.
 ///
-/// **Not a second independent choice.** A bump assigns `previous = current` and
-/// then sets `current`, so one value still moves per bump and the old one falls
-/// into this slot instead of being discarded. Two clocks would be two things to
-/// keep fresh; this is one.
-///
-/// It exists because two operations could be declared and not run. An update
-/// needs a version to move *from* and a rollback a tree to return *to*, and a
-/// build pinning one version has neither — which is why
-/// `docs/SOFTWARE-LIFECYCLE.md` carried two `no` rows against
-/// `software_update` and `rollback` for as long as it did.
-///
-/// Two *consecutive real releases* differ in whatever the vendor actually
-/// changed, so the transition exercised is one a person will really perform. A
-/// fabricated pair would prove the plumbing against a case nobody runs, which
-/// is the same kind of evidence as a test that has never been red.
+/// Pin refresh retains the preceding measured release for exact installation
+/// and transition checks. Retention does not attest an existing on-disk tree;
+/// rollback separately validates its installation receipt and contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Previous {
     /// The version, exactly as the vendor published it.
@@ -142,10 +132,7 @@ pub struct Software {
     pub command: &'static str,
     /// How it is delivered.
     pub delivery: Delivery,
-    /// Platforms the vendor does not publish for.
-    ///
-    /// Said out loud rather than left as an absence: cursor ships no Windows
-    /// build, and a caller deserves that answer instead of "not found".
+    /// Platforms this build explicitly declares unsupported.
     pub unsupported: &'static [&'static str],
     /// The version before this one, when this build has had a bump.
     ///
@@ -537,10 +524,20 @@ pub fn install_verified(
 fn install_locked(
     software: &Software,
     artifact: &Artifact,
-    mut source: VerifiedArtifact,
+    source: VerifiedArtifact,
     root: &Path,
 ) -> Result<Installed> {
-    require_idle(software, root)?;
+    install_for(software, artifact, source, root, None)
+}
+
+fn install_for(
+    software: &Software,
+    artifact: &Artifact,
+    mut source: VerifiedArtifact,
+    root: &Path,
+    operation: Option<&operation::Binding>,
+) -> Result<Installed> {
+    require_idle_for(software, root, operation)?;
     source.begin(artifact)?;
     let version_root = root.join(software.version);
 
@@ -549,12 +546,13 @@ fn install_locked(
     } else {
         artifact.member
     };
-    let mut transaction = staging::Staging::begin(
+    let mut transaction = staging::Staging::begin_for(
         root,
         software.command,
         software.version,
         member,
         artifact.sha256,
+        operation,
     )?;
     let staging = transaction.stage_path();
     let output = transaction.destination()?;
@@ -597,6 +595,7 @@ fn install_locked(
     // Windows holds extraction directories against rename until this closes.
     drop(output);
 
+    transaction.record_files(files)?;
     transaction.promote()?;
 
     let exposed = root
@@ -682,11 +681,23 @@ fn recover_locked(software: &Software, root: &Path) -> Result<Vec<String>> {
 /// # Errors
 /// Returns `RecoveryRequired` for an existing or inaccessible journal.
 pub fn require_idle(software: &Software, root: &Path) -> Result<()> {
+    require_idle_for(software, root, None)
+}
+
+fn require_idle_for(
+    software: &Software,
+    root: &Path,
+    operation: Option<&operation::Binding>,
+) -> Result<()> {
     if !records::leaf(software.command) {
         return Err(records::refuse());
     }
     if let Some(root) = records::optional_root(root)?
-        && store::pending(&root)?
+        && if operation.is_none() {
+            store::pending(&root)?
+        } else {
+            store::pending_for(&root, operation)?
+        }
     {
         return Err(Error::new(
             ReasonCode::RecoveryRequired,
@@ -739,8 +750,8 @@ fn remove_locked(software: &Software, root: &Path) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Refuses a version that is not installed, naming the ones that are, and a
-/// version tree that holds no executable this build can find.
+/// Refuses a missing or changed installation receipt/tree, conflicting launch
+/// ownership, a pending operation or an unavailable prefix writer.
 pub fn rollback(software: &Software, root: &Path, to: &str) -> Result<Installed> {
     require_idle(software, root)?;
     Writer::acquire(root)?.rollback(software, to)
@@ -1846,6 +1857,130 @@ mod tests {
             b"#!/bin/sh\necho hi\n"
         );
         fs::remove_dir_all(&at).unwrap();
+    }
+
+    fn admission_preserves_foreign_paths(root: &Path, writer: &Writer, intent: &operation::Intent) {
+        fs::write(root.join("foreign"), b"preserve unrelated bytes").unwrap();
+        assert!(writer.resume_operation(intent).is_err());
+        assert_eq!(
+            fs::read(root.join("foreign")).unwrap(),
+            b"preserve unrelated bytes"
+        );
+        fs::remove_file(root.join("foreign")).unwrap();
+
+        // Model interruption after bin creation, before the first kernel record.
+        fs::create_dir(root.join("bin")).unwrap();
+        assert_eq!(writer.resume_operation(intent).unwrap(), None);
+        fs::write(root.join("bin/foreign"), b"not a planned launch entry").unwrap();
+        assert!(writer.resume_operation(intent).is_err());
+        assert!(root.join("bin/foreign").exists());
+        fs::remove_file(root.join("bin/foreign")).unwrap();
+    }
+
+    #[test]
+    fn caller_intent_survives_preparation_and_returns_history_without_replaying_effects() {
+        use operation::{Intent, Kind, Outcome, State};
+
+        let (at, artifact) = staged("caller-intent", b"generated program", CODEX_MEMBER);
+        let root = at.join("software");
+        fs::create_dir(&root).unwrap();
+        let declared = software();
+        let control = ".codex-setup-system";
+        let expected = crate::software_prefix::observe(&root, control)
+            .unwrap()
+            .digest;
+        let writer = Writer::acquire(&root).unwrap();
+        let intent = Intent::new(
+            "original-request",
+            &digest::of_bytes(b"complete original plan"),
+            &declared,
+            Kind::Install,
+        )
+        .unwrap();
+        assert_eq!(writer.operation_state(&intent).unwrap(), None);
+        writer
+            .admit_operation(&intent, &declared, control, &expected)
+            .unwrap();
+        assert!(!root.join("bin").exists());
+        assert_eq!(
+            writer.operation_state(&intent).unwrap(),
+            Some(State::Pending)
+        );
+        let conflict = Intent::new(
+            "original-request",
+            &digest::of_bytes(b"different intent"),
+            &declared,
+            Kind::Install,
+        )
+        .unwrap();
+        assert!(writer.operation_state(&conflict).is_err());
+        assert!(writer.remove(&declared).is_err());
+        assert!(writer.recover(&declared).is_err());
+        admission_preserves_foreign_paths(&root, &writer, &intent);
+
+        // An interrupted extraction is discarded only for this admitted intent.
+        let stage = staging::Staging::begin_for(
+            &root,
+            declared.command,
+            declared.version,
+            CODEX_MEMBER,
+            artifact.sha256,
+            Some(&intent.binding),
+        )
+        .unwrap();
+        let incoming = stage.stage_path();
+        fs::write(incoming.join("partial"), b"incomplete generated bytes").unwrap();
+        drop(stage);
+        assert_eq!(writer.resume_operation(&intent).unwrap(), None);
+        assert!(!incoming.exists());
+        let input = VerifiedArtifact::open(&artifact, &at.join("artifact.tgz")).unwrap();
+        let original = writer
+            .install_operation(&intent, &declared, &artifact, input)
+            .unwrap();
+        assert_eq!(original, Outcome::Installed { files: 3 });
+        drop(writer);
+
+        let writer = Writer::acquire(&root).unwrap();
+        assert_eq!(
+            writer.operation_state(&intent).unwrap(),
+            Some(State::Completed(original.clone()))
+        );
+        fs::remove_file(at.join("artifact.tgz")).unwrap();
+        let removal = Intent::new(
+            "remove-request",
+            &digest::of_bytes(b"later removal plan"),
+            &declared,
+            Kind::Remove,
+        )
+        .unwrap();
+        let expected = crate::software_prefix::observe(&root, control)
+            .unwrap()
+            .digest;
+        writer
+            .admit_operation(&removal, &declared, control, &expected)
+            .unwrap();
+        assert_eq!(
+            writer.remove_operation(&removal, &declared).unwrap(),
+            Outcome::Removed { removed: true }
+        );
+        let after = crate::software_prefix::observe(&root, control)
+            .unwrap()
+            .digest;
+        assert_eq!(writer.resume_operation(&intent).unwrap(), Some(original));
+        assert_eq!(
+            writer.resume_operation(&removal).unwrap(),
+            Some(Outcome::Removed { removed: true })
+        );
+        assert_eq!(
+            crate::software_prefix::observe(&root, control)
+                .unwrap()
+                .digest,
+            after
+        );
+        assert!(!root.join(declared.version).exists());
+        assert!(writer.operation_state(&conflict).is_err());
+        drop(writer);
+        fs::remove_dir_all(at).unwrap();
     }
 
     #[test]

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build seven self-contained crates.io source packages from the shared tree.
 
 The public repositories are workspaces because that is the clearest form for
@@ -16,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,32 +60,60 @@ def nested_source(text: str, module: str) -> str:
     return external_paths(text).replace("../../../provider-kit/", "../../provider-kit/")
 
 
+def dependency_tables(package: str) -> str:
+    # The standalone package embeds the workspace crates, so it needs their
+    # actual declarations, including platform conditions. A Unix-only kernel
+    # primitive must not become an unconditional dependency of a Windows crate.
+    source = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    workspace = tomllib.loads(source)["workspace"]["dependencies"]
+    block = source.split("[workspace.dependencies]", 1)[1].split("\n[", 1)[0]
+    declarations = {
+        line.split("=", 1)[0].strip(): line
+        for line in block.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    groups: dict[str, set[str]] = {"dependencies": set()}
+    for crate in (*MODULES.values(), package):
+        manifest = tomllib.loads((ROOT / "crates" / crate / "Cargo.toml").read_text())
+        tables = {"dependencies": manifest.get("dependencies", {})}
+        tables.update({
+            f"target.'{target}'.dependencies": table.get("dependencies", {})
+            for target, table in manifest.get("target", {}).items()
+        })
+        for table, names in tables.items():
+            for name, inherited in names.items():
+                if inherited != {"workspace": True}:
+                    raise SystemExit(f"unsupported dependency override in {crate}: {name}")
+                value = workspace[name]
+                if isinstance(value, dict) and "path" in value:
+                    continue
+                if tomllib.loads(declarations[name]).get(name) != value:
+                    raise SystemExit(f"dependency declaration must fit one line: {name}")
+                groups.setdefault(table, set()).add(name)
+    return "\n\n".join(
+        f"[{table}]\n" + "\n".join(declarations[name] for name in sorted(names))
+        for table, names in sorted(groups.items()) if names
+    )
+
+
 def cargo_toml(harness: str, release: str) -> str:
     package = f"{harness}-setup-system"
     product = PRODUCTS[harness]
-    # The standalone package embeds the workspace crates, so it needs their
-    # actual third-party declarations rather than a second dependency ledger.
-    source = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    block = source.split("[workspace.dependencies]", 1)[1].split("\n[", 1)[0]
-    dependencies = "\n".join(
-        line for line in block.strip().splitlines() if 'path = "crates/' not in line
-    )
     return f'''[package]
 name = "{package}"
 version = "{release}"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
-description = "Install, update, back up, restore and remove complete {product} configurations. Built by NDDev."
+description = "Managed ai-stp installation component for {product}, maintained by NDDev."
 repository = "https://github.com/NDDev-OpenNetwork/{package}"
-homepage = "https://nddev.it.com"
+homepage = "https://github.com/ai-engineers-guild/ai-stp"
 readme = "README.md"
-keywords = ["ai", "agent", "setup", "backup", "cli"]
+keywords = ["ai", "agent", "setup", "harness", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 publish = ["crates-io"]
 
-[dependencies]
-{dependencies}
+{dependency_tables(package)}
 
 [profile.release]
 lto = true
@@ -101,10 +129,14 @@ def readme(harness: str) -> str:
     package = f"{harness}-setup-system"
     return f"""# {package}
 
-The NDDev setup system for {PRODUCTS[harness]}. It installs complete native
-configurations through an explicit target, captures a backup before every
-mutation, and restores exact bytes. It implements the `ai-stp` provider
-protocol v3 and accepts adaptation-bound `ai-stp-bundle/2` packages.
+An ai-stp installation component for {PRODUCTS[harness]}, maintained by NDDev.
+The ai-stp CLI owns user workflows; this component owns final-state writes and
+recovery through provider protocol v3 and adaptation-bound `ai-stp-bundle/2`
+packages. Its repository and release identity remain independent.
+
+For user workflows and the native CLI's implemented capabilities, see
+[ai-stp](https://github.com/ai-engineers-guild/ai-stp). Direct component commands
+remain compatibility and maintenance interfaces:
 
 ```console
 cargo install {package}
@@ -114,6 +146,10 @@ cargo install {package}
 
 Source, security policy and release provenance:
 <https://github.com/NDDev-OpenNetwork/{package}>.
+
+Configuration backup/restore remains a compatibility feature. Software
+installation, update and removal use transaction metadata and create no
+configuration backups.
 """
 
 

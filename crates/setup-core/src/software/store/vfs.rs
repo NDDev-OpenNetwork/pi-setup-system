@@ -115,7 +115,7 @@ pub(super) struct Scope {
     root: Dir,
     directory: Dir,
     directory_identity: Identity,
-    lock: File,
+    lock: std::fs::File,
     lock_identity: FileId,
     writable: bool,
     observed: Mutex<BTreeMap<String, FileId>>,
@@ -139,6 +139,7 @@ impl Scope {
             return Err(records::refuse());
         }
         let claim = Claim::acquire(&directory)?;
+        let root = records::io(root.try_clone())?;
         let directory_identity = Identity::of(&directory)?;
         let before = records::io(inspect(&directory, LOCK))?.map(|m| identity(&m));
         let mut options = options(writable);
@@ -164,10 +165,10 @@ impl Scope {
             .with_source(error)
         })?;
         let scope = Arc::new(Self {
-            root: records::io(root.try_clone())?,
+            root,
             directory,
             directory_identity,
-            lock: File::from_std(lock),
+            lock,
             lock_identity,
             writable,
             observed: Mutex::default(),
@@ -207,7 +208,7 @@ impl Scope {
             return Err(refused());
         }
         let named = inspect(&self.directory, LOCK)?.ok_or_else(refused)?;
-        let opened = self.lock.metadata()?;
+        let opened = Metadata::from_file(&self.lock)?;
         if identity(&named) != self.lock_identity
             || identity(&opened) != self.lock_identity
             || !valid(&opened)
@@ -265,6 +266,15 @@ impl Scope {
     }
 }
 
+impl Drop for Scope {
+    fn drop(&mut self) {
+        // A concurrent fork may retain this open file description until exec.
+        // Release authority when the last SQLite scope closes, before its
+        // in-process claim becomes available to another operation.
+        let _ = self.lock.unlock();
+    }
+}
+
 fn options(writable: bool) -> OpenOptions {
     let mut options = OpenOptions::new();
     options
@@ -278,6 +288,23 @@ fn options(writable: bool) -> OpenOptions {
         options.mode(0o600);
     }
     options
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(super) fn check_lock_release_with_retained_descriptor(root: &Dir) {
+    let directory = || {
+        root.open_dir_nofollow(super::super::writer::CONTROL)
+            .unwrap()
+    };
+    let scope = Scope::open(root, directory(), true).unwrap();
+    // A fork can retain this open file description until the child's exec.
+    let retained = scope.lock.try_clone().unwrap();
+    drop(scope);
+    let next = Scope::open(root, directory(), true);
+    assert!(next.is_ok(), "a closed scope retained its OS lock");
+    drop(next);
+    drop(retained);
 }
 
 fn resolve(path: &str) -> io::Result<(Arc<Scope>, &str)> {

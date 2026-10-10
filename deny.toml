@@ -126,6 +126,8 @@ allow = [
     { crate = "windows_x86_64_gnullvm" },
     { crate = "windows_x86_64_msvc" },
     { crate = "winx" },
+    # setup-core's Windows no-replace publication; remove with that adapter.
+    { crate = "winsafe@0.0.29" },
     # setup-core software records: SQLite, its VFS bridge and build/target closure.
     # Remove or re-review with rusqlite/sqlite-plugin; no networking API is used.
     { crate = "aho-corasick" },

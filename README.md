@@ -179,21 +179,25 @@ Releases carry six binaries â€” Linux, macOS and Windows, on x86_64 and arm64 â€
 which is what `provider-info` declares, so the declaration and what you can
 download say the same thing.
 
-### Pointing `ai-stp` at it
+### Using the component through `ai-stp`
 
-`ai-stp` does not search for a provider. Its `resolve_executable` requires a
-real file at a path the caller names and refuses without one, on the stated
-ground that it never writes a target itself. So the path is what an installer
-owes you, and you hand it over in full:
+The ai-stp CLI selects an exact component release, authenticates its artifacts
+and invokes it through the provider protocol. Normal user workflows do not
+require installing this component as a second CLI. The native preview's
+implemented commands are described in its linked contract above; its writable
+lifecycle remains a separate acceptance step.
+
+For maintenance, a locally built executable can be checked explicitly through
+the released CLI's expert conformance command:
 
 ```bash
 ai-stp provider conformance --harness pi \
-  --executable ~/.local/bin/pi-setup-system \
-  --target <dir> --protocol-version 3 --json
+  --executable target/release/pi-setup-system \
+  --target <empty-dir> --protocol-version 3 --unverified-provider --json
 ```
 
-Building it yourself is equally supported and produces the same binary; a
-release is a convenience, not the authorised copy.
+This checks protocol behavior in an explicit disposable target. A local build
+does not acquire release publisher authentication by passing conformance.
 
 ### As a container
 

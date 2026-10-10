@@ -46,6 +46,10 @@ struct Record {
     sealed_digest: Option<String>,
     phase: Phase,
     launch: launch::Snapshot,
+    #[serde(default)]
+    operation: Option<super::operation::Binding>,
+    #[serde(default)]
+    files: Option<usize>,
 }
 
 pub(super) struct Staging {
@@ -56,6 +60,7 @@ pub(super) struct Staging {
 }
 
 impl Staging {
+    #[cfg(test)]
     pub(super) fn begin(
         root: &Path,
         command: &str,
@@ -63,17 +68,41 @@ impl Staging {
         member: &str,
         artifact_sha256: &str,
     ) -> Result<Self> {
-        let mut transaction = Self::prepare(root, command, version, member, artifact_sha256)?;
+        Self::begin_for(root, command, version, member, artifact_sha256, None)
+    }
+
+    pub(super) fn begin_for(
+        root: &Path,
+        command: &str,
+        version: &str,
+        member: &str,
+        artifact_sha256: &str,
+        operation: Option<&super::operation::Binding>,
+    ) -> Result<Self> {
+        let mut transaction =
+            Self::prepare_for(root, command, version, member, artifact_sha256, operation)?;
         transaction.create_stage()?;
         Ok(transaction)
     }
 
+    #[cfg(test)]
     fn prepare(
         root: &Path,
         command: &str,
         version: &str,
         member: &str,
         artifact_sha256: &str,
+    ) -> Result<Self> {
+        Self::prepare_for(root, command, version, member, artifact_sha256, None)
+    }
+
+    fn prepare_for(
+        root: &Path,
+        command: &str,
+        version: &str,
+        member: &str,
+        artifact_sha256: &str,
+        operation: Option<&super::operation::Binding>,
     ) -> Result<Self> {
         if !leaf(command)
             || !leaf(version)
@@ -84,6 +113,7 @@ impl Staging {
         }
         io(std::fs::create_dir_all(root))?;
         let directory = open_root(root)?;
+        super::store::check_active(&directory, operation)?;
         let journal = super::store::Key::Installation(command.to_owned());
         if super::store::exists(&directory, &journal)? {
             return Err(refuse());
@@ -116,7 +146,7 @@ impl Staging {
         let quarantine = format!(".replaced-{command}-{nonce}");
         let transaction = Self {
             record: Record {
-                schema_version: 4,
+                schema_version: 5,
                 command: command.to_owned(),
                 version: version.to_owned(),
                 member: member.to_owned(),
@@ -132,6 +162,8 @@ impl Staging {
                 sealed_digest: None,
                 phase: Phase::Preparing,
                 launch,
+                operation: operation.cloned(),
+                files: None,
             },
             root: directory,
             path: root.to_owned(),
@@ -170,7 +202,15 @@ impl Staging {
         else {
             return Ok(None);
         };
-        if record.schema_version != 4
+        if !matches!(record.schema_version, 4 | 5)
+            || (record.schema_version == 4
+                && (record.operation.is_some() || record.files.is_some()))
+            || record
+                .files
+                .is_some_and(|files| !(1..=65_536).contains(&files))
+            || (record.operation.is_some()
+                && matches!(record.phase, Phase::Promoting | Phase::Promoted)
+                && record.files.is_none())
             || (record.phase == Phase::Preparing) != record.stage_identity.is_none()
             || record.command != command
             || !ownership::digest_valid(&record.artifact_sha256)
@@ -203,6 +243,9 @@ impl Staging {
             return Err(refuse());
         }
         record.launch.validate(path, command, &record.member)?;
+        if let Some(binding) = &record.operation {
+            binding.validate()?;
+        }
         Ok(Some(Self {
             root,
             path: path.to_owned(),
@@ -220,7 +263,7 @@ impl Staging {
         if Identity::of(&open_root(&self.path)?)? != self.record.root_identity {
             return Err(refuse());
         }
-        Ok(())
+        super::store::check_active(&self.root, self.record.operation.as_ref())
     }
 
     fn checked(&self, name: &str, expected: Identity) -> Result<Dir> {
@@ -244,6 +287,34 @@ impl Staging {
 
     pub(super) fn version(&self) -> &str {
         &self.record.version
+    }
+
+    pub(super) fn binding(&self) -> Option<&super::operation::Binding> {
+        self.record.operation.as_ref()
+    }
+
+    pub(super) fn recorded_paths(&self) -> Result<Vec<String>> {
+        self.check_root()?;
+        let mut paths = vec![self.record.stage.clone(), self.record.quarantine.clone()];
+        let preparation = super::preparation::recorded_paths(
+            &self.root,
+            &self.record.command,
+            &self.record.version,
+            &self.record.member,
+        )?;
+        if !preparation.is_empty() && self.record.phase != Phase::Promoted {
+            return Err(refuse());
+        }
+        paths.extend(preparation);
+        Ok(paths)
+    }
+
+    pub(super) fn record_files(&mut self, files: usize) -> Result<()> {
+        if self.record.phase != Phase::Extracting || !(1..=65_536).contains(&files) {
+            return Err(refuse());
+        }
+        self.record.files = Some(files);
+        self.save()
     }
 
     pub(super) fn executable(&self) -> PathBuf {
@@ -463,7 +534,18 @@ impl Staging {
             io(quarantine.remove_open_dir())?;
             sync(&self.root)?;
         }
-        super::store::remove(&self.root, &self.journal)?;
+        if let Some(binding) = &self.record.operation {
+            super::store::complete(
+                &self.root,
+                binding,
+                Some(&self.journal),
+                &super::operation::Outcome::Installed {
+                    files: self.record.files.ok_or_else(refuse)?,
+                },
+            )?;
+        } else {
+            super::store::remove(&self.root, &self.journal)?;
+        }
         sync(&self.root)
     }
 }

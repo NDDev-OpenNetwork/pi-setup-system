@@ -124,6 +124,45 @@ struct Record {
     entries: [Entry; 3],
 }
 
+/// Only exact names in this command's preparation record may be omitted from
+/// the unrelated-path observation. The exposure path validates every payload
+/// and seal again before using any of these names.
+pub(super) fn recorded_paths(
+    root: &Dir,
+    command: &str,
+    version: &str,
+    member: &str,
+) -> Result<Vec<String>> {
+    let Some(record): Option<Record> = super::store::read(root, &journal(command), LIMIT)? else {
+        return Ok(Vec::new());
+    };
+    let bin = records::present(root, "bin")?.ok_or_else(refuse)?;
+    if record.schema_version != 2
+        || record.binding.root_identity != Identity::of(root)?
+        || record.binding.bin_identity != Identity::of(&bin)?
+        || record.binding.version != version
+        || record.binding.member != member
+    {
+        return Err(refuse());
+    }
+    let mut paths = Vec::new();
+    for entry in record.entries {
+        if !leaf(&entry.temporary)
+            || !entry
+                .temporary
+                .starts_with(&format!(".{command}.incoming-"))
+        {
+            return Err(refuse());
+        }
+        let path = format!("bin/{}", entry.temporary);
+        if paths.contains(&path) {
+            return Err(refuse());
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
 pub(super) struct Preparation<'a> {
     path: &'a Path,
     root: &'a Dir,

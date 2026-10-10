@@ -28,10 +28,11 @@
 //! ten backup slots on a capture nobody can use. Installing ten times would
 //! evict every configuration backup the target had.
 //!
-//! Software operations hold a prefix lock and revalidate the plan's bounded
-//! content observation before effects. Install stages the version before exposing
-//! its entry point. A pending per-command journal refuses new operations; implicit
-//! recovery would perform effects that the new plan did not authorize.
+//! Software operations persist the original caller identity and complete plan
+//! digest under one prefix writer before program effects. Only that admitted
+//! request can recover its kernel journals; every new request revalidates expiry
+//! and mutable preconditions. Terminal history returns the original result
+//! without repeating effects or depending on retained artifact bytes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -239,73 +240,6 @@ pub(crate) fn plan(
     ))
 }
 
-fn acquire_prefix(
-    harness: &Harness,
-    root: &Path,
-    operation: Operation,
-    expected_software_digest: &str,
-) -> Result<(setup_core::lock::TargetLock, software::Writer)> {
-    // A plan binds the bytes below this prefix, not just its absolute name.
-    // Check before creating bookkeeping, then again under the writer lock.
-    let before = setup_core::software_prefix::observe(root, harness.control_directory)?;
-    if before.digest != expected_software_digest {
-        return Err(Error::refuse(
-            WireReason::Stale,
-            "the software prefix changed after planning; no software effect was made",
-        ));
-    }
-    let created = if before.present {
-        false
-    } else {
-        let parent = root.parent().ok_or_else(|| {
-            Error::refuse(
-                WireReason::ProviderUnavailable,
-                "software prefix has no parent",
-            )
-        })?;
-        fs::create_dir_all(parent).map_err(|_| {
-            Error::refuse(
-                WireReason::ProviderUnavailable,
-                "software prefix parent cannot be created",
-            )
-        })?;
-        fs::create_dir(root).map_err(|_| {
-            Error::refuse(
-                WireReason::Stale,
-                "software prefix appeared after observation",
-            )
-        })?;
-        true
-    };
-
-    // Contention must refuse before this provider creates any bookkeeping that
-    // another command's prefix observation would include as an unrelated change.
-    let writer = software::Writer::acquire(root)?;
-
-    // The lock lives in this provider's own dotted directory inside the prefix,
-    // not at its root. `acquire` takes a control directory, and a `target.lock`
-    // sitting beside `bin/` in a program directory would be both misnamed and
-    // in the way of whoever looks in there for a program.
-    let control = root.join(harness.control_directory);
-    std::fs::create_dir_all(&control).map_err(|error| {
-        Error::refuse(
-            WireReason::ProviderUnavailable,
-            format!("--prefix {} cannot be created: {error}", root.display()),
-        )
-    })?;
-    let mut guard = setup_core::lock::TargetLock::acquire(&control)?;
-    let after = setup_core::software_prefix::observe(root, harness.control_directory)?;
-    if after.digest != expected_software_digest && !(created && after.present && after.empty) {
-        return Err(Error::refuse(
-            WireReason::Stale,
-            "the software prefix changed before its writer lock was acquired; no software effect was made",
-        ));
-    }
-    guard.annotate(&format!("{} {operation}", harness.provider_id))?;
-
-    Ok((guard, writer))
-}
-
 fn installation_input(
     declared: &software::Software,
     operation: Operation,
@@ -373,89 +307,181 @@ fn installation_input(
     Ok((artifact, input))
 }
 
-/// Apply one software operation under a lock, with no network open.
-///
-/// # Errors
-///
-/// Refuses a missing `--prefix`, a count of downloaded files that does not match
-/// what the plan named, bytes that are not the ones it named, or an archive that
-/// does not hold the member it named.
-pub(crate) fn apply(
-    harness: &Harness,
-    prefix: Option<&Path>,
-    operation: Operation,
-    planned_version: &str,
-    expected_software_digest: &str,
-    planned_artifacts: &[SoftwareArtifact],
-    downloaded: &[PathBuf],
-) -> Result<serde_json::Value> {
-    let declared = version_for(&declared(harness)?, Some(planned_version))?;
-    let root = program_directory(prefix, operation)?;
+/// The complete caller identity and software fields from one validated plan.
+pub(crate) struct Request<'a> {
+    pub operation: Operation,
+    pub version: &'a str,
+    pub prefix_digest: &'a str,
+    pub artifacts: &'a [SoftwareArtifact],
+    pub operation_id: &'a str,
+    pub plan_digest: &'a str,
+}
 
-    if operation == Operation::SoftwareRemove {
-        if !downloaded.is_empty() || !planned_artifacts.is_empty() {
+fn answer(
+    root: &Path,
+    declared: &Software,
+    operation: Operation,
+    outcome: &software::operation::Outcome,
+) -> serde_json::Value {
+    use software::operation::Outcome;
+    match outcome {
+        Outcome::Removed { removed } => serde_json::json!({
+            "state": "verified", "recovered": [], "operation": operation.as_str(),
+            "command": declared.command, "version": declared.version, "removed": removed,
+        }),
+        Outcome::Installed { files } => {
+            let entry = format!(
+                "bin/{}",
+                software::exposed_name(declared.command, declared.member_here())
+            );
+            serde_json::json!({
+                "state": "verified", "recovered": [], "operation": operation.as_str(),
+                "command": declared.command, "version": declared.version,
+                "entry_point": entry, "executable": root.join(&entry).to_string_lossy(), "files": files,
+            })
+        }
+    }
+}
+
+fn first_prefix(harness: &Harness, root: &Path, request: &Request<'_>) -> Result<()> {
+    let observed = setup_core::software_prefix::observe(root, harness.control_directory)?;
+    if observed.digest != request.prefix_digest {
+        return Err(Error::refuse(
+            WireReason::Stale,
+            "the software prefix changed before operation admission; no software effect was made",
+        ));
+    }
+    Ok(())
+}
+
+fn input_for(
+    declared: &Software,
+    request: &Request<'_>,
+    downloaded: &[PathBuf],
+) -> Result<Option<(&'static software::Artifact, software::VerifiedArtifact)>> {
+    if request.operation == Operation::SoftwareRemove {
+        if !downloaded.is_empty() || !request.artifacts.is_empty() {
             return Err(Error::refuse(
                 WireReason::UnsupportedOperation,
                 "software_remove downloads nothing, so it takes no --software-artifact",
             ));
         }
-        software::require_idle(&declared, &root)?;
-        let (_guard, writer) = acquire_prefix(harness, &root, operation, expected_software_digest)?;
-        software::require_idle(&declared, &root)?;
-        let removed = writer.remove(&declared)?;
-        return Ok(serde_json::json!({
-            "state": "verified",
-            "recovered": [],
-            "operation": operation.as_str(),
-            "command": declared.command,
-            "version": declared.version,
-            "removed": removed,
-        }));
+        Ok(None)
+    } else {
+        installation_input(declared, request.operation, request.artifacts, downloaded).map(Some)
     }
+}
 
-    let (artifact, input) =
-        installation_input(&declared, operation, planned_artifacts, downloaded)?;
-
-    // Validate the held input before any bookkeeping. A pending transaction
-    // refuses before the lock and again under it; a new plan owns no recovery.
-    software::require_idle(&declared, &root)?;
-    let (_guard, writer) = acquire_prefix(harness, &root, operation, expected_software_digest)?;
-    software::require_idle(&declared, &root)?;
-
-    // Re-checked here, not trusted from the plan: applying happens later, and
-    // the prefix could have been emptied in between. The plan's digest binds
-    // what was decided, not what the disk still holds.
-    if operation == Operation::SoftwareUpdate
-        && software::Present::under_named(&root, declared.command, declared.member_here())
-            .versions
-            .is_empty()
-    {
-        return Err(Error::refuse(
-            WireReason::ProviderUnavailable,
-            format!(
-                "there is no {} under {} to update any more; software_install is the operation \
-                 that puts one there",
-                declared.command,
-                root.display()
-            ),
-        ));
+/// Apply or resume an exact caller request under the common prefix writer.
+/// First-admission checks are revalidated under that writer. Completed history
+/// is read-only and does not depend on the original archive still being present.
+pub(crate) fn apply(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    request: &Request<'_>,
+    downloaded: &[PathBuf],
+    first_admission: impl Fn() -> Result<()>,
+) -> Result<serde_json::Value> {
+    use software::operation::{self, Intent, Kind, State};
+    let declared = version_for(&declared(harness)?, Some(request.version))?;
+    let root = program_directory(prefix, request.operation)?;
+    let kind = match request.operation {
+        Operation::SoftwareInstall => Kind::Install,
+        Operation::SoftwareUpdate => Kind::Update,
+        Operation::SoftwareRemove => Kind::Remove,
+        _ => {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                "not a software operation",
+            ));
+        }
+    };
+    // A historical outcome needs no archive, but irrelevant removal arguments
+    // remain invalid before either recovery or the read-only history response.
+    if kind == Kind::Remove {
+        input_for(&declared, request, downloaded)?;
     }
-
-    let installed = writer.install_verified(&declared, artifact, input)?;
-
-    Ok(serde_json::json!({
-        "state": "verified",
-        "recovered": [],
-        "operation": operation.as_str(),
-        "command": declared.command,
-        "version": installed.version,
-        "entry_point": format!(
-            "bin/{}",
-            setup_core::software::exposed_name(declared.command, artifact.member)
-        ),
-        "executable": installed.executable.to_string_lossy(),
-        "files": installed.files,
-    }))
+    let intent = Intent::new(request.operation_id, request.plan_digest, &declared, kind)?;
+    let allocation = match fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Some(software::allocation::Allocation::open(&root)?)
+        }
+        _ => None,
+    };
+    let state = allocation.as_ref().map_or_else(
+        || operation::state(&root, &intent),
+        |allocation| allocation.state(&intent),
+    );
+    let first = match state {
+        Ok(Some(State::Completed(outcome))) => {
+            return Ok(answer(&root, &declared, request.operation, &outcome));
+        }
+        Ok(None) => true,
+        Ok(Some(State::Pending)) | Err(_) => false,
+    };
+    let mut input = if first {
+        first_admission()?;
+        let input = input_for(&declared, request, downloaded)?;
+        first_prefix(harness, &root, request)?;
+        input
+    } else {
+        None
+    };
+    let writer = allocation.as_ref().map_or_else(
+        || software::Writer::acquire(&root),
+        software::allocation::Allocation::writer,
+    )?;
+    match writer.operation_state(&intent)? {
+        Some(State::Completed(outcome)) => {
+            return Ok(answer(&root, &declared, request.operation, &outcome));
+        }
+        Some(State::Pending) => {}
+        None => {
+            first_admission()?;
+            first_prefix(harness, &root, request)?;
+            if input.is_none() {
+                input = input_for(&declared, request, downloaded)?;
+            }
+            if kind == Kind::Update
+                && software::Present::under_named(&root, declared.command, declared.member_here())
+                    .versions
+                    .is_empty()
+            {
+                return Err(Error::refuse(
+                    WireReason::ProviderUnavailable,
+                    "there is no installed software to update; use software_install",
+                ));
+            }
+            if let Some(allocation) = &allocation {
+                allocation.admit(&writer, &intent, &declared, harness.control_directory)?;
+            } else {
+                writer.admit_operation(
+                    &intent,
+                    &declared,
+                    harness.control_directory,
+                    request.prefix_digest,
+                )?;
+            }
+        }
+    }
+    let writer = if let Some(allocation) = allocation {
+        allocation.publish(writer, &intent)?
+    } else {
+        writer
+    };
+    let outcome = if let Some(outcome) = writer.resume_operation(&intent)? {
+        outcome
+    } else if kind == Kind::Remove {
+        writer.remove_operation(&intent, &declared)?
+    } else {
+        let (artifact, input) = match input {
+            Some(input) => input,
+            None => input_for(&declared, request, downloaded)?
+                .ok_or_else(|| Error::declaration("installation input missing"))?,
+        };
+        writer.install_operation(&intent, &declared, artifact, input)?
+    };
+    Ok(answer(&root, &declared, request.operation, &outcome))
 }
 
 /// Start the exact program a software install placed, replacing this process.

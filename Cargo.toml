@@ -18,6 +18,13 @@ authors = ["Danil Silantyev / NDDev"]
 [workspace.dependencies]
 cap-std = "=4.0.3"
 cap-fs-ext = "=4.0.3"
+# Prefix allocation owns no-replace publication and caller-UID checks on Unix.
+# Remove this direct dependency when cap-std supplies the same primitive.
+rustix = { version = "=1.1.5", features = ["fs", "process"] }
+# Prefix publication uses safe Windows calls without std::fs::rename's
+# replacement fallback. Remove these when cap-std offers no-replace rename.
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
+winx = "=0.36.4"
 # The software metadata store owns these dependencies. SQLite supplies atomic
 # records; the VFS bridge confines every file to held directory capabilities.
 # The bridge can be replaced without changing the stored SQL contract.

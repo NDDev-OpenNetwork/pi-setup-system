@@ -30,6 +30,8 @@ struct Record {
     receipt: Receipt,
     exposure: Option<launch::Record>,
     phase: Phase,
+    #[serde(default)]
+    operation: Option<super::operation::Binding>,
 }
 
 pub(super) struct Removal {
@@ -45,7 +47,15 @@ pub(super) fn journal(command: &str) -> super::store::Key {
 
 impl Removal {
     pub(super) fn begin(path: &Path, software: &Software) -> Result<Option<Self>> {
-        super::require_idle(software, path)?;
+        Self::begin_for(path, software, None)
+    }
+
+    pub(super) fn begin_for(
+        path: &Path,
+        software: &Software,
+        operation: Option<&super::operation::Binding>,
+    ) -> Result<Option<Self>> {
+        super::require_idle_for(software, path, operation)?;
         let root = open_root(path)?;
         let Some(directory) = present(&root, software.version)? else {
             return Ok(None);
@@ -60,7 +70,7 @@ impl Removal {
             launch::Retraction::prepare(path, software)?.map(launch::Retraction::into_record);
         let removal = Self {
             record: Record {
-                schema_version: 1,
+                schema_version: 2,
                 command: software.command.to_owned(),
                 version: software.version.to_owned(),
                 quarantine: format!(".removing-{}-{}", software.command, unique()?),
@@ -68,6 +78,7 @@ impl Removal {
                 receipt,
                 exposure,
                 phase: Phase::Prepared,
+                operation: operation.cloned(),
             },
             root,
             path: path.to_owned(),
@@ -89,7 +100,8 @@ impl Removal {
         else {
             return Ok(None);
         };
-        if record.schema_version != 1
+        if !matches!(record.schema_version, 1 | 2)
+            || (record.schema_version == 1 && record.operation.is_some())
             || record.command != command
             || !leaf(&record.version)
             || !leaf(&record.quarantine)
@@ -101,6 +113,9 @@ impl Removal {
             return Err(refuse());
         }
         record.receipt.validate(&root, command, &record.version)?;
+        if let Some(binding) = &record.operation {
+            binding.validate()?;
+        }
         Ok(Some(Self {
             root,
             path: path.to_owned(),
@@ -113,11 +128,19 @@ impl Removal {
         &self.record.version
     }
 
+    pub(super) fn binding(&self) -> Option<&super::operation::Binding> {
+        self.record.operation.as_ref()
+    }
+
+    pub(super) fn recorded_paths(&self) -> Vec<String> {
+        vec![self.record.quarantine.clone()]
+    }
+
     fn check_root(&self) -> Result<()> {
         if Identity::of(&open_root(&self.path)?)? != self.record.root_identity {
             return Err(refuse());
         }
-        Ok(())
+        super::store::check_active(&self.root, self.record.operation.as_ref())
     }
 
     fn save(&self) -> Result<()> {
@@ -204,7 +227,16 @@ impl Removal {
         }
         self.record.receipt.remove_record(&self.root)?;
         self.check_root()?;
-        super::store::remove(&self.root, &self.journal)?;
+        if let Some(binding) = &self.record.operation {
+            super::store::complete(
+                &self.root,
+                binding,
+                Some(&self.journal),
+                &super::operation::Outcome::Removed { removed: true },
+            )?;
+        } else {
+            super::store::remove(&self.root, &self.journal)?;
+        }
         sync(&self.root)
     }
 }
