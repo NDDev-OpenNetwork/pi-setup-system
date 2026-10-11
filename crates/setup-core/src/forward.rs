@@ -494,6 +494,9 @@ impl Writer {
         if io(staging.entries())?.next().is_some() {
             return Err(invalid());
         }
+        // Windows refuses removal while this directory handle remains open.
+        // Cleanup reopens and verifies the recorded identity before removal.
+        drop(staging);
         self.store.complete(&admission.operation_id)?;
         let completed = self.store.record(admission)?.ok_or_else(invalid)?;
         self.clear_completed(&completed)?;
