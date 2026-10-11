@@ -105,6 +105,10 @@ const fn plan_usage(command: Command) -> Usage {
                 "--capture-mode",
                 "complete_native captures the entire declared native surface",
             ),
+            (
+                "--recovery-mode",
+                "forward resumes install/replace without configuration backups",
+            ),
             ("--permission-profile", "a profile this build declares"),
             (
                 "--software-version",
@@ -329,6 +333,8 @@ pub struct PlanRequest {
     pub backup_ref: Option<String>,
     /// Explicit complete preservation; absent retains recorded-file backup behavior.
     pub capture_mode: Option<String>,
+    /// Explicit forward-only recovery for bundle install and replace.
+    pub recovery_mode: Option<String>,
     /// The permission profile to apply.
     pub permission_profile: Option<String>,
     /// The bundle, when the operation carries one.
@@ -518,32 +524,10 @@ where
             };
             Invocation::ValidateBundle { target, bundle }
         }
-        Command::PlanOperation => {
-            let operation_name = flags.take_required("--operation")?;
-            let Some(operation) = Operation::parse(&operation_name) else {
-                return Err(Error::refuse(
-                    WireReason::UnsupportedOperation,
-                    format!("{operation_name:?} is not an operation this protocol defines"),
-                ));
-            };
-            Invocation::PlanOperation {
-                target,
-                request: PlanRequest {
-                    operation,
-                    provider_release_digest: flags.take_required("--provider-release-digest")?,
-                    operation_id: flags.take_required("--operation-id")?,
-                    expires_at: flags.take_required("--expires-at")?,
-                    backup_ref: flags.take_optional("--backup-ref"),
-                    capture_mode: flags.take_optional("--capture-mode"),
-                    permission_profile: flags.take_optional("--permission-profile"),
-                    bundle: flags.take_bundle()?,
-                    prefix: flags.take_prefix()?,
-                    software_version: flags.take_optional("--software-version"),
-                    target_scope: take_target_scope(&mut flags)?,
-                    instruction_section: flags.take_optional("--instruction-section"),
-                },
-            }
-        }
+        Command::PlanOperation => Invocation::PlanOperation {
+            target,
+            request: flags.take_plan()?,
+        },
         Command::ApplyOperation => Invocation::ApplyOperation {
             target,
             plan_path: PathBuf::from(flags.take_required("--plan")?),
@@ -595,6 +579,31 @@ fn looks_like_flag(token: &str) -> bool {
 }
 
 impl Flags {
+    fn take_plan(&mut self) -> Result<PlanRequest> {
+        let operation_name = self.take_required("--operation")?;
+        let Some(operation) = Operation::parse(&operation_name) else {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                format!("{operation_name:?} is not an operation this protocol defines"),
+            ));
+        };
+        Ok(PlanRequest {
+            operation,
+            provider_release_digest: self.take_required("--provider-release-digest")?,
+            operation_id: self.take_required("--operation-id")?,
+            expires_at: self.take_required("--expires-at")?,
+            backup_ref: self.take_optional("--backup-ref"),
+            capture_mode: self.take_optional("--capture-mode"),
+            recovery_mode: self.take_optional("--recovery-mode"),
+            permission_profile: self.take_optional("--permission-profile"),
+            bundle: self.take_bundle()?,
+            prefix: self.take_prefix()?,
+            software_version: self.take_optional("--software-version"),
+            target_scope: take_target_scope(self)?,
+            instruction_section: self.take_optional("--instruction-section"),
+        })
+    }
+
     /// Split a bare `--` off the end, keeping what follows verbatim.
     ///
     /// Only `launch` has anything to pass on, and what it passes belongs to

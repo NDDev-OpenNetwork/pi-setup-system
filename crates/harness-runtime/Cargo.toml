@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+jsonc-parser = { workspace = true }
+toml_edit = { workspace = true }
 setup-core = { workspace = true }
 provider-v3 = { workspace = true }
 

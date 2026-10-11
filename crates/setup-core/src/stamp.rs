@@ -12,8 +12,9 @@
 //!   credentials, tokens or file contents.
 //! - **Reading never migrates.** `status` reports what it found, including a
 //!   schema it does not write. A mutation is what may replace the record, and
-//!   only after it has captured a backup — so a migration that goes wrong is
-//!   still recoverable.
+//!   only under the selected durable recovery protocol. Forward transactions
+//!   publish the final record after verifying desired files and leave
+//!   `backup_ref` absent.
 
 use std::fs;
 use std::path::{Path, PathBuf};

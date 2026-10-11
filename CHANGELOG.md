@@ -15,6 +15,28 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.90] - 2026-10-11
+
+Explicit forward configuration install/replace stages desired bytes only,
+with confined SQLite admission, exact original-operation recovery and immutable
+historical results. It creates no configuration backup. Whole-file members keep
+their exact bytes; declared JSON/JSONC/TOML contributions preserve unowned fields,
+comments, numeric spelling and restrictive modes through replacement/withdrawal.
+Stale host observations, foreign files and implicit shared-to-whole conversion
+refuse before admission. Interrupted publication resumes the original request.
+
+Public status separately reports bounded recorded configuration ownership.
+Unknown or inconsistent records remain null; recorded ownership does not claim
+current content verification. This requires the compatible ai-stp 0.0.45 reader
+and its byte-bound provider kit 0.2.17 before rollout. Older writers must not be
+reselected after new forward metadata is admitted. Existing release tags remain
+immutable; native configuration invocation, multi-root recovery, active-agent
+handoff and production Rust cutover remain separate consumer work.
+
+The parser dependency closure is explicitly reviewed. Redundant direct serde
+edges are removed from the seven executables. Source and public CI now invoke
+cargo-machete directly and fail on unused dependencies or tool errors.
+
 ## [0.0.89] - 2026-10-10
 
 Installation components now present one ai-stp workflow while retaining

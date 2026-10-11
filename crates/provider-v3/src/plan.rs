@@ -203,6 +203,9 @@ pub struct PlanArtifact {
     /// Complete native preservation, explicitly requested or inherited from a snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_capture: Option<NativeCapture>,
+    /// Explicit forward recovery, absent for the compatibility lifecycle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_mode: Option<String>,
     /// The permission profile to apply, when one was requested.
     pub permission_profile: Option<String>,
     /// The scope the consumer resolved this target to be, when it said.
@@ -496,6 +499,7 @@ impl PlanArtifact {
             backup_ref: inputs.backup_ref,
             restore_target_digest: inputs.restore_target_digest,
             native_capture: inputs.native_capture,
+            recovery_mode: None,
             permission_profile: inputs.permission_profile,
             platform: platform::echo(),
             expires_at: inputs.expires_at.to_owned(),

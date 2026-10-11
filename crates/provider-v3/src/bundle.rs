@@ -167,6 +167,21 @@ pub struct BundleFile {
     /// What this record says the file is. Absent means an ordinary file.
     #[serde(default)]
     pub kind: FileKind,
+    /// An assembled host file owns only this key, not its preserved neighbours.
+    /// Only explicit forward configuration may materialize this extension.
+    #[serde(default)]
+    pub contribution: Option<Contribution>,
+}
+
+/// Ownership retained by a compiler after assembling one configuration key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Contribution {
+    /// The actual parser: `json/1` or `toml/1` (JSONC follows the path suffix).
+    pub parser_id: String,
+    /// The one owned top-level object or table.
+    pub ownership_key: String,
+    /// Exact SHA-256 of the observed host, or explicit null for observed absence.
+    pub host_digest: serde_json::Value,
 }
 
 /// The limits a manifest reports.

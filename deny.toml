@@ -126,6 +126,14 @@ allow = [
     { crate = "windows_x86_64_gnullvm" },
     { crate = "windows_x86_64_msvc" },
     { crate = "winx" },
+    # Forward configuration preserves JSONC/TOML syntax while updating owned
+    # keys. Remove this parser closure with that surface or its shared replacement.
+    { crate = "jsonc-parser@0.34.0" },
+    { crate = "toml_datetime" },
+    { crate = "toml_edit@0.25.16" },
+    { crate = "toml_parser" },
+    { crate = "toml_writer" },
+    { crate = "winnow" },
     # setup-core's Windows no-replace publication; remove with that adapter.
     { crate = "winsafe@0.0.29" },
     # setup-core software records: SQLite, its VFS bridge and build/target closure.

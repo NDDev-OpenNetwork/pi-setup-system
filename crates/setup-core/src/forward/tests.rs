@@ -1,0 +1,197 @@
+#![allow(clippy::unwrap_used)]
+
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use super::*;
+
+fn fixture() -> (PathBuf, Target, Admission) {
+    let serial = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("forward-config-{}-{serial}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let root = fs::canonicalize(root).unwrap();
+    let target = Target::resolve(&root, ".control").unwrap();
+    let admission = Admission {
+        operation_id: "operation_FORWARD_1".into(),
+        operation: "replace".into(),
+        plan_digest: crate::digest::of_bytes(b"original full plan"),
+        target_precondition_digest: crate::digest::of_bytes(b"original target"),
+        target_scope: None,
+    };
+    (root, target, admission)
+}
+
+fn content(bytes: &[u8]) -> Content {
+    Content::new(bytes.to_vec(), 0o600).unwrap()
+}
+
+fn settle(writer: &mut Writer, admission: &Admission) -> serde_json::Value {
+    writer.apply(admission).unwrap();
+    let outcome = serde_json::json!({"state":"verified", "operation_id":admission.operation_id});
+    let metadata = writer
+        .change("state.json", Some(content(b"new state")))
+        .unwrap();
+    writer.finish(admission, &[metadata], &outcome).unwrap();
+    writer.apply(admission).unwrap();
+    assert_eq!(writer.complete(admission).unwrap(), outcome);
+    outcome
+}
+
+#[test]
+fn interrupted_files_and_metadata_resume_without_before_images_or_historical_reapplication() {
+    let (root, target, admission) = fixture();
+    fs::write(root.join("old"), b"previous bytes are never retained").unwrap();
+    fs::write(root.join("neighbor"), b"user-owned bytes").unwrap();
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    assert!(Writer::acquire(&target, ".control").is_err());
+    let changes = [
+        writer.change("old", None).unwrap(),
+        writer
+            .change("skills/new/file", Some(content(b"complete desired bytes")))
+            .unwrap(),
+    ];
+    writer
+        .admit(
+            &admission,
+            &serde_json::json!({"runtime":"original"}),
+            &changes,
+        )
+        .unwrap();
+    let record = writer.store.record(&admission).unwrap().unwrap();
+    let stage = writer.staging(&record).unwrap();
+    files::publish(&writer.root, &stage, "0", &changes[0]).unwrap();
+    stage.write("1", b"complete desired").unwrap();
+    let guard = writer.journal().unwrap().unwrap();
+    assert_eq!(guard.backup_ref, None);
+    assert!(
+        crate::journal::require_clean_for_planning(
+            &target.control_directory(),
+            &target.control_directory().join(STAGING),
+            &[]
+        )
+        .is_err()
+    );
+    drop(stage);
+    drop(writer);
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    let mut wrong = admission.clone();
+    wrong.plan_digest = crate::digest::of_bytes(b"another plan");
+    assert!(writer.progress(&wrong).is_err());
+    assert!(matches!(
+        writer.progress(&admission).unwrap(),
+        Progress::Applying(_)
+    ));
+    writer.apply(&admission).unwrap();
+    let outcome = serde_json::json!({"state":"verified", "operation_id":admission.operation_id});
+    let metadata = writer
+        .change("state.json", Some(content(b"new state")))
+        .unwrap();
+    writer.finish(&admission, &[metadata], &outcome).unwrap();
+    let record = writer.store.record(&admission).unwrap().unwrap();
+    let stage = writer.staging(&record).unwrap();
+    let changes = writer.store.changes(&admission.operation_id).unwrap();
+    files::publish(&writer.root, &stage, "2", &changes[2]).unwrap();
+    drop(stage);
+    drop(writer);
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    assert!(matches!(
+        writer.progress(&admission).unwrap(),
+        Progress::Finishing
+    ));
+    writer.apply(&admission).unwrap();
+    assert_eq!(writer.complete(&admission).unwrap(), outcome);
+    assert!(
+        writer
+            .store
+            .changes(&admission.operation_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(writer.journal().unwrap().is_none());
+    assert!(!target.control_directory().join(STAGING).exists());
+    assert!(!target.control_directory().join("backups").exists());
+    assert!(!root.join("old").exists());
+    assert_eq!(
+        fs::read(root.join("skills/new/file")).unwrap(),
+        b"complete desired bytes"
+    );
+    assert_eq!(
+        fs::read(root.join("neighbor")).unwrap(),
+        b"user-owned bytes"
+    );
+    let mut later = admission.clone();
+    later.operation_id = "operation_FORWARD_2".into();
+    later.plan_digest = crate::digest::of_bytes(b"later plan");
+    let replacement = writer
+        .change("skills/new/file", Some(content(b"later desired bytes")))
+        .unwrap();
+    writer
+        .admit(&later, &serde_json::json!({}), &[replacement])
+        .unwrap();
+    settle(&mut writer, &later);
+    assert!(
+        matches!(writer.progress(&admission).unwrap(), Progress::Completed(value) if value == outcome)
+    );
+    assert_eq!(
+        fs::read(root.join("skills/new/file")).unwrap(),
+        b"later desired bytes"
+    );
+    drop(writer);
+    assert_no_payloads(&target);
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn assert_no_payloads(target: &Target) {
+    let database = fs::read(target.control_directory().join("forward/records.sqlite3")).unwrap();
+    for absent in [
+        b"previous bytes are never retained".as_slice(),
+        b"complete desired bytes",
+        b"later desired bytes",
+    ] {
+        assert!(!database.windows(absent.len()).any(|part| part == absent));
+    }
+}
+
+#[test]
+fn admission_and_recovery_refuse_foreign_content_and_replaced_parent_directories() {
+    let (root, target, admission) = fixture();
+    fs::create_dir(root.join("skills")).unwrap();
+    fs::write(root.join("skills/existing"), b"initial").unwrap();
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    let change = writer
+        .change("skills/existing", Some(content(b"intended")))
+        .unwrap();
+    fs::write(root.join("skills/existing"), b"changed before admission").unwrap();
+    assert!(
+        writer
+            .admit(&admission, &serde_json::json!({}), &[change])
+            .is_err()
+    );
+    let change = writer
+        .change("skills/new/entry", Some(content(b"intended")))
+        .unwrap();
+    writer
+        .admit(&admission, &serde_json::json!({}), &[change])
+        .unwrap();
+    // The first existing ancestor stays bound even when later parents were absent.
+    fs::rename(root.join("skills"), root.join("held-skills")).unwrap();
+    fs::create_dir(root.join("skills")).unwrap();
+    assert!(writer.apply(&admission).is_err());
+    assert!(!root.join("skills/new").exists());
+    fs::remove_dir(root.join("skills")).unwrap();
+    fs::rename(root.join("held-skills"), root.join("skills")).unwrap();
+    writer.apply(&admission).unwrap();
+    fs::write(root.join("skills/new/entry"), b"external edit").unwrap();
+    assert!(writer.apply(&admission).is_err());
+    assert_eq!(
+        fs::read(root.join("skills/new/entry")).unwrap(),
+        b"external edit"
+    );
+    drop(writer);
+    fs::remove_dir_all(root).unwrap();
+}
