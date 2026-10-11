@@ -4,7 +4,7 @@
 //! SQLite under a separate, directory-bound lock before reading kernel records.
 //! Published launch markers remain files; they are not database records.
 
-mod vfs;
+use crate::sqlite as vfs;
 
 use std::sync::Arc;
 
@@ -116,7 +116,7 @@ impl Store {
             }
             return Ok(None);
         }
-        let scope = vfs::Scope::open(root, control, writable)?;
+        let scope = vfs::Scope::open(root, CONTROL, control, writable)?;
         validate_control(root)?;
         let flags = if writable {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
@@ -578,7 +578,7 @@ mod tests {
             Some(payload.clone())
         );
 
-        vfs::check_lock_release_with_retained_descriptor(&root);
+        vfs::check_lock_release_with_retained_descriptor(&root, CONTROL);
 
         let control = path.join(CONTROL);
         let database = control.join(vfs::DATABASE);

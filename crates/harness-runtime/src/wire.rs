@@ -16,6 +16,9 @@
 //! again before the effect runs: the plan authorized an identity, not a file
 //! that might have changed on disk since.
 
+mod forward;
+mod ownership;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,6 +69,22 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             software_artifacts,
         } => {
             let artifact = load_plan(&plan_path, &plan_digest)?;
+            if artifact.get("recovery_mode").is_some() {
+                if prefix.is_some() || !software_artifacts.is_empty() {
+                    return Err(Error::refuse(
+                        WireReason::UnsupportedOperation,
+                        "forward configuration takes no software artifacts or prefix",
+                    ));
+                }
+                return forward::apply(
+                    harness,
+                    &target,
+                    &artifact,
+                    &plan_digest,
+                    &provider_release_digest,
+                    bundle.as_ref(),
+                );
+            }
             if Operation::SOFTWARE.contains(&operation_of(&artifact)?) {
                 if bundle.is_some() {
                     return Err(Error::refuse(
@@ -293,9 +312,9 @@ fn observe(harness: &Harness, target: &Path) -> Result<(Target, std::path::PathB
 /// existing reader wrong about a target that is merely mid-operation.
 fn cleanup_owed(journal: Option<&Journal>) -> &'static str {
     match journal.map(|entry| entry.phase) {
-        // The effect may be partial and `recover-operation` restores the
-        // pre-operation target. Something is owed before this target is read
-        // as anything.
+        // The effect may be partial. Compatibility recovery restores its
+        // slot; explicit forward recovery replays the original apply request.
+        // Neither state may be read as a completed configuration.
         Some(Phase::Prepared) => "required",
         // The effect is complete; recovery clears the tail only.
         Some(Phase::Committed) => "pending",
@@ -455,6 +474,7 @@ fn status_of(
     scope: Option<provider_v3::TargetScope>,
 ) -> Result<serde_json::Value> {
     let reading = ProviderState::read(resolved.root(), harness.state_file)?;
+    let configuration_ownership = ownership::observe(harness, resolved, &reading);
     // `managed` carries our state; `unmanaged` holds content that is not ours;
     // `missing` means there is nothing here at all.
     //
@@ -548,6 +568,7 @@ fn status_of(
         ),
         ("target_identity_digest", serde_json::json!(identity)),
         ("provider_state", provider_state),
+        ("configuration_ownership", configuration_ownership),
         (
             "journal",
             match journal {
@@ -967,7 +988,11 @@ fn taken_before_reset(harness: &Harness) -> Vec<String> {
 ///
 /// The bundle is read and verified here rather than at apply time only, so a
 /// plan is never issued for bytes that would be refused when it was applied.
-fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String>> {
+fn bundle_effects(
+    harness: &Harness,
+    target: &Target,
+    request: &PlanRequest,
+) -> Result<Vec<String>> {
     let Some(named) = request.bundle.as_ref() else {
         return Err(Error::refuse(
             WireReason::UnsupportedBundleFormat,
@@ -978,7 +1003,16 @@ fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String
         ));
     };
     let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
-    let mut effects = vec!["capture the current target into a new backup slot".to_owned()];
+    let mut effects = if request.recovery_mode.is_some() {
+        forward::preflight(harness, target, named, &verified, request.target_scope)?;
+        vec![
+            "retain desired bytes until forward recovery completes; create no configuration backup"
+                .to_owned(),
+        ]
+    } else {
+        require_legacy_bundle(&verified)?;
+        vec!["capture the current target into a new backup slot".to_owned()]
+    };
     effects.extend(taken_before_writing(harness, request.target_scope));
     effects.push(format!(
         "write the {} declared files over the entries this provider owns",
@@ -994,8 +1028,24 @@ fn bundle_effects(harness: &Harness, request: &PlanRequest) -> Result<Vec<String
     Ok(effects)
 }
 
+fn require_legacy_bundle(bundle: &Bundle) -> Result<()> {
+    if bundle
+        .manifest
+        .files
+        .iter()
+        .any(|file| file.contribution.is_some())
+    {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "assembled contributions require explicit forward configuration recovery",
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde_json::Value> {
+    forward::validate_request(request)?;
     // A plan is a question. `observe` reads the journal, the pool and the
     // record exactly as `open` does but creates nothing -- planning a fresh
     // target used to mint its control directory, so asking whether the
@@ -1006,6 +1056,10 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         &control.join("transaction"),
         &pool.partial_slots()?,
     )?;
+
+    if request.recovery_mode.is_none() && !Operation::SOFTWARE.contains(&request.operation) {
+        forward::require_legacy_target(harness, &resolved)?;
+    }
 
     honourable(harness, request)?;
     refuse_another_scopes_record(harness, &resolved, request.target_scope)?;
@@ -1047,10 +1101,12 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
     //
     // The software operations are exempt because they capture nothing: they
     // write under `--prefix` and leave the target's own namespaces alone.
-    if !matches!(
-        request.operation,
-        Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove
-    ) {
+    if request.recovery_mode.is_none()
+        && !matches!(
+            request.operation,
+            Operation::SoftwareInstall | Operation::SoftwareUpdate | Operation::SoftwareRemove
+        )
+    {
         refuse_a_neighbours_home(harness, &resolved, request.target_scope)?;
         let capture = match request.operation {
             Operation::Reset => harness
@@ -1171,7 +1227,9 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             }
             (taken_before_reset(harness), None, None)
         }
-        Operation::Install | Operation::Replace => (bundle_effects(harness, request)?, None, None),
+        Operation::Install | Operation::Replace => {
+            (bundle_effects(harness, &resolved, request)?, None, None)
+        }
         Operation::PatchInstructionRegion => {
             let (lines, path, text, present, observed) =
                 plan_instruction_patch(harness, &resolved, request)?;
@@ -1208,7 +1266,7 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             effects.push("replace the complete captured surface, including later user additions and shared native files".to_owned());
         }
     }
-    PlanArtifact::new(PlanInputs {
+    let mut artifact = PlanArtifact::new(PlanInputs {
         provider_id: harness.provider_id,
         provider_version: harness.version,
         provider_build_digest: &build_digest,
@@ -1235,8 +1293,9 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
         instruction_observed_digest: instruction_observed,
         instruction_observed_present: instruction_present,
         effects,
-    })?
-    .into_response()
+    })?;
+    artifact.recovery_mode.clone_from(&request.recovery_mode);
+    artifact.into_response()
 }
 
 /// What a removal would do at a target this build has no record of writing.
@@ -1382,6 +1441,7 @@ fn removal_effects(
         return Ok((lines, Vec::new()));
     };
     let verified = verified_bundle(harness, named, Surface::At(request.target_scope))?;
+    require_legacy_bundle(&verified)?;
     let states = end_states_of(harness, resolved, request.target_scope, &verified)?;
     lines.push(format!(
         "leave {} declared files behind at the bytes the bundle carries",
@@ -1490,6 +1550,7 @@ fn removal_effect<'a>(
         named,
         Surface::At(scope_of(artifact)),
     )?);
+    require_legacy_bundle(ready)?;
     check_survivors(&planned, ready)?;
     // Which bundle put the surviving bytes there is provenance worth keeping;
     // the passport's setup identity is not, because the setup is the thing
@@ -1838,7 +1899,8 @@ pub(crate) struct Mutation<'a> {
 /// something is. Before this existed only the setup's name was carried, and a
 /// restore carried nothing at all -- so a target holding a known setup byte for
 /// byte reported itself as unnamed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Applied {
     /// The setup in effect, when one is named.
     pub setup_id: Option<String>,
@@ -2003,6 +2065,7 @@ fn apply(
                     "bundle vanished",
                 ));
             };
+            require_legacy_bundle(ready)?;
             record_bundle_provenance(&mut applied, named, ready);
             applied.component_refs = ready
                 .manifest
@@ -2080,6 +2143,7 @@ pub(crate) fn perform(
     ))?;
 
     // Re-check after the lock: everything observed before it could have moved.
+    forward::require_legacy_target(harness, &resolved)?;
     let owned = owned_here(harness, &resolved, mutation.target_scope)?;
     let identity_paths = if mutation.provenance.get("native_capture").is_some() {
         owned.clone()
@@ -3752,12 +3816,38 @@ fn write_state(
     captured: &SlotRecord,
     applied: &Applied,
 ) -> Result<()> {
-    let artifact = &mutation.provenance;
+    let binding = StatePlan {
+        artifact: &mutation.provenance,
+        digest: &mutation.plan_digest,
+        scope: mutation.target_scope,
+    };
+    let mut state = build_state(harness, target, &binding, before, after, applied)?;
+    state.backup_ref = Some(captured.backup_ref.as_str().to_owned());
+    state
+        .write(target.root(), harness.state_file)
+        .map_err(Error::from)
+}
+
+struct StatePlan<'a> {
+    artifact: &'a serde_json::Value,
+    digest: &'a str,
+    scope: Option<provider_v3::TargetScope>,
+}
+
+fn build_state(
+    harness: &Harness,
+    target: &Target,
+    plan: &StatePlan<'_>,
+    before: &str,
+    after: &str,
+    applied: &Applied,
+) -> Result<ProviderState> {
+    let artifact = plan.artifact;
     let previous = match ProviderState::read(target.root(), harness.state_file)? {
         StateReading::Current(current) => Some(current.target_identity_digest),
         _ => None,
     };
-    ProviderState {
+    Ok(ProviderState {
         state_schema: STATE_SCHEMA,
         protocol_version: provider_v3::PROTOCOL_VERSION,
         provider_id: harness.provider_id.to_owned(),
@@ -3786,11 +3876,7 @@ fn write_state(
         // The same question the plan asks, asked the same way: under a scope
         // this is that scope's profile. It recorded the global one, which made
         // the state disagree with the plan that authorized it.
-        projection_profile_digest: Some(
-            harness
-                .projection_profile_for(mutation.target_scope)?
-                .digest,
-        ),
+        projection_profile_digest: Some(harness.projection_profile_for(plan.scope)?.digest),
         // The digest of the plan this operation was authorized by -- taken
         // from the value the caller passed as `--plan-digest`, which is what
         // was checked against the plan's bytes before anything ran.
@@ -3804,7 +3890,7 @@ fn write_state(
         // Only visible once `status` started publishing what it persists. While
         // the field was absent from the answer the consumer skipped it; a
         // published null is a value it compares and refuses.
-        provider_plan_digest: Some(mutation.plan_digest.clone()),
+        provider_plan_digest: Some(plan.digest.to_owned()),
         operation_id: string_field(artifact, "operation_id")?,
         target_precondition_digest: before.to_owned(),
         // The namespaces owned *at this target*, which under a scope is that
@@ -3814,7 +3900,7 @@ fn write_state(
         // It is also what `scope_recorded_at` reads, so a wrong value here
         // would have made `status` answer under the wrong scope.
         native_ownership: harness
-            .owned_projection(mutation.target_scope)
+            .owned_projection(plan.scope)
             .iter()
             .map(|n| (*n).to_owned())
             .collect(),
@@ -3823,12 +3909,10 @@ fn write_state(
         // `~/.agents` the namespaces are read by several products at once, so
         // only the files can scope a removal to what this provider put there.
         written_paths: applied.written_paths.clone(),
-        backup_ref: Some(captured.backup_ref.as_str().to_owned()),
+        backup_ref: None,
         previous_verified_identity: previous,
         drift_state: DriftState::Clean,
-    }
-    .write(target.root(), harness.state_file)
-    .map_err(Error::from)
+    })
 }
 
 fn load_plan(path: &Path, expected_digest: &str) -> Result<serde_json::Value> {
@@ -4087,6 +4171,7 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
+
     // A test may spawn: several of these drive a real executable, which is the
     // only way to prove what the shipped binary does rather than what this
     // source believes. The lint's subject is the program, not its tests.
@@ -4096,6 +4181,7 @@ mod tests {
         clippy::disallowed_types,
         reason = "tests drive real executables to check the shipped behaviour"
     )]
+    mod forward;
 
     use std::fs;
     use std::path::{Path, PathBuf};

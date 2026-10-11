@@ -13,7 +13,6 @@ name = "pi-setup-system"
 path = "src/main.rs"
 
 [dependencies]
-serde = { workspace = true }
 serde_json = { workspace = true }
 provider-v3 = { workspace = true }
 harness-runtime = { workspace = true }

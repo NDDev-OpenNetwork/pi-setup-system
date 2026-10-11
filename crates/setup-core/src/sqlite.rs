@@ -19,13 +19,12 @@ use sqlite_plugin::{
     vfs::{RegisterOpts, Vfs, VfsHandle, VfsResult, register_static},
 };
 
-use super::super::records::{self, Identity};
 use crate::{Error, ReasonCode, Result};
 
-pub(super) const DATABASE: &str = "records.sqlite3";
-pub(super) const JOURNAL: &str = "records.sqlite3-journal";
-pub(super) const LOCK: &str = "records.lock";
-pub(super) const NAME: &str = "ai-stp-software-records-v1";
+pub(crate) const DATABASE: &str = "records.sqlite3";
+pub(crate) const JOURNAL: &str = "records.sqlite3-journal";
+pub(crate) const LOCK: &str = "records.lock";
+pub(crate) const NAME: &str = "ai-stp-records-v1";
 const FILE_LIMIT: u64 = 256 * 1024 * 1024;
 type FileId = (u64, u64);
 
@@ -41,8 +40,46 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(Mutex::default)
 }
 
+fn invalid() -> Error {
+    Error::new(
+        ReasonCode::RecoveryRequired,
+        "transaction metadata or directory identity is inconsistent",
+    )
+}
+
+fn checked<T>(value: io::Result<T>) -> Result<T> {
+    value.map_err(|error| invalid().with_source(error))
+}
+
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Directory flushing is available on Unix only."
+    )
+)]
+fn sync_directory(directory: &Dir) -> Result<()> {
+    #[cfg(unix)]
+    checked(checked(directory.open("."))?.sync_all())?;
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
+}
+
+fn directory_identity(directory: &Dir) -> Result<FileId> {
+    let metadata = checked(directory.dir_metadata())?;
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt as _;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(invalid());
+        }
+    }
+    Ok(identity(&metadata))
+}
+
 fn refused() -> io::Error {
-    io::Error::other("software metadata file or held directory changed")
+    io::Error::other("transaction metadata file or held directory changed")
 }
 
 fn valid(metadata: &Metadata) -> bool {
@@ -63,7 +100,7 @@ fn identity(metadata: &Metadata) -> FileId {
     (metadata.dev(), metadata.ino())
 }
 
-pub(super) fn inspect(directory: &Dir, name: &str) -> io::Result<Option<Metadata>> {
+pub(crate) fn inspect(directory: &Dir, name: &str) -> io::Result<Option<Metadata>> {
     match directory.symlink_metadata(name) {
         Ok(metadata) if valid(&metadata) => Ok(Some(metadata)),
         Ok(_) => Err(refused()),
@@ -83,18 +120,15 @@ struct Claim {
 
 impl Claim {
     fn acquire(directory: &Dir) -> Result<Self> {
-        let directory = identity(&records::io(directory.dir_metadata())?);
-        let mut registry = registry().lock().map_err(|_| records::refuse())?;
+        let directory = identity(&checked(directory.dir_metadata())?);
+        let mut registry = registry().lock().map_err(|_| invalid())?;
         if registry.claimed.contains(&directory) {
             return Err(Error::new(
                 ReasonCode::LockUnavailable,
-                "software metadata is already open",
+                "transaction metadata is already open",
             ));
         }
-        registry.sequence = registry
-            .sequence
-            .checked_add(1)
-            .ok_or_else(records::refuse)?;
+        registry.sequence = registry.sequence.checked_add(1).ok_or_else(invalid)?;
         let id = registry.sequence.to_string();
         registry.claimed.insert(directory);
         Ok(Self { id, directory })
@@ -111,10 +145,11 @@ impl Drop for Claim {
     }
 }
 
-pub(super) struct Scope {
+pub(crate) struct Scope {
     root: Dir,
     directory: Dir,
-    directory_identity: Identity,
+    directory_identity: FileId,
+    name: String,
     lock: std::fs::File,
     lock_identity: FileId,
     writable: bool,
@@ -124,11 +159,19 @@ pub(super) struct Scope {
 }
 
 impl Scope {
-    pub(super) fn open(root: &Dir, directory: Dir, writable: bool) -> Result<Arc<Self>> {
+    pub(crate) fn open(
+        root: &Dir,
+        name: &str,
+        directory: Dir,
+        writable: bool,
+    ) -> Result<Arc<Self>> {
         static REGISTERED: OnceLock<bool> = OnceLock::new();
+        if name.is_empty() || name.contains(['/', '\\', ':']) || matches!(name, "." | "..") {
+            return Err(invalid());
+        }
         if !REGISTERED.get_or_init(|| {
             register_static(
-                c"ai-stp-software-records-v1".to_owned(),
+                c"ai-stp-records-v1".to_owned(),
                 Confined,
                 RegisterOpts {
                     make_default: false,
@@ -136,20 +179,20 @@ impl Scope {
             )
             .is_ok()
         }) {
-            return Err(records::refuse());
+            return Err(invalid());
         }
         let claim = Claim::acquire(&directory)?;
-        let root = records::io(root.try_clone())?;
-        let directory_identity = Identity::of(&directory)?;
-        let before = records::io(inspect(&directory, LOCK))?.map(|m| identity(&m));
+        let root = checked(root.try_clone())?;
+        let directory_identity = directory_identity(&directory)?;
+        let before = checked(inspect(&directory, LOCK))?.map(|m| identity(&m));
         let mut options = options(writable);
         options.create(writable);
-        let lock = records::io(directory.open_with(LOCK, &options))?;
-        let metadata = records::io(lock.metadata())?;
+        let lock = checked(directory.open_with(LOCK, &options))?;
+        let metadata = checked(lock.metadata())?;
         let lock_identity = identity(&metadata);
         if !valid(&metadata) || metadata.len() != 0 || before.is_some_and(|id| id != lock_identity)
         {
-            return Err(records::refuse());
+            return Err(invalid());
         }
         let lock = lock.into_std();
         let acquired = if writable {
@@ -160,7 +203,7 @@ impl Scope {
         acquired.map_err(|error| {
             Error::new(
                 ReasonCode::LockUnavailable,
-                "software metadata is held by another process",
+                "transaction metadata is held by another process",
             )
             .with_source(error)
         })?;
@@ -168,43 +211,43 @@ impl Scope {
             root,
             directory,
             directory_identity,
+            name: name.into(),
             lock,
             lock_identity,
             writable,
             observed: Mutex::default(),
             claim,
         });
-        records::io(scope.check())?;
+        checked(scope.check())?;
         if writable {
-            records::sync(&scope.directory)?;
+            sync_directory(&scope.directory)?;
         }
         registry()
             .lock()
-            .map_err(|_| records::refuse())?
+            .map_err(|_| invalid())?
             .scopes
             .insert(scope.claim.id.clone(), Arc::downgrade(&scope));
         Ok(scope)
     }
 
-    pub(super) fn path(&self) -> String {
+    pub(crate) fn path(&self) -> String {
         format!("{}/{DATABASE}", self.claim.id)
     }
 
-    pub(super) fn validate(&self) -> Result<()> {
-        records::io(self.check())?;
-        for (name, expected) in self.observed.lock().map_err(|_| records::refuse())?.iter() {
-            let metadata =
-                records::io(inspect(&self.directory, name))?.ok_or_else(records::refuse)?;
+    pub(crate) fn validate(&self) -> Result<()> {
+        checked(self.check())?;
+        for (name, expected) in self.observed.lock().map_err(|_| invalid())?.iter() {
+            let metadata = checked(inspect(&self.directory, name))?.ok_or_else(invalid)?;
             if identity(&metadata) != *expected {
-                return Err(records::refuse());
+                return Err(invalid());
             }
         }
         Ok(())
     }
 
     fn check(&self) -> io::Result<()> {
-        let named = self.root.open_dir_nofollow(super::super::writer::CONTROL)?;
-        if Identity::of(&named).map_err(|_| refused())? != self.directory_identity {
+        let named = self.root.open_dir_nofollow(&self.name)?;
+        if directory_identity(&named).map_err(|_| refused())? != self.directory_identity {
             return Err(refused());
         }
         let named = inspect(&self.directory, LOCK)?.ok_or_else(refused)?;
@@ -262,7 +305,7 @@ impl Scope {
 
     fn sync(&self) -> io::Result<()> {
         self.check()?;
-        records::sync(&self.directory).map_err(|_| refused())
+        sync_directory(&self.directory).map_err(|_| refused())
     }
 }
 
@@ -292,16 +335,13 @@ fn options(writable: bool) -> OpenOptions {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-pub(super) fn check_lock_release_with_retained_descriptor(root: &Dir) {
-    let directory = || {
-        root.open_dir_nofollow(super::super::writer::CONTROL)
-            .unwrap()
-    };
-    let scope = Scope::open(root, directory(), true).unwrap();
+pub(crate) fn check_lock_release_with_retained_descriptor(root: &Dir, name: &str) {
+    let directory = || root.open_dir_nofollow(name).unwrap();
+    let scope = Scope::open(root, name, directory(), true).unwrap();
     // A fork can retain this open file description until the child's exec.
     let retained = scope.lock.try_clone().unwrap();
     drop(scope);
-    let next = Scope::open(root, directory(), true);
+    let next = Scope::open(root, name, directory(), true);
     assert!(next.is_ok(), "a closed scope retained its OS lock");
     drop(next);
     drop(retained);

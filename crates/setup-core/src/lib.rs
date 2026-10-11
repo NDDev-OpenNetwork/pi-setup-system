@@ -5,17 +5,11 @@
 //! command that reached the target directly would bypass the guarantees the
 //! wire surface owes its consumer, so it does not exist.
 //!
-//! The sequence a mutation follows is fixed:
-//!
-//! ```text
-//! resolve target -> acquire lock -> re-check preconditions
-//!   -> write journal(prepared) -> capture backup -> stage -> promote
-//!   -> journal(committed) -> verify -> clear
-//! ```
-//!
-//! Every step is durable before the next begins, so an interrupted mutation
-//! leaves evidence rather than ambiguity. [`journal`] owns what that evidence
-//! means and which command is allowed to resolve it.
+//! Configuration has two explicit recovery paths. The compatibility lifecycle
+//! captures a slot for restore; [`forward`] retains only desired bytes and
+//! resumes the same install/replace request. [`software`] manages program
+//! publication and removal without configuration capture. All writers share
+//! their target or prefix lock and validate durable preconditions.
 
 pub mod archive;
 pub mod backup;
@@ -23,11 +17,13 @@ pub mod canonical;
 pub mod checksum;
 pub mod digest;
 pub mod error;
+pub mod forward;
 pub mod journal;
 pub mod lock;
 pub mod native_snapshot;
 pub mod software;
 pub mod software_prefix;
+pub(crate) mod sqlite;
 pub mod stamp;
 pub mod target;
 

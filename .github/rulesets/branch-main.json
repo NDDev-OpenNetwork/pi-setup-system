@@ -30,7 +30,7 @@
     "rust / clippy",
     "supply-chain / cargo-deny",
     "supply-chain / cargo-audit",
-    "supply-chain / cargo-machete",
+    "unused-dependencies",
     "actionlint / actionlint",
     "codeql / CodeQL (rust)",
     "codeql / CodeQL (actions)",
