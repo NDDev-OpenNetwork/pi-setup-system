@@ -32,6 +32,10 @@ rusqlite = { version = "=0.40.2", features = ["bundled", "limits"] }
 sqlite-plugin = "=0.11.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Forward configuration owns syntax-preserving top-level key updates. Remove
+# these only when that surface is retired or supplied by a shared parser.
+jsonc-parser = { version = "=0.34.0", default-features = false, features = ["cst"] }
+toml_edit = { version = "=0.25.16", default-features = false, features = ["parse", "display"] }
 sha2 = "0.11"
 # DEFLATE only. The gzip framing and the tar reading are ours (see
 # `setup-core::archive`); an inflate loop is not, because its bugs are
