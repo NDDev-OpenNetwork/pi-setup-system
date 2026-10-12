@@ -178,6 +178,13 @@ impl Admission {
         Ok(())
     }
 
+    fn cancellation(&self) -> serde_json::Value {
+        serde_json::json!({"state":"cancelled", "operation_id":self.operation_id,
+            "operation":self.operation, "plan_digest":self.plan_digest,
+            "expected_target_digest":self.target_precondition_digest,
+            "configuration_changed":false})
+    }
+
     fn journal(&self) -> Journal {
         Journal {
             schema_version: JOURNAL_SCHEMA,
@@ -202,6 +209,8 @@ pub enum Progress {
     Finishing,
     /// An immutable historical outcome, even if a later operation changed files.
     Completed(serde_json::Value),
+    /// An exact cancellation tombstone; delayed application must stay refused.
+    Cancelled(serde_json::Value),
 }
 
 /// One target writer, sharing the legacy target lock and held directory identities.
@@ -331,6 +340,9 @@ impl Writer {
             "applying" => Ok(Progress::Applying(record.context)),
             "finishing" => Ok(Progress::Finishing),
             "completed" => {
+                if record.outcome == Some(admission.cancellation()) {
+                    return Ok(Progress::Cancelled(record.outcome.ok_or_else(invalid)?));
+                }
                 self.clear_completed(&record)?;
                 Ok(Progress::Completed(record.outcome.ok_or_else(invalid)?))
             }
@@ -364,6 +376,40 @@ impl Writer {
             }
         }
         self.store.admit(admission, context, changes)
+    }
+
+    /// Cancel an exact request only while no configuration publication can have started.
+    ///
+    /// The durable tombstone also covers a request that never reached this writer.
+    /// A public journal alone cannot establish absence of SQLite admission.
+    ///
+    /// # Errors
+    /// Refuses changed observations, started or completed publication, and identity reuse.
+    pub fn cancel(&mut self, admission: &Admission) -> Result<serde_json::Value> {
+        admission.validate()?;
+        self.revalidate()?;
+        let outcome = admission.cancellation();
+        let record = self.store.record(admission)?;
+        if let Some(record) = &record {
+            if record.phase == "completed" && record.outcome == Some(outcome.clone()) {
+                return Ok(outcome);
+            }
+            if record.phase != "applying" || record.stage.is_some() || self.journal()?.is_some() {
+                return Err(invalid());
+            }
+            match self.control.symlink_metadata(STAGING) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                _ => return Err(invalid()),
+            }
+            for change in self.store.changes(&admission.operation_id)? {
+                if self.read(&change.path)?.0 != change.before {
+                    return Err(invalid());
+                }
+            }
+        }
+        self.store.cancel(admission, &outcome, record.is_some())?;
+        self.revalidate()?;
+        Ok(outcome)
     }
 
     fn staging(&self, record: &store::Record) -> Result<Dir> {

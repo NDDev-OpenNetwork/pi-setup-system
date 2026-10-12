@@ -30,6 +30,79 @@ fn content(bytes: &[u8]) -> Content {
     Content::new(bytes.to_vec(), 0o600).unwrap()
 }
 
+#[test]
+fn cancellation_closes_admission_gaps_without_resurrecting_or_erasing_operations() {
+    for admitted in [false, true] {
+        let (root, target, admission) = fixture();
+        fs::write(root.join("owned"), b"original").unwrap();
+        let mut writer = Writer::acquire(&target, ".control").unwrap();
+        let change = writer
+            .change("owned", Some(content(b"desired only")))
+            .unwrap();
+        if admitted {
+            writer
+                .admit(&admission, &serde_json::json!({}), &[change])
+                .unwrap();
+            assert!(writer.journal().unwrap().is_none());
+            fs::write(root.join("owned"), b"foreign edit").unwrap();
+            assert!(writer.cancel(&admission).is_err());
+            fs::write(root.join("owned"), b"original").unwrap();
+            fs::create_dir(target.control_directory().join(STAGING)).unwrap();
+            assert!(writer.cancel(&admission).is_err());
+            fs::remove_dir(target.control_directory().join(STAGING)).unwrap();
+        }
+        let result = writer.cancel(&admission).unwrap();
+        assert_eq!(result, admission.cancellation());
+        drop(writer);
+        let mut writer = Writer::acquire(&target, ".control").unwrap();
+        assert_eq!(writer.cancel(&admission).unwrap(), result);
+        assert!(
+            matches!(writer.progress(&admission).unwrap(), Progress::Cancelled(value) if value == result)
+        );
+        assert!(writer.apply(&admission).is_err());
+        assert!(
+            writer
+                .store
+                .changes(&admission.operation_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fs::read(root.join("owned")).unwrap(), b"original");
+        let mut wrong = admission.clone();
+        wrong.plan_digest = crate::digest::of_bytes(b"another plan");
+        assert!(writer.cancel(&wrong).is_err());
+
+        let mut later = admission.clone();
+        later.operation_id = "operation_FORWARD_2".into();
+        later.plan_digest = crate::digest::of_bytes(b"later plan");
+        let change = writer
+            .change("owned", Some(content(b"later bytes")))
+            .unwrap();
+        writer
+            .admit(&later, &serde_json::json!({}), &[change])
+            .unwrap();
+        writer.apply(&later).unwrap();
+        let guard = writer.journal().unwrap();
+        assert!(guard.is_some());
+        assert!(writer.cancel(&later).is_err());
+        // Historical cancellation never removes a later operation's guard.
+        assert_eq!(writer.cancel(&admission).unwrap(), result);
+        let mut absent = admission.clone();
+        absent.operation_id = "operation_NEVER_ADMITTED".into();
+        writer.cancel(&absent).unwrap();
+        assert_eq!(writer.journal().unwrap(), guard);
+        let terminal = settle(&mut writer, &later);
+        assert!(writer.cancel(&later).is_err());
+        assert!(
+            matches!(writer.progress(&later).unwrap(), Progress::Completed(value) if value == terminal)
+        );
+        assert_eq!(fs::read(root.join("owned")).unwrap(), b"later bytes");
+        assert!(!target.control_directory().join("backups").exists());
+        drop(writer);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn settle(writer: &mut Writer, admission: &Admission) -> serde_json::Value {
     writer.apply(admission).unwrap();
     let outcome = serde_json::json!({"state":"verified", "operation_id":admission.operation_id});

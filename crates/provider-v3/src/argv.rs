@@ -16,7 +16,7 @@
 //! | --- | --- |
 //! | `validate-bundle` | the five bundle flags |
 //! | `plan-operation` | operation, release digest, operation id, expiry; optional backup ref, permission profile, bundle |
-//! | `apply-operation` | plan path, plan digest, release digest; optional bundle |
+//! | `apply-operation` | plan path, plan digest, release digest; optional bundle or exact forward cancellation |
 //! | `recover-operation` | none — it reads the journal to know what it is resolving |
 //! | `status` | none |
 //!
@@ -187,6 +187,10 @@ pub const fn usage(command: Command) -> Usage {
             ],
             optional: &[
                 (
+                    "--cancel",
+                    "cancel an exact forward configuration request before publication starts",
+                ),
+                (
                     "--prefix",
                     "where a program lives; required by every software_* operation",
                 ),
@@ -264,6 +268,8 @@ pub enum Invocation {
         plan_digest: String,
         /// The release digest the consumer verified.
         provider_release_digest: String,
+        /// Persist cancellation before forward configuration publication starts.
+        cancel: bool,
         /// The bundle, when the operation carries one.
         bundle: Option<Bundle>,
         /// The program directory, when the operation installs software.
@@ -533,6 +539,7 @@ where
             plan_path: PathBuf::from(flags.take_required("--plan")?),
             plan_digest: flags.take_required("--plan-digest")?,
             provider_release_digest: flags.take_required("--provider-release-digest")?,
+            cancel: flags.take_switch("--cancel"),
             bundle: flags.take_bundle()?,
             prefix: flags.take_prefix()?,
             software_artifacts: flags
@@ -628,9 +635,9 @@ impl Flags {
             if !token.starts_with("--") {
                 return Err(local(format!("{token:?} is not a flag")));
             }
-            if token == "--json" {
+            if matches!(token.as_str(), "--json" | "--cancel") {
                 if switches.iter().any(|switch| switch == token) {
-                    return Err(local("--json was given twice"));
+                    return Err(local(format!("{token} was given twice")));
                 }
                 switches.push(token.clone());
                 index += 1;

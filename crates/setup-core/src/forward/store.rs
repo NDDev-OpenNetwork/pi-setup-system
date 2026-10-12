@@ -277,6 +277,42 @@ impl Store {
         self.end(result)
     }
 
+    pub(super) fn cancel(
+        &mut self,
+        admission: &Admission,
+        outcome: &serde_json::Value,
+        admitted: bool,
+    ) -> Result<()> {
+        self.scope.validate()?;
+        sql(self.db.execute_batch("BEGIN IMMEDIATE"))?;
+        let result = (|| {
+            if admitted {
+                if sql(self.db.execute(
+                    "UPDATE operations SET phase='completed',active=NULL,context=x'7b7d',outcome=?1 WHERE id=?2 AND digest=?3 AND phase='applying' AND stage IS NULL AND active=1",
+                    params![encode(outcome)?, admission.operation_id, admission.plan_digest],
+                ))? != 1 {
+                    return Err(invalid());
+                }
+                sql(self.db.execute(
+                    "DELETE FROM changes WHERE operation=?1",
+                    [&admission.operation_id],
+                ))?;
+            } else {
+                sql(self.db.execute(
+                    "INSERT INTO operations VALUES (?1,?2,?3,x'7b7d',NULL,'completed',NULL,?4)",
+                    params![
+                        admission.operation_id,
+                        admission.plan_digest,
+                        encode(admission)?,
+                        encode(outcome)?
+                    ],
+                ))?;
+            }
+            Ok(())
+        })();
+        self.end(result)
+    }
+
     fn end(&self, result: Result<()>) -> Result<()> {
         match result {
             Ok(()) => {

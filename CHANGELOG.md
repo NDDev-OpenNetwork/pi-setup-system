@@ -15,6 +15,24 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.92] - 2026-10-12
+
+Exact forward configuration requests can be cancelled before publication
+starts. Cancellation binds the original plan and component release, requires no
+bundle payload and remains available after plan expiry. A durable transaction
+covers both unadmitted requests and unchanged admissions before staging; delayed
+application of a cancelled request is refused. Started or completed publication
+cannot be cancelled and retains the original forward recovery path.
+
+Cancellation preserves unrelated files, public status and later operations,
+including another active operation's recovery guard. It retains no configuration
+before-images and removes admitted desired payloads transactionally. Existing
+provider-info and status response shapes remain unchanged. The native consumer
+must authenticate this release and independently observe unchanged state before
+retiring its own operation. This release does not complete native multi-root
+coordination, active-agent handoff or production writer cutover. Existing tags
+remain immutable.
+
 ## [0.0.91] - 2026-10-11
 
 Forward configuration recovery now includes removal without a bundle or
