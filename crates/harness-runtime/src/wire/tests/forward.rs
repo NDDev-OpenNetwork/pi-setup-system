@@ -257,6 +257,72 @@ fn settings(target: &Path) -> serde_json::Value {
 }
 
 #[test]
+fn cancellation_binds_the_original_plan_without_reading_bundle_bytes_or_reapplying() {
+    let target = seeded("forward-cancel");
+    let (planned, apply) = request(
+        &target,
+        "operation_CANCEL_1",
+        &[("skills/new.md", "desired bytes", 0o644)],
+    );
+    let bundle = apply.windows(2).find(|pair| pair[0] == "--bundle").unwrap()[1].clone();
+    fs::remove_file(bundle).unwrap();
+    let mut cancel = apply.clone();
+    cancel.push("--cancel".into());
+    let mut wrong = cancel.clone();
+    let index = wrong
+        .iter()
+        .position(|value| value == "--provider-release-digest")
+        .unwrap()
+        + 1;
+    wrong[index] = digest::of_bytes(b"another release");
+    assert_eq!(refuse(wrong).reason(), Some(WireReason::Stale));
+    let before = run(args("status", &target, &[]));
+    let result = run(cancel.clone());
+    assert_eq!(
+        result,
+        serde_json::json!({"state":"cancelled", "operation_id":"operation_CANCEL_1",
+        "operation":"replace", "plan_digest":planned["plan_digest"],
+        "expected_target_digest":planned["plan"]["expected_target_digest"], "configuration_changed":false})
+    );
+    assert_eq!(run(cancel.clone()), result);
+    assert_eq!(run(args("status", &target, &[])), before);
+    assert_eq!(refuse(apply).reason(), Some(WireReason::Stale));
+    assert!(!target.join("skills/new.md").exists());
+    assert_eq!(fs::read(target.join("skills/a.md")).unwrap(), b"skill one");
+    let (_, later) = request(
+        &target,
+        "operation_CANCEL_2",
+        &[("skills/new.md", "later bytes", 0o644)],
+    );
+    run(later.clone());
+    assert_eq!(run(cancel), result);
+    let mut too_late = later;
+    too_late.push("--cancel".into());
+    assert!(refuse(too_late).reason().is_some());
+    assert_eq!(
+        fs::read(target.join("skills/new.md")).unwrap(),
+        b"later bytes"
+    );
+    let (mut expired, _) = remove_request(&target, "operation_CANCEL_EXPIRED");
+    expired["plan"]["expires_at"] = serde_json::json!("2000-01-01T00:00:00.000Z");
+    expired["plan_digest"] = serde_json::json!(
+        digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &expired["plan"]).unwrap()
+    );
+    let original = apply_plan(&target, "operation_CANCEL_EXPIRED", &expired, Vec::new());
+    assert_eq!(refuse(original.clone()).reason(), Some(WireReason::Stale));
+    let mut cancellation = original.clone();
+    cancellation.push("--cancel".into());
+    assert_eq!(run(cancellation)["state"], "cancelled");
+    assert!(refuse(original).detail().contains("was cancelled"));
+    assert_eq!(
+        fs::read(target.join("skills/new.md")).unwrap(),
+        b"later bytes"
+    );
+    assert!(!target.join(TEST.control_directory).join("backups").exists());
+    fs::remove_dir_all(target.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn forward_whole_files_replace_exact_bytes_and_replay_only_the_original_receipt() {
     let target = seeded("forward-config");
     assert_eq!(

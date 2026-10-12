@@ -133,16 +133,19 @@ fn validate_binding(
     Ok(())
 }
 
-pub(super) fn apply(
+fn bound(
     harness: &Harness,
     path: &Path,
     plan: &serde_json::Value,
     plan_digest: &str,
     release: &str,
     bundle: Option<&ArgvBundle>,
-) -> Result<serde_json::Value> {
+) -> Result<(Target, Admission)> {
     let target = Target::resolve(path, harness.control_directory)?;
     validate_binding(harness, &target, plan, release, bundle)?;
+    if crate::expiry::parse_utc_seconds(&string_field(plan, "expires_at")?).is_none() {
+        return Err(refused());
+    }
     let scope = scope_of(plan);
     let admission = Admission {
         operation_id: string_field(plan, "operation_id")?,
@@ -151,9 +154,43 @@ pub(super) fn apply(
         target_precondition_digest: string_field(plan, "expected_target_digest")?,
         target_scope: scope.map(|value| value.as_str().into()),
     };
+    Ok((target, admission))
+}
+
+pub(super) fn cancel(
+    harness: &Harness,
+    path: &Path,
+    plan: &serde_json::Value,
+    plan_digest: &str,
+    release: &str,
+    bundle: Option<&ArgvBundle>,
+) -> Result<serde_json::Value> {
+    let (target, admission) = bound(harness, path, plan, plan_digest, release, bundle)?;
+    Writer::acquire(&target, harness.control_directory)?
+        .cancel(&admission)
+        .map_err(Error::from)
+}
+
+pub(super) fn apply(
+    harness: &Harness,
+    path: &Path,
+    plan: &serde_json::Value,
+    plan_digest: &str,
+    release: &str,
+    bundle: Option<&ArgvBundle>,
+) -> Result<serde_json::Value> {
+    let (target, admission) = bound(harness, path, plan, plan_digest, release, bundle)?;
+    let scope = scope_of(plan);
     let mut writer = Writer::acquire(&target, harness.control_directory)?;
-    if let Progress::Completed(outcome) = writer.progress(&admission)? {
-        return Ok(outcome);
+    match writer.progress(&admission)? {
+        Progress::Completed(outcome) => return Ok(outcome),
+        Progress::Cancelled(_) => {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                "the exact forward configuration operation was cancelled",
+            ));
+        }
+        _ => (),
     }
     if matches!(writer.progress(&admission)?, Progress::Absent) {
         validate_expiry(plan)?;

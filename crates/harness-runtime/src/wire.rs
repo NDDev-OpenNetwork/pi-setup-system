@@ -64,6 +64,7 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
             plan_path,
             plan_digest,
             provider_release_digest,
+            cancel,
             bundle,
             prefix,
             software_artifacts,
@@ -76,7 +77,12 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                         "forward configuration takes no software artifacts or prefix",
                     ));
                 }
-                return forward::apply(
+                let perform = if cancel {
+                    forward::cancel
+                } else {
+                    forward::apply
+                };
+                return perform(
                     harness,
                     &target,
                     &artifact,
@@ -84,6 +90,12 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                     &provider_release_digest,
                     bundle.as_ref(),
                 );
+            }
+            if cancel {
+                return Err(Error::refuse(
+                    WireReason::UnsupportedOperation,
+                    "cancellation requires an exact forward configuration plan",
+                ));
             }
             if Operation::SOFTWARE.contains(&operation_of(&artifact)?) {
                 if bundle.is_some() {
