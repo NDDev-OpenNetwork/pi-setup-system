@@ -34,6 +34,16 @@ fn request_bytes(
     );
     plan.extend(flags.clone());
     let planned = run(plan);
+    let apply = apply_plan(target, id, &planned, flags);
+    (planned, apply)
+}
+
+fn apply_plan(
+    target: &Path,
+    id: &str,
+    planned: &serde_json::Value,
+    flags: Vec<String>,
+) -> Vec<String> {
     let plan_path = target.parent().unwrap().join(format!("{id}.json"));
     fs::write(
         &plan_path,
@@ -53,6 +63,27 @@ fn request_bytes(
         ],
     );
     apply.extend(flags);
+    apply
+}
+
+fn remove_request(target: &Path, id: &str) -> (serde_json::Value, Vec<String>) {
+    let planned = run(args(
+        "plan-operation",
+        target,
+        &[
+            "--operation",
+            "remove",
+            "--recovery-mode",
+            "forward",
+            "--provider-release-digest",
+            RELEASE,
+            "--operation-id",
+            id,
+            "--expires-at",
+            far_future(),
+        ],
+    ));
+    let apply = apply_plan(target, id, &planned, Vec::new());
     (planned, apply)
 }
 
@@ -187,7 +218,7 @@ fn assert_recorded_contribution(target: &Path, path: &str, host: &str) {
     let drifted = run(args("status", target, &[]));
     assert_eq!(drifted["provider_state"]["drift_state"], "local_drift");
     assert_eq!(drifted["configuration_ownership"], expected);
-    fs::write(target.join(path), installed).unwrap();
+    fs::write(target.join(path), &installed).unwrap();
     let ledger_path = target
         .join(TEST.control_directory)
         .join("written-fields.json");
@@ -199,6 +230,24 @@ fn assert_recorded_contribution(target: &Path, path: &str, host: &str) {
     ] {
         fs::write(&ledger_path, broken).unwrap();
         assert!(run(args("status", target, &[]))["configuration_ownership"].is_null());
+        let error = refuse(args(
+            "plan-operation",
+            target,
+            &[
+                "--operation",
+                "remove",
+                "--recovery-mode",
+                "forward",
+                "--provider-release-digest",
+                RELEASE,
+                "--operation-id",
+                "operation_INVALID",
+                "--expires-at",
+                far_future(),
+            ],
+        ));
+        assert_eq!(error.reason(), Some(WireReason::Stale));
+        assert_eq!(fs::read(target.join(path)).unwrap(), installed);
     }
     fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
 }
@@ -244,10 +293,6 @@ fn forward_whole_files_replace_exact_bytes_and_replay_only_the_original_receipt(
     assert_eq!(
         fs::read(target.join("skills/settings.json")).unwrap(),
         br#"{ "managed": 1, "retired": true }"#
-    );
-    assert_eq!(
-        settings(&target),
-        serde_json::json!({"managed":1,"retired":true})
     );
     let (_, replace) = request(
         &target,
@@ -300,6 +345,135 @@ fn forward_whole_files_replace_exact_bytes_and_replay_only_the_original_receipt(
     assert!(!target.join("skills/settings.json").exists());
     assert_unknown_content_refused(&target, "skills/a.md", "would overwrite");
     assert_unknown_content_refused(&target, "settings.json", r#"{"model":"changed"}"#);
+    let (planned, remove) = remove_request(&target, "operation_FORWARD_4");
+    assert!(planned["plan"]["bundle"].is_null());
+    let outcome = run(remove.clone());
+    assert_eq!(outcome["operation"], "remove");
+    assert!(outcome["setup_id"].is_null());
+    assert_eq!(run(remove), outcome);
+    assert!(!target.join("skills/last.md").exists());
+    assert_eq!(fs::read(target.join("skills/a.md")).unwrap(), b"skill one");
+    assert!(!target.join(TEST.control_directory).join("backups").exists());
+    fs::remove_dir_all(target.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn forward_removal_preserves_shared_hosts_and_history_after_a_later_install() {
+    let examples = [
+        (
+            "settings.json",
+            r#"{"user":9007199254740993}"#,
+            r#"{"user":9007199254740993,"managed":{"enabled":true}}"#,
+        ),
+        (
+            "skills/host.jsonc",
+            "{\n // user comment\n \"user\":9007199254740993,\n}",
+            r#"{"user":9007199254740993,"managed":{"enabled":true}}"#,
+        ),
+        (
+            "skills/host.toml",
+            "# user comment\nuser = 9007199254740993\n",
+            "user = 9007199254740993\n[managed]\nenabled = true\n",
+        ),
+    ];
+    for (index, (path, host, assembled)) in examples.into_iter().enumerate() {
+        let target = seeded(&format!("forward-remove-{index}"));
+        fs::write(target.join(path), host).unwrap();
+        let (_, install) = request_bytes(
+            &target,
+            "operation_REMOVE_1",
+            contribution_bytes(path, host.as_bytes(), assembled),
+        );
+        assert_eq!(run(install)["state"], "verified");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(target.join(path), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let (planned, remove) = remove_request(&target, "operation_REMOVE_2");
+        assert!(planned["plan"]["bundle"].is_null());
+        assert!(planned["plan"].get("end_state").is_none());
+        assert!(
+            planned["effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| !v.as_str().unwrap().contains("capture"))
+        );
+        let before = fs::read(target.join(path)).unwrap();
+        fs::write(target.join(path), host).unwrap();
+        assert_eq!(refuse(remove.clone()).reason(), Some(WireReason::Stale));
+        fs::write(target.join(path), before).unwrap();
+        let outcome = run(remove.clone());
+        assert_eq!(outcome["state"], "verified");
+        assert_eq!(outcome["operation"], "remove");
+        assert!(outcome["setup_id"].is_null());
+        assert!(outcome["backup_ref"].is_null());
+        assert_eq!(
+            run(args("status", &target, &[]))["configuration_ownership"],
+            serde_json::json!([])
+        );
+        let retained = fs::read_to_string(target.join(path)).unwrap();
+        assert!(retained.contains("9007199254740993"));
+        assert!(!retained.contains("managed"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o644
+            );
+        }
+        if index != 0 {
+            assert!(retained.contains("user comment"));
+        }
+        let StateReading::Current(state) = ProviderState::read(&target, TEST.state_file).unwrap()
+        else {
+            panic!("the terminal removal record is missing");
+        };
+        assert!(state.setup_stable_id.is_none());
+        assert!(state.bundle_digest.is_none());
+        assert!(state.written_paths.is_empty());
+        let (_, next) = request(
+            &target,
+            "operation_REMOVE_3",
+            &[("skills/next.md", "later", 0o644)],
+        );
+        assert_eq!(run(next)["state"], "verified");
+        assert_eq!(run(remove), outcome);
+        assert_eq!(fs::read(target.join("skills/next.md")).unwrap(), b"later");
+        assert_eq!(fs::read(target.join("skills/a.md")).unwrap(), b"skill one");
+        assert!(!target.join(TEST.control_directory).join("backups").exists());
+        fs::remove_dir_all(target.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn forward_removal_retains_attached_instructions_and_refuses_ambiguous_markers() {
+    let target = seeded("forward-remove-instructions");
+    let path = target.join("AGENTS.md");
+    let attached = format!("---\nalwaysApply: true\n---\n\n{INSTRUCTION_SECTION}");
+    fs::write(&path, &attached).unwrap();
+    let (_, apply) = request(
+        &target,
+        "operation_ATTACHMENT_1",
+        &[("AGENTS.md", "setup body\n", 0o644)],
+    );
+    assert_eq!(run(apply)["state"], "verified");
+    assert!(fs::read_to_string(&path).unwrap().contains("setup body"));
+    let (planned, remove) = remove_request(&target, "operation_ATTACHMENT_2");
+    let installed = fs::read(&path).unwrap();
+    fs::write(&path, "setup body\n:::begin-ai-stp\n").unwrap();
+    assert_eq!(refuse(remove.clone()).reason(), Some(WireReason::Stale));
+    fs::write(&path, installed).unwrap();
+    assert_eq!(run(remove.clone())["plan_digest"], planned["plan_digest"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), attached);
+    assert_eq!(run(remove)["state"], "verified");
+    assert!(!target.join(TEST.control_directory).join("backups").exists());
     fs::remove_dir_all(target.parent().unwrap()).unwrap();
 }
 

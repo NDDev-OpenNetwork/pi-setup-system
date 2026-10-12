@@ -203,7 +203,7 @@ does not acquire release publisher authentication by passing conformance.
 
 ```bash
 docker run --rm -v "$HOME/.config:/config" \
-  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.90 \
+  ghcr.io/nddev-opennetwork/pi-setup-system:0.0.91 \
   status --target /config/<dir> --json
 ```
 

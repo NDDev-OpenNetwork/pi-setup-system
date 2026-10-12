@@ -158,6 +158,39 @@ fn assert_no_payloads(target: &Target) {
 }
 
 #[test]
+fn interrupted_removal_finishes_original_metadata_without_deleting_later_files() {
+    let (root, target, mut admission) = fixture();
+    admission.operation = "remove".into();
+    fs::write(root.join("old"), b"previous bytes are never retained").unwrap();
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    let change = writer.change("old", None).unwrap();
+    writer
+        .admit(
+            &admission,
+            &serde_json::json!({}),
+            std::slice::from_ref(&change),
+        )
+        .unwrap();
+    let record = writer.store.record(&admission).unwrap().unwrap();
+    let stage = writer.staging(&record).unwrap();
+    files::publish(&writer.root, &stage, "0", &change).unwrap();
+    drop(stage);
+    drop(writer);
+    let mut writer = Writer::acquire(&target, ".control").unwrap();
+    let outcome = settle(&mut writer, &admission);
+    assert!(!root.join("old").exists());
+    fs::write(root.join("old"), b"a later user's file").unwrap();
+    assert!(
+        matches!(writer.progress(&admission).unwrap(), Progress::Completed(value) if value == outcome)
+    );
+    assert_eq!(fs::read(root.join("old")).unwrap(), b"a later user's file");
+    drop(writer);
+    assert_no_payloads(&target);
+    assert!(!target.control_directory().join("backups").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn admission_and_recovery_refuse_foreign_content_and_replaced_parent_directories() {
     let (root, target, admission) = fixture();
     fs::create_dir(root.join("skills")).unwrap();
