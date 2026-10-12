@@ -322,9 +322,15 @@ fn answer(
     declared: &Software,
     operation: Operation,
     outcome: &software::operation::Outcome,
-) -> serde_json::Value {
+) -> Result<serde_json::Value> {
     use software::operation::Outcome;
-    match outcome {
+    Ok(match outcome {
+        Outcome::Cancelled => {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                "this exact software request was cancelled; no effect was made",
+            ));
+        }
         Outcome::Removed { removed } => serde_json::json!({
             "state": "verified", "recovered": [], "operation": operation.as_str(),
             "command": declared.command, "version": declared.version, "removed": removed,
@@ -340,7 +346,7 @@ fn answer(
                 "entry_point": entry, "executable": root.join(&entry).to_string_lossy(), "files": files,
             })
         }
-    }
+    })
 }
 
 fn first_prefix(harness: &Harness, root: &Path, request: &Request<'_>) -> Result<()> {
@@ -414,7 +420,7 @@ pub(crate) fn apply(
     );
     let first = match state {
         Ok(Some(State::Completed(outcome))) => {
-            return Ok(answer(&root, &declared, request.operation, &outcome));
+            return answer(&root, &declared, request.operation, &outcome);
         }
         Ok(None) => true,
         Ok(Some(State::Pending)) | Err(_) => false,
@@ -433,7 +439,7 @@ pub(crate) fn apply(
     )?;
     match writer.operation_state(&intent)? {
         Some(State::Completed(outcome)) => {
-            return Ok(answer(&root, &declared, request.operation, &outcome));
+            return answer(&root, &declared, request.operation, &outcome);
         }
         Some(State::Pending) => {}
         None => {
@@ -481,7 +487,44 @@ pub(crate) fn apply(
         };
         writer.install_operation(&intent, &declared, artifact, input)?
     };
-    Ok(answer(&root, &declared, request.operation, &outcome))
+    answer(&root, &declared, request.operation, &outcome)
+}
+
+/// Cancel only an exact update/removal, without reading downloaded program bytes.
+pub(crate) fn cancel(
+    harness: &Harness,
+    prefix: Option<&Path>,
+    request: &Request<'_>,
+    downloaded: &[PathBuf],
+) -> Result<serde_json::Value> {
+    use software::operation::{Intent, Kind};
+    let kind = match request.operation {
+        Operation::SoftwareUpdate => Kind::Update,
+        Operation::SoftwareRemove => Kind::Remove,
+        _ => {
+            return Err(Error::refuse(
+                WireReason::UnsupportedOperation,
+                "software cancellation requires an exact update or removal plan",
+            ));
+        }
+    };
+    if !downloaded.is_empty() {
+        return Err(Error::refuse(
+            WireReason::UnsupportedOperation,
+            "software cancellation takes no downloaded artifact",
+        ));
+    }
+    let declared = version_for(&declared(harness)?, Some(request.version))?;
+    let root = program_directory(prefix, request.operation)?;
+    let intent = Intent::new(request.operation_id, request.plan_digest, &declared, kind)?;
+    let writer = software::Writer::acquire(&root)?;
+    writer.cancel_operation(&intent, &declared, harness.control_directory)?;
+    Ok(serde_json::json!({
+        "state": "cancelled", "operation": request.operation.as_str(),
+        "operation_id": request.operation_id, "command": declared.command,
+        "version": declared.version, "software_changed": false,
+        "expected_software_digest": request.prefix_digest,
+    }))
 }
 
 /// Start the exact program a software install placed, replacing this process.
