@@ -1206,9 +1206,17 @@ fn plan(harness: &Harness, target: &Path, request: &PlanRequest) -> Result<serde
             {
                 return Err(unrecorded_removal_refusal(harness, &resolved, &present));
             }
-            let (lines, states) = removal_effects(harness, &resolved, request)?;
-            end_state = states;
-            (lines, None, None)
+            if request.recovery_mode.is_some() {
+                (
+                    forward::removal_effects(harness, &resolved, request.target_scope)?,
+                    None,
+                    None,
+                )
+            } else {
+                let (lines, states) = removal_effects(harness, &resolved, request)?;
+                end_state = states;
+                (lines, None, None)
+            }
         }
         Operation::Reset => {
             match ProviderState::read(resolved.root(), harness.state_file)? {

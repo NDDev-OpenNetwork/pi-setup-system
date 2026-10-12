@@ -167,7 +167,7 @@ impl Admission {
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
             || !digest(&self.plan_digest)
             || !digest(&self.target_precondition_digest)
-            || !matches!(self.operation.as_str(), "install" | "replace")
+            || !matches!(self.operation.as_str(), "install" | "replace" | "remove")
             || self
                 .target_scope
                 .as_deref()

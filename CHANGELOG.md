@@ -15,6 +15,24 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.91] - 2026-10-11
+
+Forward configuration recovery now includes removal without a bundle or
+configuration backup. Removal withdraws only recorded files and structured keys,
+clears setup and bundle provenance, and retains the original operation result.
+Interrupted withdrawal resumes through the same confined transaction kernel;
+historical replay does not remove content installed by a later operation.
+
+Shared JSON/JSONC/TOML hosts retain unrelated fields, comments, numeric spelling
+and their current access modes. A marked ai-stp instruction attachment survives
+setup removal. Unknown, inconsistent or foreign ownership metadata is refused
+before admission. Existing backup/restore compatibility behavior is unchanged.
+
+The public response shapes remain unchanged. Native configuration application,
+independent readback, multi-root coordination and active-agent handoff have their
+own consumer acceptance checks; this component release alone does not complete
+the Rust CLI production cutover. Existing release tags remain immutable.
+
 ## [0.0.90] - 2026-10-11
 
 Explicit forward configuration install/replace stages desired bytes only,

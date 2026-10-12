@@ -107,7 +107,7 @@ const fn plan_usage(command: Command) -> Usage {
             ),
             (
                 "--recovery-mode",
-                "forward resumes install/replace without configuration backups",
+                "forward resumes install/replace/remove without configuration backups",
             ),
             ("--permission-profile", "a profile this build declares"),
             (
@@ -333,7 +333,7 @@ pub struct PlanRequest {
     pub backup_ref: Option<String>,
     /// Explicit complete preservation; absent retains recorded-file backup behavior.
     pub capture_mode: Option<String>,
-    /// Explicit forward-only recovery for bundle install and replace.
+    /// Explicit forward recovery for bundle install/replace or bundle-free removal.
     pub recovery_mode: Option<String>,
     /// The permission profile to apply.
     pub permission_profile: Option<String>,
