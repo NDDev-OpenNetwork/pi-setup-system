@@ -87,6 +87,8 @@ impl Intent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum Outcome {
+    /// The request cannot publish a software effect, including a delayed apply.
+    Cancelled,
     /// The exact planned artifact was installed and exposed.
     Installed {
         /// The archive entry count returned by the original extraction.
@@ -170,7 +172,8 @@ impl Record {
             {
                 Ok(())
             }
-            (Kind::Remove, Outcome::Removed { .. }) => Ok(()),
+            (Kind::Update | Kind::Remove, Outcome::Cancelled)
+            | (Kind::Remove, Outcome::Removed { .. }) => Ok(()),
             _ => Err(refuse()),
         }
     }
@@ -185,6 +188,46 @@ impl Record {
             format!("bin/.{}.version", self.intent.command),
             format!("bin/.{}.manifest.json", self.intent.command),
         ]
+    }
+
+    fn capture(
+        root: &cap_std::fs::Dir,
+        intent: &Intent,
+        software: &Software,
+        control: &str,
+        allocation: Option<super::allocation::Binding>,
+    ) -> Result<Self> {
+        intent.validate()?;
+        if intent.command != software.command
+            || intent.version != software.version
+            || !records::leaf(control)
+            || !control.starts_with('.')
+            || control == super::writer::CONTROL
+        {
+            return Err(refuse());
+        }
+        let member = software.member_here();
+        let member = if member.is_empty() {
+            software.command
+        } else {
+            member
+        };
+        let bin_was_absent = present(root, "bin")?.is_none();
+        let mut record = Self {
+            schema_version: 1,
+            intent: intent.clone(),
+            root_identity: Identity::of(root)?,
+            control: control.to_owned(),
+            member: member.to_owned(),
+            bin_was_absent,
+            initial_digest: software_prefix::resume_digest(root, control, &[], bin_was_absent)?,
+            outside_digest: String::new(),
+            allocation,
+        };
+        record.outside_digest =
+            software_prefix::resume_digest(root, control, &record.outside_paths(), bin_was_absent)?;
+        record.validate()?;
+        Ok(record)
     }
 
     fn check_root(&self, writer: &Writer) -> Result<cap_std::fs::Dir> {
@@ -244,6 +287,51 @@ impl Writer {
             .map(|(_, outcome)| outcome.map_or(State::Pending, State::Completed)))
     }
 
+    /// Permanently cancel an update or removal before its first program effect.
+    ///
+    /// An unadmitted request receives a terminal tombstone in one SQLite commit;
+    /// there is no intermediate admission a delayed apply could resume. An
+    /// admitted request must still have its original prefix and no kernel journal.
+    /// This never resumes extraction, removal or launch publication.
+    ///
+    /// # Errors
+    /// Refuses installation, changed intent, started effects or completed work.
+    pub fn cancel_operation(
+        &self,
+        intent: &Intent,
+        software: &Software,
+        control: &str,
+    ) -> Result<()> {
+        if !matches!(intent.kind, Kind::Update | Kind::Remove)
+            || intent.command != software.command
+            || intent.version != software.version
+        {
+            return Err(refuse());
+        }
+        // Recover SQLite transaction metadata only, never a software journal.
+        self.operation_state(intent)?;
+        let root = open_root(&self.root)?;
+        if let Some((record, outcome)) = self.recorded_operation(intent)? {
+            if record.control != control || record.allocation.is_some() {
+                return Err(refuse());
+            }
+            match outcome {
+                Some(Outcome::Cancelled) => return Ok(()),
+                Some(_) => return Err(refuse()),
+                None => {}
+            }
+            record.check_initial(self)?;
+            if record.bin_was_absent && present(&root, "bin")?.is_some() {
+                return Err(refuse());
+            }
+            store::complete(&root, &intent.binding, None, &Outcome::Cancelled)
+        } else {
+            let record = Record::capture(&root, intent, software, control, None)?;
+            self.revalidate()?;
+            store::cancel_unadmitted(&root, &record)
+        }
+    }
+
     /// Persist original intent before creating any program or launch path.
     ///
     /// The runtime must validate first-admission expiry and target preconditions
@@ -287,30 +375,7 @@ impl Writer {
             ));
         }
         let root = open_root(&self.root)?;
-        let member = software.member_here();
-        let member = if member.is_empty() {
-            software.command
-        } else {
-            member
-        };
-        let bin_was_absent = present(&root, "bin")?.is_none();
-        let mut record = Record {
-            schema_version: 1,
-            intent: intent.clone(),
-            root_identity: Identity::of(&root)?,
-            control: control.to_owned(),
-            member: member.to_owned(),
-            bin_was_absent,
-            initial_digest: software_prefix::resume_digest(&root, control, &[], bin_was_absent)?,
-            outside_digest: String::new(),
-            allocation,
-        };
-        record.outside_digest = software_prefix::resume_digest(
-            &root,
-            control,
-            &record.outside_paths(),
-            bin_was_absent,
-        )?;
+        let record = Record::capture(&root, intent, software, control, allocation)?;
         if software_prefix::observe(&self.root, control)?.digest != expected_digest {
             return Err(refuse());
         }

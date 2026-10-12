@@ -16,7 +16,7 @@
 //! | --- | --- |
 //! | `validate-bundle` | the five bundle flags |
 //! | `plan-operation` | operation, release digest, operation id, expiry; optional backup ref, permission profile, bundle |
-//! | `apply-operation` | plan path, plan digest, release digest; optional bundle or exact forward cancellation |
+//! | `apply-operation` | plan path, plan digest, release digest; optional bundle or exact pre-effect cancellation |
 //! | `recover-operation` | none — it reads the journal to know what it is resolving |
 //! | `status` | none |
 //!
@@ -188,7 +188,7 @@ pub const fn usage(command: Command) -> Usage {
             optional: &[
                 (
                     "--cancel",
-                    "cancel an exact forward configuration request before publication starts",
+                    "cancel an exact forward configuration, software update or removal before effects start",
                 ),
                 (
                     "--prefix",
@@ -268,7 +268,7 @@ pub enum Invocation {
         plan_digest: String,
         /// The release digest the consumer verified.
         provider_release_digest: String,
-        /// Persist cancellation before forward configuration publication starts.
+        /// Persist exact configuration or in-place software cancellation before effects.
         cancel: bool,
         /// The bundle, when the operation carries one.
         bundle: Option<Bundle>,

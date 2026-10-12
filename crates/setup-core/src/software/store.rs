@@ -439,6 +439,31 @@ pub(super) fn admit(root: &Dir, record: &super::operation::Record) -> Result<()>
     store.scope.validate()
 }
 
+/// Persist a negative receipt without admitting an effect or changing another request.
+pub(super) fn cancel_unadmitted(root: &Dir, record: &super::operation::Record) -> Result<()> {
+    let outcome = super::operation::Outcome::Cancelled;
+    record.validate()?;
+    record.validate_outcome(&outcome)?;
+    let intent = serde_json::to_vec(record).map_err(|_| refuse())?;
+    let outcome = serde_json::to_vec(&outcome).map_err(|_| refuse())?;
+    if intent.len() > INTENT_LIMIT {
+        return Err(refuse());
+    }
+    let store = Store::open(root, true)?.ok_or_else(refuse)?;
+    // One statement is one durable SQLite transaction. Another request's active
+    // guard and journals are untouched; a reused identifier is never overwritten.
+    sql(store.db.execute(
+        "INSERT INTO operations(id,digest,active,intent,outcome) VALUES (?1,?2,NULL,?3,?4)",
+        params![
+            record.intent.binding.id,
+            record.intent.binding.digest,
+            intent,
+            outcome
+        ],
+    ))?;
+    store.scope.validate()
+}
+
 /// Retire only this operation's journal in the same commit as its outcome.
 pub(super) fn complete(
     root: &Dir,

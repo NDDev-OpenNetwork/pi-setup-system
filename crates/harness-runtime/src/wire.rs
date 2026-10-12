@@ -91,12 +91,6 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                     bundle.as_ref(),
                 );
             }
-            if cancel {
-                return Err(Error::refuse(
-                    WireReason::UnsupportedOperation,
-                    "cancellation requires an exact forward configuration plan",
-                ));
-            }
             if Operation::SOFTWARE.contains(&operation_of(&artifact)?) {
                 if bundle.is_some() {
                     return Err(Error::refuse(
@@ -109,11 +103,17 @@ pub fn dispatch(harness: &Harness, invocation: Invocation) -> Result<serde_json:
                     harness,
                     &target,
                     prefix.as_deref(),
-                    operation_of(&artifact)?,
+                    cancel,
                     &plan_digest,
                     &artifact,
                     &software_artifacts,
                 );
+            }
+            if cancel {
+                return Err(Error::refuse(
+                    WireReason::UnsupportedOperation,
+                    "cancellation requires an forward configuration, software update or removal plan",
+                ));
             }
             apply(
                 harness,
@@ -2567,11 +2567,12 @@ fn apply_software(
     harness: &Harness,
     target: &Path,
     prefix: Option<&Path>,
-    operation: Operation,
+    cancel: bool,
     plan_digest: &str,
     plan: &serde_json::Value,
     downloaded: &[std::path::PathBuf],
 ) -> Result<serde_json::Value> {
+    let operation = operation_of(plan)?;
     let planned_prefix = string_field(plan, "software_prefix")?;
     let planned_version = string_field(plan, "software_version")?;
     let operation_id = string_field(plan, "operation_id")?;
@@ -2596,23 +2597,30 @@ fn apply_software(
         ));
     }
     let planned_artifacts = planned_software_artifacts(plan)?;
-    let mut answer = software::apply(
-        harness,
-        prefix,
-        &software::Request {
-            operation,
-            version: &planned_version,
-            prefix_digest: &expected_software_digest,
-            artifacts: &planned_artifacts,
-            operation_id: &operation_id,
-            plan_digest,
-        },
-        downloaded,
-        || {
+    let request = software::Request {
+        operation,
+        version: &planned_version,
+        prefix_digest: &expected_software_digest,
+        artifacts: &planned_artifacts,
+        operation_id: &operation_id,
+        plan_digest,
+    };
+    let mut answer = if cancel {
+        // Negative authorization may outlive expiry, but malformed plans remain
+        // invalid. Neither first-admission effects nor journal recovery run here.
+        if expiry::parse_utc_seconds(&string_field(plan, "expires_at")?).is_none() {
+            return Err(Error::refuse(
+                WireReason::Stale,
+                "the plan expiry is malformed",
+            ));
+        }
+        software::cancel(harness, prefix, &request, downloaded)?
+    } else {
+        software::apply(harness, prefix, &request, downloaded, || {
             validate_expiry(plan)?;
             validate_software_preconditions(harness, target, plan)
-        },
-    )?;
+        })?
+    };
     if let Some(fields) = answer.as_object_mut() {
         fields.insert(
             "plan_digest".to_owned(),
@@ -9065,6 +9073,71 @@ mod tests {
             detail.contains("1.2.3") && detail.contains("sha256:"),
             "the refusal should name the planned version and digest: {detail}"
         );
+    }
+
+    #[test]
+    fn exact_software_cancellation_blocks_late_apply_and_preserves_later_work() {
+        let target = seeded("software-cancel");
+        let prefix = ready_prefix(&target);
+        let file = downloaded(&target, TEST_PAYLOAD);
+        plan_then_install(&target, "software_install", Some(&file));
+        let before =
+            setup_core::software_prefix::observe(Path::new(&prefix), TEST.control_directory)
+                .unwrap()
+                .digest;
+        let target_before = run(args("status", &target, &[]));
+        for operation in ["software_update", "software_remove"] {
+            let mut planned = software_plan(&target, operation);
+            // A synthetically expired, correctly digested plan distinguishes
+            // negative authorization from first admission without clock sleeps.
+            planned["plan"]["operation_id"] = format!("cancel-{operation}").into();
+            planned["plan"]["expires_at"] = "2000-01-01T00:00:00.000Z".into();
+            planned["plan_digest"] =
+                digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &planned["plan"])
+                    .unwrap()
+                    .into();
+            let extra = apply_args(&target, &prefix, operation, &planned, None);
+            let mut borrowed: Vec<_> = extra.iter().map(String::as_str).collect();
+            borrowed.push("--cancel");
+            let mut wrong = borrowed.clone();
+            wrong[5] = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+            assert_eq!(
+                refuse(args("apply-operation", &target, &wrong)).reason(),
+                Some(WireReason::Stale)
+            );
+            let cancelled = run(args("apply-operation", &target, &borrowed));
+            assert_eq!(cancelled["state"], "cancelled");
+            assert_eq!(cancelled["operation_id"], planned["plan"]["operation_id"]);
+            assert_eq!(cancelled["plan_digest"], planned["plan_digest"]);
+            assert_eq!(cancelled["software_changed"], false);
+            assert_eq!(run(args("apply-operation", &target, &borrowed)), cancelled);
+            borrowed.pop();
+            assert_eq!(
+                refuse(args("apply-operation", &target, &borrowed)).reason(),
+                Some(WireReason::Stale)
+            );
+            assert_eq!(
+                setup_core::software_prefix::observe(Path::new(&prefix), TEST.control_directory)
+                    .unwrap()
+                    .digest,
+                before
+            );
+            assert_eq!(run(args("status", &target, &[])), target_before);
+        }
+        fs::remove_file(file).unwrap();
+        plan_then_install(&target, "software_remove", None);
+        let plan_path = target.join("..").join("plan-software_update.json");
+        let plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+        let planned = serde_json::json!({"plan_digest": digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &plan).unwrap(), "plan": plan});
+        let extra = apply_args(&target, &prefix, "software_update", &planned, None);
+        let mut borrowed: Vec<_> = extra.iter().map(String::as_str).collect();
+        borrowed.push("--cancel");
+        assert_eq!(
+            run(args("apply-operation", &target, &borrowed))["state"],
+            "cancelled"
+        );
+        assert!(!Path::new(&prefix).join("1.2.3").exists());
     }
 
     #[test]

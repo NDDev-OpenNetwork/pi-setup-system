@@ -15,6 +15,24 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.93] - 2026-10-12
+
+Exact software update and removal plans now accept cancellation before
+program effects. The shared prefix writer records an unadmitted request directly
+as cancelled in one SQLite commit, or retires an unchanged admission with no
+kernel journal. Cancellation never resumes extraction or removal, downloads no
+artifact and remains available after plan expiry. Started or completed effects
+refuse cancellation and retain their original recovery path.
+
+A cancelled request permanently refuses delayed apply. Cancellation history
+preserves later program content and another active operation's guard. Existing
+private schema and public provider-info/status field sets are unchanged; fresh
+installation allocation and active-agent handoff are not added by this change.
+The native caller must authenticate this exact release and independently observe
+unchanged prefix and target contents before retiring its own operation.
+Public artifacts and coordinated native acceptance are separate from source
+integration. No existing tag or pending plan is rewritten.
+
 ## [0.0.92] - 2026-10-12
 
 Exact forward configuration requests can be cancelled before publication

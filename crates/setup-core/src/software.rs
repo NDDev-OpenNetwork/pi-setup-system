@@ -1983,6 +1983,144 @@ mod tests {
         fs::remove_dir_all(at).unwrap();
     }
 
+    fn cancellation_refuses_started(
+        root: &Path,
+        writer: &Writer,
+        pending: &operation::Intent,
+        declared: &Software,
+        artifact: &Artifact,
+        control: &str,
+    ) {
+        fs::write(root.join("foreign"), b"changed").unwrap();
+        assert!(writer.cancel_operation(pending, declared, control).is_err());
+        fs::write(root.join("foreign"), b"preserved").unwrap();
+        fs::create_dir(root.join("bin")).unwrap();
+        assert!(writer.cancel_operation(pending, declared, control).is_err());
+        fs::remove_dir(root.join("bin")).unwrap();
+        let stage = staging::Staging::begin_for(
+            root,
+            declared.command,
+            declared.version,
+            CODEX_MEMBER,
+            artifact.sha256,
+            Some(&pending.binding),
+        )
+        .unwrap();
+        let incoming = stage.stage_path();
+        fs::write(incoming.join("partial"), b"incomplete bytes").unwrap();
+        drop(stage);
+        assert!(writer.cancel_operation(pending, declared, control).is_err());
+        assert_eq!(
+            fs::read(incoming.join("partial")).unwrap(),
+            b"incomplete bytes"
+        );
+    }
+
+    #[test]
+    fn software_cancellation_is_terminal_and_never_recovers_started_effects() {
+        use operation::{Intent, Kind, Outcome, State};
+
+        let (at, artifact) = staged("software-cancellation", b"generated program", CODEX_MEMBER);
+        let root = at.join("software");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("foreign"), b"preserved").unwrap();
+        let declared = software();
+        let control = ".codex-setup-system";
+        let intent = |id: &str, kind| {
+            Intent::new(id, &digest::of_bytes(id.as_bytes()), &declared, kind).unwrap()
+        };
+        let observed = || {
+            crate::software_prefix::observe(&root, control)
+                .unwrap()
+                .digest
+        };
+        let before = observed();
+        let writer = Writer::acquire(&root).unwrap();
+        let absent = intent("unadmitted", Kind::Update);
+        writer
+            .cancel_operation(&absent, &declared, control)
+            .unwrap();
+        assert_eq!(observed(), before);
+        assert_eq!(
+            writer.operation_state(&absent).unwrap(),
+            Some(State::Completed(Outcome::Cancelled))
+        );
+        assert!(
+            writer
+                .admit_operation(&absent, &declared, control, &before)
+                .is_err()
+        );
+        let conflict = Intent::new(
+            "unadmitted",
+            &digest::of_bytes(b"different"),
+            &declared,
+            Kind::Update,
+        )
+        .unwrap();
+        assert!(
+            writer
+                .cancel_operation(&conflict, &declared, control)
+                .is_err()
+        );
+        assert!(
+            writer
+                .cancel_operation(&intent("install", Kind::Install), &declared, control)
+                .is_err()
+        );
+
+        let pending = intent("admitted", Kind::Update);
+        writer
+            .admit_operation(&pending, &declared, control, &before)
+            .unwrap();
+        cancellation_refuses_started(&root, &writer, &pending, &declared, &artifact, control);
+        let other = intent("other", Kind::Remove);
+        writer.cancel_operation(&other, &declared, control).unwrap();
+        assert_eq!(
+            writer.operation_state(&pending).unwrap(),
+            Some(State::Pending)
+        );
+        assert!(writer.remove(&declared).is_err());
+        assert_eq!(writer.resume_operation(&pending).unwrap(), None);
+        // Recovery may create the launch directory. It is still an effect; an
+        // operator must not mislabel that state as cancellation before effects.
+        if root.join("bin").exists() {
+            fs::remove_dir(root.join("bin")).unwrap();
+        }
+        writer
+            .cancel_operation(&pending, &declared, control)
+            .unwrap();
+        assert_eq!(observed(), before);
+        assert_eq!(
+            writer.resume_operation(&pending).unwrap(),
+            Some(Outcome::Cancelled)
+        );
+        drop(writer);
+        let writer = Writer::acquire(&root).unwrap();
+        writer
+            .cancel_operation(&pending, &declared, control)
+            .unwrap();
+        let remove = intent("completed-removal", Kind::Remove);
+        writer
+            .admit_operation(&remove, &declared, control, &before)
+            .unwrap();
+        assert_eq!(
+            writer.remove_operation(&remove, &declared).unwrap(),
+            Outcome::Removed { removed: false }
+        );
+        assert!(
+            writer
+                .cancel_operation(&remove, &declared, control)
+                .is_err()
+        );
+        assert_eq!(
+            writer.operation_state(&other).unwrap(),
+            Some(State::Completed(Outcome::Cancelled))
+        );
+        assert_eq!(observed(), before);
+        drop(writer);
+        fs::remove_dir_all(at).unwrap();
+    }
+
     #[test]
     fn held_input_checks_seeked_blocks_before_partial_bytes_can_be_promoted() {
         use std::io::{Read, Seek, SeekFrom};
