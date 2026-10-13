@@ -87,6 +87,109 @@ fn remove_request(target: &Path, id: &str) -> (serde_json::Value, Vec<String>) {
     (planned, apply)
 }
 
+#[test]
+fn prepared_configuration_cancels_or_resumes_after_expiry_without_source() {
+    use setup_core::forward::{Admission, Progress, Writer};
+    let target = seeded("forward-preparation");
+    let before = run(args("status", &target, &[]));
+    let (_, apply) = request(
+        &target,
+        "operation_PREPARE_CANCEL",
+        &[("skills/prepared.md", "desired", 0o644)],
+    );
+    let mut prepare = apply.clone();
+    prepare.push("--prepare".into());
+    let receipt = run(prepare.clone());
+    assert_eq!(receipt["state"], "prepared");
+    assert_eq!(receipt["configuration_changed"], false);
+    assert_eq!(run(prepare), receipt);
+    assert!(!target.join("skills/prepared.md").exists());
+    assert_eq!(fs::read(target.join("AGENTS.md")).unwrap(), b"# first\n");
+    let mut cancel = apply;
+    cancel.push("--cancel".into());
+    assert_eq!(run(cancel)["state"], "cancelled");
+    assert_eq!(run(args("status", &target, &[])), before);
+
+    let (_, apply) = request(
+        &target,
+        "operation_PREPARE_APPLY",
+        &[("skills/prepared.md", "desired", 0o644)],
+    );
+    let mut prepare = apply.clone();
+    prepare.push("--prepare".into());
+    assert_eq!(run(prepare.clone())["state"], "prepared");
+    let bundle = apply.windows(2).find(|pair| pair[0] == "--bundle").unwrap()[1].clone();
+    fs::remove_file(bundle).unwrap();
+    let installed = run(apply);
+    assert_eq!(installed["state"], "verified");
+    assert_eq!(
+        fs::read(target.join("skills/prepared.md")).unwrap(),
+        b"desired"
+    );
+
+    let (mut removal, withdraw) = remove_request(&target, "operation_PREPARE_REMOVE");
+    let mut prepare_remove = withdraw.clone();
+    prepare_remove.push("--prepare".into());
+    run(prepare_remove);
+    let resolved = Target::resolve(&target, TEST.control_directory).unwrap();
+    let admission = Admission {
+        operation_id: removal["plan"]["operation_id"].as_str().unwrap().into(),
+        plan_digest: removal["plan_digest"].as_str().unwrap().into(),
+        operation: "remove".into(),
+        target_scope: None,
+        target_precondition_digest: removal["plan"]["expected_target_digest"]
+            .as_str()
+            .unwrap()
+            .into(),
+    };
+    let context = {
+        let writer = Writer::acquire(&resolved, TEST.control_directory).unwrap();
+        let Progress::Prepared(context) = writer.progress(&admission).unwrap() else {
+            panic!("preparation absent");
+        };
+        context
+    };
+    let mut cancel = withdraw;
+    cancel.push("--cancel".into());
+    run(cancel);
+    removal["plan"]["operation_id"] = "operation_PREPARE_EXPIRED".into();
+    removal["plan"]["expires_at"] = "2000-01-01T00:00:00.000Z".into();
+    removal["plan_digest"] =
+        digest::of_domain_canonical_json(provider_v3::PLAN_DOMAIN, &removal["plan"])
+            .unwrap()
+            .into();
+    let expired = apply_plan(&target, "operation_PREPARE_EXPIRED", &removal, Vec::new());
+    let mut expired_prepare = expired.clone();
+    expired_prepare.push("--prepare".into());
+    assert_eq!(refuse(expired.clone()).reason(), Some(WireReason::Stale));
+    assert_eq!(
+        refuse(expired_prepare.clone()).reason(),
+        Some(WireReason::Stale)
+    );
+    // Model admission accepted before expiry without a fifteen-minute sleep.
+    // The wire must distinguish this durable record from a fresh expired request.
+    {
+        let mut writer = Writer::acquire(&resolved, TEST.control_directory).unwrap();
+        let change = writer.change("skills/prepared.md", None).unwrap();
+        let expired_admission = Admission {
+            operation_id: "operation_PREPARE_EXPIRED".into(),
+            plan_digest: removal["plan_digest"].as_str().unwrap().into(),
+            ..admission
+        };
+        writer
+            .prepare(&expired_admission, &context, &[change])
+            .unwrap();
+    }
+    assert_eq!(run(expired_prepare)["state"], "prepared");
+    let removed = run(expired.clone());
+    assert_eq!(removed["state"], "verified");
+    assert!(!target.join("skills/prepared.md").exists());
+    assert_eq!(run(expired), removed);
+    assert_eq!(run(prepare), installed);
+    assert!(!target.join(TEST.control_directory).join("backups").exists());
+    fs::remove_dir_all(target.parent().unwrap()).unwrap();
+}
+
 fn contribution_bytes(path: &str, host: &[u8], assembled: &str) -> (Vec<u8>, String, String) {
     use provider_v3::zip::{
         self,
