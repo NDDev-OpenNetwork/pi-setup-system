@@ -12,6 +12,7 @@ use crate::{digest, sqlite as vfs};
 
 const OWNER: &str = "CREATE TABLE owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity BLOB NOT NULL) STRICT";
 const OPERATIONS: &str = "CREATE TABLE operations (id TEXT PRIMARY KEY, digest TEXT NOT NULL, admission BLOB NOT NULL, context BLOB NOT NULL, stage BLOB, phase TEXT NOT NULL CHECK(phase IN ('applying','finishing','completed')), active INTEGER CHECK(active=1), outcome BLOB, CHECK((active IS NULL)=(phase='completed'))) STRICT, WITHOUT ROWID";
+const PREPARED_OPERATIONS: &str = r#"CREATE TABLE "operations" (id TEXT PRIMARY KEY, digest TEXT NOT NULL, admission BLOB NOT NULL, context BLOB NOT NULL, stage BLOB, phase TEXT NOT NULL CHECK(phase IN ('prepared','applying','finishing','completed')), active INTEGER CHECK(active=1), outcome BLOB, CHECK((active IS NULL)=(phase='completed'))) STRICT, WITHOUT ROWID"#;
 const ACTIVE: &str =
     "CREATE UNIQUE INDEX one_active ON operations(active) WHERE active IS NOT NULL";
 const CHANGES: &str = "CREATE TABLE changes (operation TEXT NOT NULL, sequence INTEGER NOT NULL, metadata BLOB NOT NULL, payload BLOB, PRIMARY KEY(operation,sequence)) STRICT, WITHOUT ROWID";
@@ -120,8 +121,18 @@ impl Store {
         let empty = application == 0 && version == 0 && schemas.is_empty();
         if !empty
             && (application != APPLICATION
-                || version != 1
-                || schemas != [CHANGES, ACTIVE, OPERATIONS, OWNER])
+                || !matches!(version, 1 | 2)
+                || schemas
+                    != [
+                        CHANGES,
+                        ACTIVE,
+                        if version == 1 {
+                            OPERATIONS
+                        } else {
+                            PREPARED_OPERATIONS
+                        },
+                        OWNER,
+                    ])
         {
             return Err(invalid());
         }
@@ -258,23 +269,74 @@ impl Store {
         admission: &Admission,
         context: &serde_json::Value,
         changes: &[Change],
+        prepared: bool,
     ) -> Result<()> {
         self.idle()?;
+        if prepared {
+            self.enable_preparation()?;
+        }
         self.scope.validate()?;
         sql(self.db.execute_batch("BEGIN IMMEDIATE"))?;
         let result = (|| {
             sql(self.db.execute(
-                "INSERT INTO operations VALUES (?1,?2,?3,?4,NULL,'applying',1,NULL)",
+                "INSERT INTO operations VALUES (?1,?2,?3,?4,NULL,?5,1,NULL)",
                 params![
                     admission.operation_id,
                     admission.plan_digest,
                     encode(admission)?,
-                    encode(context)?
+                    encode(context)?,
+                    if prepared { "prepared" } else { "applying" },
                 ],
             ))?;
             self.insert_changes(&admission.operation_id, 0, changes)
         })();
         self.end(result)
+    }
+
+    // Only explicit preparation upgrades an idle v1 store. Old in-flight
+    // operations and ordinary single-root calls keep their original format.
+    // Schema and user_version jointly fence readers that cannot distinguish
+    // preparation from publication. Historical receipt bytes are copied intact
+    // inside one SQLite transaction; no before-image payload is introduced.
+    fn enable_preparation(&mut self) -> Result<()> {
+        self.scope.validate()?;
+        let version: i64 = sql(self.db.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
+        if version == 2 {
+            return Ok(());
+        }
+        if version != 1 {
+            return Err(invalid());
+        }
+        self.idle()?;
+        sql(self.db.execute_batch("BEGIN IMMEDIATE"))?;
+        let result = (|| {
+            sql(self.db.execute_batch(&PREPARED_OPERATIONS.replacen(
+                "\"operations\"",
+                "migrating_operations",
+                1,
+            )))?;
+            sql(self.db.execute_batch("INSERT INTO migrating_operations SELECT * FROM operations; DROP TABLE operations; ALTER TABLE migrating_operations RENAME TO operations;"))?;
+            sql(self.db.execute_batch(ACTIVE))?;
+            sql(self.db.pragma_update(None, "user_version", 2))?;
+            Ok(())
+        })();
+        self.end(result)
+    }
+
+    pub(super) fn start(&self, id: &str) -> Result<()> {
+        self.scope.validate()?;
+        if sql(self.db.execute("UPDATE operations SET phase='applying' WHERE id=?1 AND phase='prepared' AND stage IS NOT NULL AND active=1", [id]))? != 1 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    pub(super) fn has_active(&self) -> Result<bool> {
+        sql(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM operations WHERE active=1)",
+            [],
+            |row| row.get(0),
+        ))
     }
 
     pub(super) fn cancel(
@@ -288,7 +350,7 @@ impl Store {
         let result = (|| {
             if admitted {
                 if sql(self.db.execute(
-                    "UPDATE operations SET phase='completed',active=NULL,context=x'7b7d',outcome=?1 WHERE id=?2 AND digest=?3 AND phase='applying' AND stage IS NULL AND active=1",
+                    "UPDATE operations SET phase='completed',active=NULL,context=x'7b7d',outcome=?1 WHERE id=?2 AND digest=?3 AND (phase='prepared' OR (phase='applying' AND stage IS NULL)) AND active=1",
                     params![encode(outcome)?, admission.operation_id, admission.plan_digest],
                 ))? != 1 {
                     return Err(invalid());
@@ -329,7 +391,7 @@ impl Store {
     pub(super) fn set_stage(&self, id: &str, identity: files::Identity) -> Result<()> {
         self.scope.validate()?;
         if sql(self.db.execute(
-            "UPDATE operations SET stage=?1 WHERE id=?2 AND stage IS NULL AND phase='applying'",
+            "UPDATE operations SET stage=?1 WHERE id=?2 AND stage IS NULL AND phase IN ('prepared','applying')",
             params![encode(&identity)?, id],
         ))? != 1
         {

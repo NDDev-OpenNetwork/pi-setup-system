@@ -179,11 +179,38 @@ pub(super) fn apply(
     release: &str,
     bundle: Option<&ArgvBundle>,
 ) -> Result<serde_json::Value> {
+    execute(harness, path, plan, plan_digest, release, bundle, false)
+}
+
+pub(super) fn prepare(
+    harness: &Harness,
+    path: &Path,
+    plan: &serde_json::Value,
+    plan_digest: &str,
+    release: &str,
+    bundle: Option<&ArgvBundle>,
+) -> Result<serde_json::Value> {
+    execute(harness, path, plan, plan_digest, release, bundle, true)
+}
+
+fn execute(
+    harness: &Harness,
+    path: &Path,
+    plan: &serde_json::Value,
+    plan_digest: &str,
+    release: &str,
+    bundle: Option<&ArgvBundle>,
+    prepare_only: bool,
+) -> Result<serde_json::Value> {
     let (target, admission) = bound(harness, path, plan, plan_digest, release, bundle)?;
     let scope = scope_of(plan);
     let mut writer = Writer::acquire(&target, harness.control_directory)?;
     match writer.progress(&admission)? {
         Progress::Completed(outcome) => return Ok(outcome),
+        Progress::Prepared(_) if prepare_only => {
+            return writer.prepared(&admission).map_err(Error::from);
+        }
+        Progress::Applying(_) | Progress::Finishing if prepare_only => return Err(refused()),
         Progress::Cancelled(_) => {
             return Err(Error::refuse(
                 WireReason::Stale,
@@ -214,7 +241,15 @@ pub(super) fn apply(
             scope,
         )?;
         let context = serde_json::to_value(&assembly.context).map_err(|_| refused())?;
+        if prepare_only {
+            return writer
+                .prepare(&admission, &context, &assembly.changes)
+                .map_err(Error::from);
+        }
         writer.admit(&admission, &context, &assembly.changes)?;
+    }
+    if matches!(writer.progress(&admission)?, Progress::Prepared(_)) {
+        writer.start(&admission)?;
     }
     if let Progress::Applying(context) = writer.progress(&admission)? {
         let context: Context = serde_json::from_value(context).map_err(|_| refused())?;

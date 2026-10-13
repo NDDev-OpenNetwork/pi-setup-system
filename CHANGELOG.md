@@ -15,6 +15,25 @@ cut and that this clone does not carry.
 
 ## [Unreleased]
 
+## [0.0.94] - 2026-10-13
+
+Forward configuration plans now support explicit preparation before any
+final configuration write. Preparation retains exact desired bytes and a durable
+admission; applying that admission survives plan expiry or loss of the source
+bundle. Fresh admission still checks expiry. Cancellation remains available until
+publication starts, and replay preserves later operations and unrelated files.
+
+The first preparation upgrades an idle forward store transactionally while
+preserving its receipts. Older writers refuse the upgraded schema, including
+after cancellation removes the active guard. Interrupted preparation, guard
+publication and cancellation resume through the same exact request.
+
+Public provider-info and status field sets stay unchanged. ai-stp manages
+configuration over user-installed harness executables. Native multi-root
+coordination and active-agent handoff remain separate acceptance steps. Current
+publisher identities require the compatible ai-stp reader release before these
+artifacts are published; historical tags and provenance remain unchanged.
+
 ## [0.0.93] - 2026-10-12
 
 Exact software update and removal plans now accept cancellation before

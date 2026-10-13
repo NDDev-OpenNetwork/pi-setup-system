@@ -187,6 +187,10 @@ pub const fn usage(command: Command) -> Usage {
             ],
             optional: &[
                 (
+                    "--prepare",
+                    "durably prepare exact forward configuration without publishing it",
+                ),
+                (
                     "--cancel",
                     "cancel an exact forward configuration, software update or removal before effects start",
                 ),
@@ -270,6 +274,8 @@ pub enum Invocation {
         provider_release_digest: String,
         /// Persist exact configuration or in-place software cancellation before effects.
         cancel: bool,
+        /// Prepare forward configuration without starting publication.
+        prepare: bool,
         /// The bundle, when the operation carries one.
         bundle: Option<Bundle>,
         /// The program directory, when the operation installs software.
@@ -540,6 +546,7 @@ where
             plan_digest: flags.take_required("--plan-digest")?,
             provider_release_digest: flags.take_required("--provider-release-digest")?,
             cancel: flags.take_switch("--cancel"),
+            prepare: flags.take_switch("--prepare"),
             bundle: flags.take_bundle()?,
             prefix: flags.take_prefix()?,
             software_artifacts: flags
@@ -551,6 +558,16 @@ where
     };
 
     flags.require_exhausted()?;
+    if matches!(
+        invocation,
+        Invocation::ApplyOperation {
+            cancel: true,
+            prepare: true,
+            ..
+        }
+    ) {
+        return Err(local("--prepare and --cancel are mutually exclusive"));
+    }
     Ok(invocation)
 }
 
@@ -635,7 +652,7 @@ impl Flags {
             if !token.starts_with("--") {
                 return Err(local(format!("{token:?} is not a flag")));
             }
-            if matches!(token.as_str(), "--json" | "--cancel") {
+            if matches!(token.as_str(), "--json" | "--cancel" | "--prepare") {
                 if switches.iter().any(|switch| switch == token) {
                     return Err(local(format!("{token} was given twice")));
                 }

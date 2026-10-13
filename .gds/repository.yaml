@@ -9,14 +9,17 @@ repository:
 
 provider:
   type: "github"
-  installation: "installation:github-opennetwork"
+  installation: "installation:github-nddev-technocracy-opennetwork"
   repository_id: 1343827884
-  owner: "NDDev-OpenNetwork"
+  owner: "NDDev-Technocracy-OpenNetwork"
   name: "pi-setup-system"
+  aliases:
+    - owner: "NDDev-Technocracy-Sandbox"
+      name: "pi-setup-system"
 
 classification:
   portfolios:
-    - "portfolio:nddev-technocracy-sandbox"
+    - "portfolio:nddev-technocracy-opennetwork"
   visibility_contract: "public"
   data_classification: "public"
 

@@ -31,6 +31,91 @@ fn content(bytes: &[u8]) -> Content {
 }
 
 #[test]
+fn preparation_survives_restart_without_opening_the_publication_window() {
+    for boundary in 0..3 {
+        let (root, target, admission) = fixture();
+        fs::write(root.join("owned"), b"original").unwrap();
+        let mut writer = Writer::acquire(&target, ".control").unwrap();
+        let old = admission.cancellation();
+        assert_eq!(writer.cancel(&admission).unwrap(), old);
+        let mut prepared = admission.clone();
+        prepared.operation_id = "operation_PREPARED".into();
+        let change = writer.change("owned", Some(content(b"desired"))).unwrap();
+        writer
+            .admit_inner(
+                &prepared,
+                &serde_json::json!({"exact":true}),
+                &[change],
+                true,
+            )
+            .unwrap();
+        if boundary == 1 {
+            fs::create_dir(target.control_directory().join(STAGING)).unwrap();
+        } else if boundary == 2 {
+            writer.prepared(&prepared).unwrap();
+        }
+        drop(writer);
+        let header = fs::read(
+            target
+                .control_directory()
+                .join("forward")
+                .join(crate::sqlite::DATABASE),
+        )
+        .unwrap();
+        assert_eq!(u32::from_be_bytes(header[60..64].try_into().unwrap()), 2);
+        let mut writer = Writer::acquire(&target, ".control").unwrap();
+        assert!(
+            matches!(writer.progress(&admission).unwrap(), Progress::Cancelled(value) if value == old)
+        );
+        assert!(matches!(
+            writer.progress(&prepared).unwrap(),
+            Progress::Prepared(_)
+        ));
+        assert!(writer.apply(&prepared).is_err());
+        let receipt = writer.prepared(&prepared).unwrap();
+        assert_eq!(writer.prepared(&prepared).unwrap(), receipt);
+        assert_eq!(fs::read(root.join("owned")).unwrap(), b"original");
+        assert!(
+            crate::journal::require_clean_for_planning(
+                &target.control_directory(),
+                &target.control_directory().join(STAGING),
+                &[]
+            )
+            .is_err()
+        );
+        fs::write(root.join("owned"), b"foreign").unwrap();
+        assert!(writer.start(&prepared).is_err());
+        assert!(writer.cancel(&prepared).is_err());
+        fs::write(root.join("owned"), b"original").unwrap();
+        if boundary < 2 {
+            // Simulate loss after the cancellation commit, before guard cleanup.
+            writer
+                .store
+                .cancel(&prepared, &prepared.cancellation(), true)
+                .unwrap();
+            drop(writer);
+            let mut writer = Writer::acquire(&target, ".control").unwrap();
+            assert_eq!(writer.cancel(&prepared).unwrap(), prepared.cancellation());
+            assert!(writer.journal().unwrap().is_none());
+            assert!(!target.control_directory().join(STAGING).exists());
+            assert_eq!(fs::read(root.join("owned")).unwrap(), b"original");
+        } else {
+            writer.start(&prepared).unwrap();
+            assert!(writer.cancel(&prepared).is_err());
+            drop(writer);
+            let mut writer = Writer::acquire(&target, ".control").unwrap();
+            let outcome = settle(&mut writer, &prepared);
+            assert!(
+                matches!(writer.progress(&prepared).unwrap(), Progress::Completed(value) if value == outcome)
+            );
+            assert_eq!(fs::read(root.join("owned")).unwrap(), b"desired");
+        }
+        assert!(!target.control_directory().join("backups").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn cancellation_closes_admission_gaps_without_resurrecting_or_erasing_operations() {
     for admitted in [false, true] {
         let (root, target, admission) = fixture();

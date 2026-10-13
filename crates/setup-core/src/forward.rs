@@ -19,6 +19,7 @@
 //! Empty content directories are retained; only admitted file paths are removed.
 
 mod files;
+mod preparation;
 mod store;
 
 #[cfg(test)]
@@ -203,6 +204,8 @@ impl Admission {
 pub enum Progress {
     /// No request with this operation identifier has been admitted.
     Absent,
+    /// Desired bytes are durable; configuration publication has not started.
+    Prepared(serde_json::Value),
     /// Resume desired file publication, using the retained runtime context.
     Applying(serde_json::Value),
     /// Final metadata and outcome have been admitted; resume their publication.
@@ -337,10 +340,12 @@ impl Writer {
             return Ok(Progress::Absent);
         };
         match record.phase.as_str() {
+            "prepared" => Ok(Progress::Prepared(record.context)),
             "applying" => Ok(Progress::Applying(record.context)),
             "finishing" => Ok(Progress::Finishing),
             "completed" => {
                 if record.outcome == Some(admission.cancellation()) {
+                    self.clear_completed(&record)?;
                     return Ok(Progress::Cancelled(record.outcome.ok_or_else(invalid)?));
                 }
                 self.clear_completed(&record)?;
@@ -360,6 +365,16 @@ impl Writer {
         context: &serde_json::Value,
         changes: &[Change],
     ) -> Result<()> {
+        self.admit_inner(admission, context, changes, false)
+    }
+
+    fn admit_inner(
+        &mut self,
+        admission: &Admission,
+        context: &serde_json::Value,
+        changes: &[Change],
+        prepared: bool,
+    ) -> Result<()> {
         admission.validate()?;
         validate_changes(changes)?;
         self.revalidate()?;
@@ -375,7 +390,16 @@ impl Writer {
                 return Err(invalid());
             }
         }
-        self.store.admit(admission, context, changes)
+        self.store.admit(admission, context, changes, prepared)
+    }
+
+    fn unchanged(&self, admission: &Admission) -> Result<()> {
+        for change in self.store.changes(&admission.operation_id)? {
+            if self.read(&change.path)?.0 != change.before {
+                return Err(invalid());
+            }
+        }
+        Ok(())
     }
 
     /// Cancel an exact request only while no configuration publication can have started.
@@ -392,22 +416,27 @@ impl Writer {
         let record = self.store.record(admission)?;
         if let Some(record) = &record {
             if record.phase == "completed" && record.outcome == Some(outcome.clone()) {
+                self.clear_completed(record)?;
                 return Ok(outcome);
             }
-            if record.phase != "applying" || record.stage.is_some() || self.journal()?.is_some() {
-                return Err(invalid());
-            }
-            match self.control.symlink_metadata(STAGING) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                _ => return Err(invalid()),
-            }
-            for change in self.store.changes(&admission.operation_id)? {
-                if self.read(&change.path)?.0 != change.before {
+            if record.phase == "prepared" {
+                // Complete an interrupted guard publication before retiring
+                // the preparation. This never writes final configuration.
+                self.prepared(admission)?;
+            } else {
+                if record.phase != "applying" || record.stage.is_some() || self.journal()?.is_some()
+                {
                     return Err(invalid());
                 }
+                match self.control.symlink_metadata(STAGING) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    _ => return Err(invalid()),
+                }
             }
+            self.unchanged(admission)?;
         }
         self.store.cancel(admission, &outcome, record.is_some())?;
+        self.clear_completed(&self.store.record(admission)?.ok_or_else(invalid)?)?;
         self.revalidate()?;
         Ok(outcome)
     }
@@ -474,7 +503,7 @@ impl Writer {
     /// Refuses foreign file changes, changed parent identities or an unrelated journal.
     pub fn apply(&self, admission: &Admission) -> Result<()> {
         let record = self.store.record(admission)?.ok_or_else(invalid)?;
-        if record.phase == "completed" {
+        if !matches!(record.phase.as_str(), "applying" | "finishing") {
             return Err(invalid());
         }
         let staging = self.staging(&record)?;
@@ -552,7 +581,12 @@ impl Writer {
     fn clear_completed(&self, record: &store::Record) -> Result<()> {
         self.revalidate()?;
         // A historical replay must never clear a newer operation's guard.
-        if self.journal()? != Some(record.admission.journal()) {
+        let journal = self.journal()?;
+        if journal
+            .as_ref()
+            .is_some_and(|held| *held != record.admission.journal())
+            || (journal.is_none() && (record.stage.is_none() || self.store.has_active()?))
+        {
             return Ok(());
         }
         match self.control.open_dir_nofollow(STAGING) {
@@ -569,7 +603,9 @@ impl Writer {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(invalid().with_source(error)),
         }
-        io(self.control.remove_file(crate::journal::JOURNAL_FILE_NAME))?;
+        if journal.is_some() {
+            io(self.control.remove_file(crate::journal::JOURNAL_FILE_NAME))?;
+        }
         files::sync(&self.control)
     }
 }
