@@ -5,21 +5,23 @@ repository:
   display_name: "pi-setup-system"
   roles:
     - "project"
-  lifecycle: "active"
+  lifecycle: "archived"
 
 provider:
   type: "github"
-  installation: "installation:github-nddev-technocracy-opennetwork"
+  installation: "installation:github-nddev-technocracy-archive"
   repository_id: 1343827884
-  owner: "NDDev-Technocracy-OpenNetwork"
+  owner: "NDDev-Technocracy-Archive"
   name: "pi-setup-system"
   aliases:
+    - owner: "NDDev-Technocracy-OpenNetwork"
+      name: "pi-setup-system"
     - owner: "NDDev-Technocracy-Sandbox"
       name: "pi-setup-system"
 
 classification:
   portfolios:
-    - "portfolio:nddev-technocracy-opennetwork"
+    - "portfolio:nddev-technocracy-archive"
   visibility_contract: "public"
   data_classification: "public"
 
