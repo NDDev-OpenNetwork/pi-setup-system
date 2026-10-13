@@ -52,7 +52,7 @@ jobs:
       contents: read
       id-token: write # mints the OIDC token Scorecard's publication is signed with
       security-events: write # Scorecard publishes its findings to code scanning
-    uses: NDDev-Technocracy-OpenNetwork/ci-workflows/.github/workflows/public-scorecard.yml@93eeb2a65e98a29e9dbff7909f67c6419abff046 # commit:93eeb2a65e98a29e9dbff7909f67c6419abff046
+    uses: NDDev-Technocracy-OpenNetwork/ci-workflows/.github/workflows/public-scorecard.yml@5523113629318fbb770b80df00c254e739d7ee18 # commit:93eeb2a65e98a29e9dbff7909f67c6419abff046
 
   osv:
     name: osv
