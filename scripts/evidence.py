@@ -210,7 +210,7 @@ def fetch(url: str, into: Path, expect_bytes: int, expect_digest: str) -> None:
         headers={
             "User-Agent": (
                 "nddev-setup-system-evidence/1 "
-                "(+https://github.com/NDDev-Technocracy-OpenNetwork)"
+                "(+https://github.com/NDDev-Technocracy-Archive)"
             )
         },
     )

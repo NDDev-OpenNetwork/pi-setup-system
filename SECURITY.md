@@ -10,7 +10,7 @@ latest release is supported.
 ## Reporting a vulnerability
 
 Report privately through
-[GitHub Security Advisories](https://github.com/NDDev-Technocracy-OpenNetwork/pi-setup-system/security/advisories/new).
+[GitHub Security Advisories](https://github.com/NDDev-Technocracy-Archive/pi-setup-system/security/advisories/new).
 
 Do not publish exploit details, credentials, tokens, private configuration or
 backup contents in an issue or pull request. A backup slot may contain whatever

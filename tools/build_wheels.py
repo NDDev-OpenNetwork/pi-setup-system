@@ -192,7 +192,7 @@ def wheel_bytes(
             f"Summary: {summary}",
             "License-Expression: AGPL-3.0-or-later",
             "Requires-Python: >=3.9",
-            f"Project-URL: Repository, https://github.com/NDDev-Technocracy-OpenNetwork/{distribution}",
+            f"Project-URL: Repository, https://github.com/NDDev-Technocracy-Archive/{distribution}",
             "Classifier: Operating System :: MacOS",
             "Classifier: Operating System :: Microsoft :: Windows",
             "Classifier: Operating System :: POSIX :: Linux",

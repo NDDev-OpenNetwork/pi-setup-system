@@ -106,7 +106,7 @@ edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
 description = "Managed ai-stp installation component for {product}, maintained by NDDev."
-repository = "https://github.com/NDDev-Technocracy-OpenNetwork/{package}"
+repository = "https://github.com/NDDev-Technocracy-Archive/{package}"
 homepage = "https://github.com/ai-engineers-guild/ai-stp"
 readme = "README.md"
 keywords = ["ai", "agent", "setup", "harness", "cli"]
@@ -145,7 +145,7 @@ cargo install {package}
 ```
 
 Source, security policy and release provenance:
-<https://github.com/NDDev-Technocracy-OpenNetwork/{package}>.
+<https://github.com/NDDev-Technocracy-Archive/{package}>.
 
 Configuration backup/restore remains a compatibility feature. Software
 installation, update and removal use transaction metadata and create no
