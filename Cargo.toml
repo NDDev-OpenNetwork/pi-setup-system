@@ -12,7 +12,7 @@ version = "0.0.94"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/NDDev-Technocracy-OpenNetwork/pi-setup-system"
+repository = "https://github.com/NDDev-Technocracy-Archive/pi-setup-system"
 authors = ["Danil Silantyev / NDDev"]
 
 [workspace.dependencies]

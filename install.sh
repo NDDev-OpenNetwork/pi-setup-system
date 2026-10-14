@@ -12,7 +12,7 @@
 #   sh install.sh 0.1.0        # a specific release
 set -eu
 
-REPO="NDDev-Technocracy-OpenNetwork/pi-setup-system"
+REPO="NDDev-Technocracy-Archive/pi-setup-system"
 BINARY="pi-setup-system"
 VERSION="${1:-0.0.94}"
 PREFIX="${PI_INSTALL_DIR:-$HOME/.local/bin}"

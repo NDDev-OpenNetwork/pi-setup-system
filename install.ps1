@@ -12,7 +12,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$repo   = "NDDev-Technocracy-OpenNetwork/pi-setup-system"
+$repo   = "NDDev-Technocracy-Archive/pi-setup-system"
 $binary = "pi-setup-system"
 $arch   = switch ($env:PROCESSOR_ARCHITECTURE) {
   "AMD64" { "x86_64" }
