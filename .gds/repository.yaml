@@ -5,7 +5,7 @@ repository:
   display_name: "pi-setup-system"
   roles:
     - "project"
-  lifecycle: "archived"
+  lifecycle: maintenance
 
 provider:
   type: "github"
